@@ -16,21 +16,21 @@ func listBaselines(deps Dependencies) gin.HandlerFunc {
 
 		prefixes, err := deps.Store.Prefixes().List(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 
 		type baselineInfo struct {
-			Prefix         string `json:"prefix"`
-			P95PPS         int64  `json:"p95_pps"`
-			P95BPS         int64  `json:"p95_bps"`
-			RecommendPPS   int64  `json:"recommend_pps"`   // P95 × 2 — conservative manual threshold suggestion
-			RecommendBPS   int64  `json:"recommend_bps"`   // P95 × 2
-			DetectThreshPPS int64 `json:"detect_thresh_pps"` // P95 × 3 — runtime dynamic detection trigger
-			DetectThreshBPS int64 `json:"detect_thresh_bps"` // P95 × 3
-			DataPoints     int    `json:"data_points"`
-			Active         bool   `json:"active"` // false = cold start
-			Source         string `json:"source"` // "best_node" = node with most data points
+			Prefix          string `json:"prefix"`
+			P95PPS          int64  `json:"p95_pps"`
+			P95BPS          int64  `json:"p95_bps"`
+			RecommendPPS    int64  `json:"recommend_pps"`     // P95 × 2 — conservative manual threshold suggestion
+			RecommendBPS    int64  `json:"recommend_bps"`     // P95 × 2
+			DetectThreshPPS int64  `json:"detect_thresh_pps"` // P95 × 3 — runtime dynamic detection trigger
+			DetectThreshBPS int64  `json:"detect_thresh_bps"` // P95 × 3
+			DataPoints      int    `json:"data_points"`
+			Active          bool   `json:"active"` // false = cold start
+			Source          string `json:"source"` // "best_node" = node with most data points
 		}
 
 		var result []baselineInfo

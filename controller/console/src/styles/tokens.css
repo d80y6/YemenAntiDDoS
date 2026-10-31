@@ -1,0 +1,102 @@
+:root {
+  --bg: #f3f4f6;
+  --panel: #ffffff;
+  --sunk: #f0f2f4;
+  --ink: #1c2128;
+  --muted: #687280;
+  --line: #e1e4e8;
+  --accent: #4048b0;
+  --accent-ink: #ffffff;
+  --drop: #d24a14;
+  --fwd: #2b9a52;
+  --ok: #1b8a4c;
+  --warn: #b86e00;
+  --crit: #c62a2a;
+  --drop-soft: rgba(210,74,20,.12);
+  --band: rgba(210,74,20,.09);
+  --shadow: rgba(0,0,0,.16);
+  --tint-crit: rgba(198,42,42,.10);
+  --tint-fwd: rgba(43,154,82,.13);
+  --tint-neutral: rgba(59,65,72,.10);
+  --on-solid: #ffffff;
+  --slot1: #3198f9;
+  --slot2: #e66c9d;
+  --slot3: #9459c8;
+  --total: #5c6670;
+  --logo: url("../assets/mark-light.png");
+  color-scheme: light;
+  --font-ui: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Hiragino Sans", "Microsoft YaHei", system-ui, sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --r: 4px;
+  --scrim: rgba(0,0,0,.32);
+  --tint-ok: rgba(27,138,76,.10);
+  --tint-warn: rgba(184,110,0,.08);
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216;
+  --panel: #161a20;
+  --sunk: #1c2128;
+  --ink: #e4e7eb;
+  --muted: #8a939e;
+  --line: #262c34;
+  --accent: #9aa3f5;
+  --accent-ink: #10132a;
+  --drop: #f0743c;
+  --fwd: #4fc27a;
+  --ok: #49c07e;
+  --warn: #e0a43a;
+  --crit: #ef5f5f;
+  --drop-soft: rgba(240,116,60,.16);
+  --band: rgba(240,116,60,.11);
+  --shadow: rgba(0,0,0,.5);
+  --tint-crit: rgba(240,96,96,.16);
+  --tint-fwd: rgba(80,200,120,.16);
+  --tint-neutral: rgba(200,208,216,.12);
+  --on-solid: #ffffff;
+  --slot1: #1585e4;
+  --slot2: #b3346d;
+  --slot3: #7a53b4;
+  --total: #a3acb6;
+  --logo: url("../assets/mark-dark.png");
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+ :root:not([data-theme]) {
+  --bg: #0f1216;
+  --panel: #161a20;
+  --sunk: #1c2128;
+  --ink: #e4e7eb;
+  --muted: #8a939e;
+  --line: #262c34;
+  --accent: #9aa3f5;
+  --accent-ink: #10132a;
+  --drop: #f0743c;
+  --fwd: #4fc27a;
+  --ok: #49c07e;
+  --warn: #e0a43a;
+  --crit: #ef5f5f;
+  --drop-soft: rgba(240,116,60,.16);
+  --band: rgba(240,116,60,.11);
+  --shadow: rgba(0,0,0,.5);
+  --tint-crit: rgba(240,96,96,.16);
+  --tint-fwd: rgba(80,200,120,.16);
+  --tint-neutral: rgba(200,208,216,.12);
+  --on-solid: #ffffff;
+  --slot1: #1585e4;
+  --slot2: #b3346d;
+  --slot3: #7a53b4;
+  --total: #a3acb6;
+  --logo: url("../assets/mark-dark.png");
+  color-scheme: dark;
+ }
+}
+
+:root { --dec-slot-1: #3198f9; --dec-slot-2: #e66c9d; --dec-slot-3: #9459c8; --dec-total: #5c6670; }
+:root[data-theme="dark"] {
+  --dec-slot-1: #1585e4; --dec-slot-2: #b3346d; --dec-slot-3: #7a53b4; --dec-total: #a3acb6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --dec-slot-1: #1585e4; --dec-slot-2: #b3346d; --dec-slot-3: #7a53b4; --dec-total: #a3acb6;
+  }
+}

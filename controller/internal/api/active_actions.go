@@ -7,13 +7,39 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/littlewolf9527/xsight/controller/internal/action"
+	"github.com/littlewolf9527/xsight/controller/internal/metrics"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
+
+func queryXDropDelivery(deps Dependencies) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		connectorID, err := strconv.Atoi(c.Query("connector_id"))
+		ruleID := c.Query("rule_id")
+		if err != nil || connectorID <= 0 || ruleID == "" {
+			errResponse(c, http.StatusBadRequest, "invalid connector_id or rule_id")
+			return
+		}
+		conn, err := deps.Store.XDropConnectors().Get(c, connectorID)
+		if err != nil || conn == nil || !conn.Enabled {
+			errResponse(c, http.StatusNotFound, "xdrop connector not found")
+			return
+		}
+		delivery, err := action.QueryXDropDelivery(c.Request.Context(), *conn, ruleID)
+		if err != nil {
+			errResponse(c, http.StatusBadGateway, err.Error())
+			return
+		}
+		if delivery == nil {
+			ok(c, gin.H{"found": false})
+			return
+		}
+		ok(c, delivery)
+	}
+}
 
 // ActiveResponseAction is the aggregated view of an active xDrop rule or BGP route.
 type ActiveResponseAction struct {
@@ -28,10 +54,13 @@ type ActiveResponseAction struct {
 	Status         string     `json:"status"` // active | delayed | pending | failed
 	ScheduledFor   *time.Time `json:"scheduled_for,omitempty"`
 	// xDrop-specific (parsed from request_body)
-	DstIP    string `json:"dst_ip,omitempty"`
-	Protocol string `json:"protocol,omitempty"`
-	TcpFlags string `json:"tcp_flags,omitempty"`
-	Action   string `json:"action,omitempty"` // drop | rate_limit
+	DstIP     string `json:"dst_ip,omitempty"`
+	Protocol  string `json:"protocol,omitempty"`
+	TcpFlags  string `json:"tcp_flags,omitempty"`
+	Action    string `json:"action,omitempty"` // drop | rate_limit
+	SrcPort   int    `json:"src_port,omitempty"`
+	DstPort   int    `json:"dst_port,omitempty"`
+	RateLimit int    `json:"rate_limit,omitempty"`
 	// BGP-specific (parsed from external_rule_id)
 	Prefix   string `json:"prefix,omitempty"`
 	RouteMap string `json:"route_map,omitempty"`
@@ -55,11 +84,11 @@ type ActiveResponseAction struct {
 type AttachedAttackInfo struct {
 	AttackID     int        `json:"attack_id"`
 	DstIP        string     `json:"dst_ip"`
-	Decoder      string     `json:"decoder,omitempty"`      // decoder_family from attacks
+	Decoder      string     `json:"decoder,omitempty"` // decoder_family from attacks
 	ResponseName string     `json:"response_name,omitempty"`
-	DelayMinutes int        `json:"delay_minutes"`          // per-attack config snapshot
+	DelayMinutes int        `json:"delay_minutes"` // per-attack config snapshot
 	AttachedAt   time.Time  `json:"attached_at"`
-	DetachedAt   *time.Time `json:"detached_at,omitempty"`  // nil = currently attached
+	DetachedAt   *time.Time `json:"detached_at,omitempty"` // nil = currently attached
 }
 
 func listActiveBGPRoutes(deps Dependencies) gin.HandlerFunc {
@@ -69,7 +98,7 @@ func listActiveBGPRoutes(deps Dependencies) gin.HandlerFunc {
 		// state from action_execution_log.
 		actions, err := buildActiveBGPFromAnnouncements(c, deps.Store)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, actions)
@@ -117,6 +146,7 @@ func buildActiveBGPFromAnnouncements(ctx *gin.Context, s store.Store) ([]ActiveR
 			apiStatus = "orphan"
 			isOrphan = true
 		default:
+			log.Printf("WARN api: buildActiveBGPFromAnnouncements unknown status %q id=%d; row hidden from Mitigations", ann.Status, ann.ID)
 			continue
 		}
 
@@ -251,7 +281,7 @@ func listActiveXDropRules(deps Dependencies) gin.HandlerFunc {
 		// action_execution_log. BGP still uses the log-based path until PR-5.
 		actions, err := buildActiveXDropFromTable(c, deps.Store)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, actions)
@@ -260,9 +290,11 @@ func listActiveXDropRules(deps Dependencies) gin.HandlerFunc {
 
 // buildActiveXDropFromTable queries xdrop_active_rules directly. Status
 // mapping:
-//   table.status='active'      → "active"
-//   table.status='delayed'     → "delayed" (Mitigations UI shows countdown)
-//   table.status='failed'      → "failed"  (Mitigations UI surfaces for retry)
+//
+//	table.status='active'      → "active"
+//	table.status='delayed'     → "delayed" (Mitigations UI shows countdown)
+//	table.status='failed'      → "failed"  (Mitigations UI surfaces for retry)
+//
 // Rows in 'withdrawing' and 'withdrawn' are hidden (withdrawing is an internal
 // recovery state; withdrawn is audit-only).
 func buildActiveXDropFromTable(ctx *gin.Context, s store.Store) ([]ActiveResponseAction, error) {
@@ -322,6 +354,7 @@ func buildActiveXDropFromTable(ctx *gin.Context, s store.Store) ([]ActiveRespons
 		case "failed":
 			apiStatus = "failed"
 		default:
+			log.Printf("WARN api: buildActiveXDropFromTable unknown status %q id=%d; row hidden from Mitigations", r.Status, r.ID)
 			continue // shouldn't happen: ListActive filters these
 		}
 
@@ -350,159 +383,6 @@ func buildActiveXDropFromTable(ctx *gin.Context, s store.Store) ([]ActiveRespons
 	return result, nil
 }
 
-// buildActiveActions queries action_execution_log and derives status for active xDrop/BGP artifacts.
-func buildActiveActions(ctx *gin.Context, s store.Store, actionType string) ([]ActiveResponseAction, error) {
-	// Get all active attacks + recently expired (last 24h) to show delayed items
-	activeAttacks, err := s.Attacks().ListActive(ctx, 1000)
-	if err != nil {
-		return nil, err
-	}
-	recentFilter := store.AttackFilter{
-		Status: "expired",
-		Limit:  500,
-	}
-	recentFrom := time.Now().Add(-24 * time.Hour)
-	recentFilter.TimeFrom = &recentFrom
-	recentAttacks, _ := s.Attacks().List(ctx, recentFilter)
-
-	allAttacks := append(activeAttacks, recentAttacks...)
-
-	var result []ActiveResponseAction
-	now := time.Now()
-
-	for _, atk := range allAttacks {
-		logs, err := s.ActionExecLog().ListByAttack(ctx, atk.ID)
-		if err != nil {
-			continue
-		}
-
-		// Find on_detected success logs for this action type
-		for _, log := range logs {
-			if log.ActionType != actionType || log.TriggerPhase != "on_detected" || log.Status != "success" || log.ExternalRuleID == "" {
-				continue
-			}
-
-			connID := 0
-			if log.ConnectorID != nil {
-				connID = *log.ConnectorID
-			}
-
-			// Check if already withdrawn/unblocked
-			withdrawn := false
-			var scheduledFor *time.Time
-			for _, l2 := range logs {
-				if l2.ActionType != actionType && l2.ActionType != "manual_override" {
-					continue
-				}
-				c2 := 0
-				if l2.ConnectorID != nil {
-					c2 = *l2.ConnectorID
-				}
-				if l2.ExternalRuleID == log.ExternalRuleID && c2 == connID {
-					if (l2.TriggerPhase == "on_expired" || l2.TriggerPhase == "manual_override") && l2.Status == "success" {
-						withdrawn = true
-						break
-					}
-					if l2.Status == "scheduled" && l2.ScheduledFor != nil {
-						scheduledFor = l2.ScheduledFor
-					}
-				}
-			}
-			if withdrawn {
-				continue
-			}
-
-			// Derive status
-			status := "active"
-			if atk.EndedAt != nil {
-				if scheduledFor != nil && scheduledFor.After(now) {
-					status = "delayed"
-				} else {
-					status = "pending"
-				}
-			}
-
-			// Check for failed on_expired
-			for _, l2 := range logs {
-				if l2.ActionType == actionType && l2.TriggerPhase == "on_expired" && l2.Status == "failed" {
-					c2 := 0
-					if l2.ConnectorID != nil {
-						c2 = *l2.ConnectorID
-					}
-					if l2.ExternalRuleID == log.ExternalRuleID && c2 == connID {
-						status = "failed"
-					}
-				}
-			}
-
-			item := ActiveResponseAction{
-				AttackID:       atk.ID,
-				AttackDstIP:    atk.DstIP,
-				ActionID:       log.ActionID,
-				ActionType:     actionType,
-				ConnectorName:  log.ConnectorName,
-				ConnectorID:    connID,
-				ExternalRuleID: log.ExternalRuleID,
-				CreatedAt:      log.ExecutedAt,
-				Status:         status,
-				ScheduledFor:   scheduledFor,
-			}
-
-			// Parse type-specific fields
-			if actionType == "bgp" {
-				// Split on "|" (v1.1.1+); fallback to last ":" for backward compat
-				prefix, routeMap := splitBGPRuleID(log.ExternalRuleID)
-				item.Prefix = prefix
-				item.RouteMap = routeMap
-			} else if actionType == "xdrop" {
-				item.DstIP = atk.DstIP
-				// Parse action/protocol from request_body if available
-				if log.RequestBody != "" {
-					parseXDropRequestBody(log.RequestBody, &item)
-				}
-			}
-
-			result = append(result, item)
-		}
-	}
-
-	return result, nil
-}
-
-func splitN(s, sep string, n int) []string {
-	result := make([]string, 0, n)
-	for i := 0; i < n-1; i++ {
-		idx := -1
-		for j := 0; j < len(s); j++ {
-			if string(s[j]) == sep {
-				idx = j
-				break
-			}
-		}
-		if idx < 0 {
-			break
-		}
-		result = append(result, s[:idx])
-		s = s[idx+1:]
-	}
-	result = append(result, s)
-	return result
-}
-
-// splitBGPRuleID splits "{prefix}|{route_map}" or legacy "{prefix}:{route_map}".
-// Uses "|" first (v1.1.1+); falls back to last ":" for backward compat with IPv4 records.
-func splitBGPRuleID(ruleID string) (prefix, routeMap string) {
-	if idx := strings.LastIndex(ruleID, "|"); idx >= 0 {
-		return ruleID[:idx], ruleID[idx+1:]
-	}
-	// Backward compat: old records used ":" separator.
-	// Use LastIndex to handle IPv6 like "2001:db8::1/128:RTBH".
-	if idx := strings.LastIndex(ruleID, ":"); idx >= 0 {
-		return ruleID[:idx], ruleID[idx+1:]
-	}
-	return ruleID, ""
-}
-
 func parseXDropRequestBody(body string, item *ActiveResponseAction) {
 	// Simple JSON field extraction without full unmarshal
 	var m map[string]any
@@ -520,7 +400,34 @@ func parseXDropRequestBody(body string, item *ActiveResponseAction) {
 	}
 	if v, ok := m["dst_ip"].(string); ok {
 		item.DstIP = v
+	} else if v, ok := m["dst_cidr"].(string); ok {
+		item.DstIP = v
 	}
+	item.SrcPort = xdropRequestInt(m["src_port"])
+	item.DstPort = xdropRequestInt(m["dst_port"])
+	item.RateLimit = xdropRequestInt(m["rate_limit"])
+}
+
+func xdropRequestInt(value any) int {
+	var text string
+	switch v := value.(type) {
+	case float64:
+		text = strconv.FormatFloat(v, 'f', -1, 64)
+	case string:
+		for _, digit := range v {
+			if digit < '0' || digit > '9' {
+				return 0
+			}
+		}
+		text = v
+	default:
+		return 0
+	}
+	result, err := strconv.Atoi(text)
+	if err != nil {
+		return 0
+	}
+	return result
 }
 
 func forceRemoveAction(deps Dependencies) gin.HandlerFunc {
@@ -544,6 +451,7 @@ func forceRemoveAction(deps Dependencies) gin.HandlerFunc {
 		// Execute the removal first, then write log with actual result
 		removeErr := deps.ActionEngine.ForceRemove(c, req.AttackID, req.ActionID, req.ConnectorID, req.ExternalRuleID)
 
+		warning := ""
 		overrideLog := &store.ActionExecutionLog{
 			AttackID:       req.AttackID,
 			ActionID:       req.ActionID,
@@ -562,8 +470,9 @@ func forceRemoveAction(deps Dependencies) gin.HandlerFunc {
 			overrideLog.ResponseBody = "force removed by user"
 		}
 		// v1.2 PR-2: write to indexed action_manual_overrides table for O(1)
-		// lookup. Only on success — failed force-remove doesn't suppress
-		// future auto execution. Idempotent via ON CONFLICT in repo.Create.
+		// lookup after success. BGP ForceRemove already persists overrides
+		// for every detached attachment before vtysh, even if withdrawal fails.
+		// Idempotent via ON CONFLICT in repo.Create.
 		if removeErr == nil {
 			override := &store.ActionManualOverride{
 				AttackID:       req.AttackID,
@@ -572,6 +481,8 @@ func forceRemoveAction(deps Dependencies) gin.HandlerFunc {
 				ExternalRuleID: req.ExternalRuleID,
 			}
 			if _, mErr := deps.Store.ManualOverrides().Create(c, override); mErr != nil {
+				metrics.StateWriteFailures.WithLabelValues("force_remove_override").Inc()
+				warning += "override not saved; periodic actions may recreate this rule. "
 				log.Printf("action: manual_override index insert failed (artifact removed but suppression not indexed): %v", mErr)
 			}
 			// v1.2 PR-4: the xDrop Mitigations tab now queries xdrop_active_rules
@@ -580,15 +491,21 @@ func forceRemoveAction(deps Dependencies) gin.HandlerFunc {
 			// for BGP artifacts (no matching row), so this call is safe to make
 			// unconditionally for any action type.
 			if mwErr := deps.Store.XDropActiveRules().MarkWithdrawn(c, req.AttackID, req.ActionID, req.ConnectorID, req.ExternalRuleID); mwErr != nil {
+				metrics.StateWriteFailures.WithLabelValues("force_remove_mark_withdrawn").Inc()
+				warning += "xDrop MarkWithdrawn not saved; rule may remain visible as active. "
 				log.Printf("action: force-remove xdrop_active_rules MarkWithdrawn failed: %v", mwErr)
 			}
 		}
 		if _, err := deps.Store.ActionExecLog().Create(c, overrideLog); err != nil {
+			if removeErr != nil {
+				errResponse(c, http.StatusInternalServerError, forceRemoveFailure(c, removeErr))
+				return
+			}
 			// External removal already executed — log write failed but artifact is gone
 			log.Printf("action: force-remove audit log write failed (artifact already removed externally): %v", err)
 			ok(c, gin.H{
 				"ok":      true,
-				"warning": "force remove succeeded but audit log write failed — artifact was removed externally",
+				"warning": warning + "force remove succeeded but audit log write failed — artifact was removed externally",
 			})
 			return
 		}
@@ -606,14 +523,18 @@ func forceRemoveAction(deps Dependencies) gin.HandlerFunc {
 			"force_remove", json.RawMessage(auditDiff))
 
 		if removeErr != nil {
-			errResponse(c, http.StatusInternalServerError, fmt.Sprintf("force remove failed: %v", removeErr))
+			errResponse(c, http.StatusInternalServerError, forceRemoveFailure(c, removeErr))
 			return
 		}
 
-		ok(c, gin.H{
+		result := gin.H{
 			"ok":      true,
 			"message": fmt.Sprintf("force removed %s (attack #%d)", req.ExternalRuleID, req.AttackID),
-		})
+		}
+		if warning != "" {
+			result["warning"] = warning
+		}
+		ok(c, result)
 	}
 }
 
@@ -631,6 +552,10 @@ func orphanForceWithdraw(deps Dependencies) gin.HandlerFunc {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
+		if deps.ActionEngine != nil {
+			unlock := deps.ActionEngine.LockAnnouncement(req.AnnouncementID)
+			defer unlock()
+		}
 		ann, err := deps.Store.BGPAnnouncements().Get(c, req.AnnouncementID)
 		if err != nil || ann == nil {
 			errResponse(c, http.StatusNotFound, "announcement not found")
@@ -643,18 +568,22 @@ func orphanForceWithdraw(deps Dependencies) gin.HandlerFunc {
 		// Look up connector for vtysh command.
 		conn, cErr := deps.Store.BGPConnectors().Get(c, ann.ConnectorID)
 		if cErr != nil {
-			errResponse(c, http.StatusInternalServerError, fmt.Sprintf("lookup connector: %v", cErr))
+			dbError(c, "lookup connector: ", cErr)
 			return
 		}
 		// Force withdraw transitions the announcement to withdrawing; no
 		// refcount dance (there are no attached attacks for orphan).
-		if err := deps.Store.BGPAnnouncements().ForceWithdraw(c, ann.ID); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+		_, gen, err := deps.Store.BGPAnnouncements().ForceWithdraw(c, ann.ID)
+		if err != nil {
+			dbError(c, "", err)
 			return
 		}
 		// Cancel any delay timer (shouldn't be armed for orphan, but idempotent).
 		if deps.ActionEngine != nil {
-			deps.ActionEngine.CancelAnnouncementDelay(ann.ID, "orphan force withdraw")
+			if gen != ann.Gen {
+				deps.ActionEngine.NoteAnnouncementTakeover(ann.ID)
+			}
+			deps.ActionEngine.CancelAnnouncementDelay(ann.ID, gen, "orphan force withdraw")
 		}
 		// Run vtysh no network directly via action.performBGPWithdraw by
 		// constructing a synthetic ResponseAction (no real action row exists).
@@ -662,7 +591,7 @@ func orphanForceWithdraw(deps Dependencies) gin.HandlerFunc {
 		synthAct := store.ResponseAction{ID: 0, ActionType: "bgp", BGPRouteMap: ann.RouteMap}
 		connID := ann.ConnectorID
 		synthAct.BGPConnectorID = &connID
-		_, wErr := action.PerformBGPWithdrawForOrphan(c, deps.Store, conn, synthAct, ann.Prefix, ann.RouteMap, ann.ID)
+		_, wErr := action.PerformBGPWithdrawForOrphan(c, deps.Store, conn, synthAct, ann.Prefix, ann.RouteMap, ann.ID, gen)
 		if wErr != nil {
 			log.Printf("api: orphan force withdraw announcement_id=%d vtysh failed: %v", ann.ID, wErr)
 			ok(c, gin.H{"ok": true, "warning": fmt.Sprintf("vtysh error: %v (row marked failed)", wErr)})
@@ -695,7 +624,7 @@ func listDismissedOrphans(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		anns, err := deps.Store.BGPAnnouncements().ListDismissed(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		connCache := map[int]string{}
@@ -745,7 +674,7 @@ func orphanUndismiss(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		if err := deps.Store.BGPAnnouncements().Undismiss(c, ann.ID); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		diff, _ := json.Marshal(map[string]any{"announcement_id": ann.ID, "prefix": ann.Prefix, "route_map": ann.RouteMap})
@@ -777,7 +706,7 @@ func orphanDismiss(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		if err := deps.Store.BGPAnnouncements().Dismiss(c, ann.ID); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		diff, _ := json.Marshal(map[string]any{"announcement_id": ann.ID, "prefix": ann.Prefix, "route_map": ann.RouteMap})
@@ -799,7 +728,7 @@ func getArtifactTimeline(deps Dependencies) gin.HandlerFunc {
 
 		logs, err := deps.Store.ActionExecLog().ListByAttack(c, attackID)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 
@@ -833,3 +762,8 @@ func getArtifactTimeline(deps Dependencies) gin.HandlerFunc {
 	}
 }
 
+// forceRemoveFailure hides both database and upstream error details from HTTP.
+func forceRemoveFailure(c *gin.Context, removeErr error) string {
+	log.Printf("ERROR api: %s %s: force remove failed: %v", c.Request.Method, c.FullPath(), removeErr)
+	return "force remove failed"
+}

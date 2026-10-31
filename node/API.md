@@ -11,7 +11,7 @@ The Node does **not** expose a REST API. It is a gRPC **client** that connects t
 | `Handshake` | Unary | Node -> Controller | Initial authentication and config exchange |
 | `StatsStream` | Client streaming | Node -> Controller | Periodic aggregated traffic statistics |
 | `SampleStream` | Client streaming | Node -> Controller | Packet header samples from BPF ring buffer |
-| `CriticalEventStream` | Client streaming | Node -> Controller | Urgent event notifications |
+| `CriticalEventStream` | Client streaming | Node -> Controller | Reserved; the current Node does not open it (see §4) |
 | `ControlStream` | Bidirectional streaming | Node <-> Controller | Config push / ACK channel |
 
 ---
@@ -27,7 +27,7 @@ First call after TCP connection. The Node authenticates and reports its identity
 | `node_id` | string | Unique node identifier (from config.yaml) |
 | `api_key` | string | Authentication key (from config.yaml `auth.node_api_key`) |
 | `interfaces` | string[] | List of interface names being monitored |
-| `agent_version` | string | Node binary version string |
+| `agent_version` | string | Mode-specific constant: `0.7.0` for XDP, `3.0.0` for Flow; not a release version, and unused by the controller |
 | `delivery_version_applied` | uint64 | Last applied config version from local snapshot (0 = none) |
 | `mode` | string | `"xdp"` or `"flow"` |
 
@@ -40,13 +40,15 @@ First call after TCP connection. The Node authenticates and reports its identity
 | `watch_config` | WatchConfig | Initial configuration to apply |
 | `delivery_version_current` | uint64 | Current config version on the Controller |
 
-If `delivery_version_applied` matches `delivery_version_current`, the Controller may return an empty `watch_config` (no update needed).
+On acceptance the Controller always returns the full current `watch_config`, whatever `delivery_version_applied` says. The global prefixes (the IPv4 and IPv6 default routes) are never sent to Nodes. If the node's `delivery_version_current` on the Controller is still 0, it is first raised to the highest version among all nodes.
+
+Reject reasons (`accepted=false`): `node not found` (the `node_id` is not registered), `invalid api_key` (the key differs from the one registered for this node), `node disabled`, `invalid mode: ...`, `internal error: ...`.
 
 ---
 
 ## 2. StatsStream (Client Streaming)
 
-The Node sends a `StatsReport` message every 1 second. The Controller uses this data for DDoS detection (baseline comparison, threshold evaluation, anomaly detection).
+The Node sends a `StatsReport` message nominally every 1 second; a report covering a longer collection tick carries per-second averages. In flow mode, while connected, if nothing has been sent for at least 1 s and no report is waiting, the Node sends a heartbeat `StatsReport` with only identity, `health` and `sampling_metrics` (no `global_stats`, no IP or prefix entries); none are sent while disconnected. The Controller uses this data for DDoS detection (baseline comparison, threshold evaluation, anomaly detection).
 
 **Message: `StatsReport`**
 
@@ -54,8 +56,8 @@ The Node sends a `StatsReport` message every 1 second. The Controller uses this 
 |-------|------|-------------|
 | `node_id` | string | Node identifier |
 | `interface_name` | string | Source interface name |
-| `upstream_sample_rate` | uint32 | Upstream device sample rate (1 = no sampling) |
-| `local_sample_rate` | uint32 | BPF-level sample rate applied by the Node |
+| `upstream_sample_rate` | uint32 | Upstream rate effective when this tick was collected (1 = no sampling) |
+| `local_sample_rate` | uint32 | BPF-level sample rate the Node last wrote to the BPF map successfully (normally the rate in effect; if the startup reset to 1 fails on a reused BPF map, it can differ from the rate in effect) |
 | `timestamp` | int64 | Unix epoch seconds |
 | `ip_stats` | IPStats[] | Per-destination-IP inbound statistics |
 | `prefix_stats` | PrefixStatsMsg[] | Per-prefix inbound aggregated statistics |
@@ -77,7 +79,7 @@ The stream returns `google.protobuf.Empty` on close.
 
 ## 3. SampleStream (Client Streaming)
 
-The Node sends `SampleBatch` messages containing raw packet header samples read from the BPF perf ring buffer. Used by the Controller for flow fingerprinting and deep inspection. XDP mode only.
+The Node sends `SampleBatch` messages containing raw packet header samples read from the BPF ring buffer. Used by the Controller for flow fingerprinting and deep inspection. XDP mode only.
 
 **Message: `SampleBatch`**
 
@@ -85,7 +87,7 @@ The Node sends `SampleBatch` messages containing raw packet header samples read 
 |-------|------|-------------|
 | `node_id` | string | Node identifier |
 | `interface_name` | string | Source interface name |
-| `upstream_sample_rate` | uint32 | Upstream device sample rate |
+| `upstream_sample_rate` | uint32 | Upstream rate from the latest processed Stats collection tick; startup rate before the first Stats report |
 | `local_sample_rate` | uint32 | BPF-level sample rate |
 | `timestamp` | int64 | Unix epoch seconds |
 | `samples` | PacketSample[] | Array of sampled packet headers |
@@ -96,7 +98,7 @@ The stream returns `google.protobuf.Empty` on close.
 
 ## 4. CriticalEventStream (Client Streaming)
 
-Low-latency path for urgent events. The Node sends a `CriticalEvent` when it detects conditions that require immediate Controller attention (e.g., BPF map reaching capacity, interface going down, hard threshold exceeded at the node level).
+Reserved in the protocol for urgent events; **not in use**. The current Node never opens this stream and never builds a `CriticalEvent`. A Controller that receives one only writes it to its log. The message is listed for completeness.
 
 **Message: `CriticalEvent`**
 
@@ -231,7 +233,7 @@ Ring buffer and sampling health reported in `StatsReport.sampling_metrics`.
 | `dropped_user` | uint64 | Userspace-side drops |
 | `decode_error` | uint64 | Packet decode errors |
 | `batch_send_latency_ms` | float | P50 latency of batch gRPC sends |
-| `effective_sample_rate` | float | Actual sample rate after adaptive adjustment |
+| `effective_sample_rate` | float | Sample rate after adaptive adjustment, as last written to the BPF map successfully (same startup exception as `local_sample_rate`) |
 
 ### WatchConfig
 
@@ -240,7 +242,7 @@ Configuration pushed from Controller to Node (via Handshake response or ControlS
 | Field | Type | Description |
 |-------|------|-------------|
 | `prefixes` | WatchPrefix[] | List of IP prefixes to monitor |
-| `hard_thresholds` | HardThresholds | Per-IP hard thresholds for CriticalEvent |
+| `hard_thresholds` | HardThresholds | Per-IP hard thresholds (stored by the Node, currently unused) |
 | `flow_listeners` | FlowListenerConfig[] | Flow listener config (flow mode only, ignored by XDP nodes) |
 
 ### WatchPrefix
@@ -255,7 +257,7 @@ A single IP prefix in the watch list.
 
 ### HardThresholds
 
-Per-IP hard thresholds. When exceeded, the Node sends a CriticalEvent.
+The Controller sends the lowest value among all enabled `over` rules with domain `internal_ip`, separately for `pps` and `bps` (1,000,000 pps / 10,000,000,000 bps when there is none). The current Node only keeps them in its local snapshot and does not act on them.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -315,14 +317,26 @@ Node starts
   -> Dial Controller gRPC (with reconnect backoff)
   -> Handshake (send node_id, api_key, delivery_version_applied)
   -> If accepted:
-       -> Apply WatchConfig from HandshakeResponse (if newer)
+       -> Apply WatchConfig from HandshakeResponse (when nonempty)
        -> Open StatsStream (sends every 1s)
        -> Open SampleStream (XDP mode, sends batches)
-       -> Open CriticalEventStream (sends on events)
+       -> (CriticalEventStream is reserved and not opened)
        -> Open ControlStream (receives ConfigPush, sends ConfigAck)
   -> On disconnect: backoff + reconnect + re-Handshake
 ```
+After a connection attempt lasts at least 30 seconds, the reconnect backoff resets to 1 second.
 
 ## Authentication
 
-The Node includes `api_key` in the `Handshake` message. The Controller validates this key against its registered node list. There is no per-message authentication on the streaming RPCs -- the Controller trusts the TCP connection after a successful Handshake.
+The Node sends `api_key` in the `Handshake` message. The Controller looks up `node_id` among the registered nodes and compares the key with the `api_key` registered for that node (`POST /api/nodes`). This is not the Controller's REST `auth.api_key`. A node must therefore be registered on the Controller before it can connect.
+
+The streaming RPCs carry no credentials of their own:
+
+- `StatsStream`, `SampleStream` and `CriticalEventStream` check each message's self-reported `node_id`: it is accepted if that node has completed a Handshake with this Controller process at any time since the process started. The check is not tied to the TCP connection, and the entry is not removed when the node disconnects or is later disabled. Otherwise the stream fails with `Unauthenticated` `handshake required`.
+- `ControlStream` is mapped to a node by the remote address recorded at Handshake time. A stream from an unknown address is accepted but receives no config pushes.
+
+### Security Considerations
+
+- **Plaintext transport.** The Node dials with insecure credentials and the Controller's gRPC server has no TLS. `api_key`, statistics and samples cross the network unencrypted, and the key is compared as a plain string.
+- **Identity is self-reported.** After any successful Handshake for a `node_id`, any client that can reach the gRPC port can send statistics or samples under that `node_id`.
+- **Deploy only on a trusted network.** Run the Controller-Node link inside a trusted management network or an encrypted tunnel (for example WireGuard or IPsec), and restrict the gRPC port (default 50051) to the Nodes' addresses with a firewall. Do not expose it to the Internet.

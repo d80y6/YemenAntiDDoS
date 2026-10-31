@@ -225,7 +225,7 @@ func TestBGPDelaySchedule_MultipleAnnouncementsNeverCollide(t *testing.T) {
 	scheduledFor := time.Now().Add(5 * time.Minute)
 
 	for _, annID := range announcementIDs {
-		id, _, err := eng.ScheduleDelayForAnnouncement(ctx, annID, scheduledFor)
+		id, _, err := eng.ScheduleDelayForAnnouncement(ctx, annID, 0, scheduledFor)
 		if err != nil {
 			t.Fatalf("ScheduleDelayForAnnouncement(ann=%d): %v", annID, err)
 		}
@@ -285,7 +285,7 @@ func TestBGPRecovery_CancelViaAnnouncementKey(t *testing.T) {
 
 	// Cancel via announcement key — this is the re-breach path.
 	time.Sleep(30 * time.Millisecond)
-	eng.CancelAnnouncementDelay(annID, "rebreach")
+	eng.CancelAnnouncementDelay(annID, 0, "rebreach")
 
 	// Wait past the original schedule time.
 	time.Sleep(700 * time.Millisecond)
@@ -333,14 +333,14 @@ func TestBGPSchedule_RescheduleDoesNotOrphanNewTimer(t *testing.T) {
 	annID := 444
 
 	// Timer A — short delay so the worker wakes on cancel quickly.
-	_, cancelCtxA, err := eng.ScheduleDelayForAnnouncement(ctx, annID, time.Now().Add(2*time.Second))
+	_, cancelCtxA, err := eng.ScheduleDelayForAnnouncement(ctx, annID, 0, time.Now().Add(2*time.Second))
 	if err != nil {
 		t.Fatalf("schedule A: %v", err)
 	}
 	_ = cancelCtxA
 
 	// Timer B — reschedule same announcement with a long delay.
-	_, _, err = eng.ScheduleDelayForAnnouncement(ctx, annID, time.Now().Add(2*time.Second))
+	_, _, err = eng.ScheduleDelayForAnnouncement(ctx, annID, 0, time.Now().Add(2*time.Second))
 	if err != nil {
 		t.Fatalf("schedule B: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestBGPSchedule_RescheduleDoesNotOrphanNewTimer(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Now cancel via the announcement key — timer B must be found and cancelled.
-	eng.CancelAnnouncementDelay(annID, "rebreach-test")
+	eng.CancelAnnouncementDelay(annID, 0, "rebreach-test")
 
 	// Verify: the pending row for this announcement should be cancelled.
 	pending, _ := ms.ScheduledActions().ListPending(ctx)

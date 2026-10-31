@@ -7,7 +7,6 @@
 //
 // When workers=1, the pipeline is bypassed: reader directly parses and aggregates
 // in a single goroutine (identical to the original single-threaded path).
-//
 package sampler
 
 import (
@@ -26,6 +25,7 @@ type WorkerPool struct {
 	workers   int
 	flowTable *FlowTable
 	batcher   *Batcher
+	erspan    bool // fixed at construction for the lifetime of queued samples
 
 	// metrics
 	DispatchDropped atomic.Uint64
@@ -33,7 +33,7 @@ type WorkerPool struct {
 }
 
 // NewWorkerPool creates a worker pool with the given number of parse workers.
-func NewWorkerPool(workers int, ft *FlowTable, bat *Batcher) *WorkerPool {
+func NewWorkerPool(workers int, ft *FlowTable, bat *Batcher, erspan bool) *WorkerPool {
 	if workers < 1 {
 		workers = 1
 	}
@@ -44,6 +44,7 @@ func NewWorkerPool(workers int, ft *FlowTable, bat *Batcher) *WorkerPool {
 		workers:   workers,
 		flowTable: ft,
 		batcher:   bat,
+		erspan:    erspan,
 	}
 }
 
@@ -65,7 +66,7 @@ func (wp *WorkerPool) Workers() int { return wp.workers }
 func (wp *WorkerPool) runDirect(s *Sampler) {
 	parser := NewPacketParser()
 	s.Run(func(sample Sample) {
-		ps := parser.Parse(sample.Data, sample.PktLen)
+		ps := parser.ParseMode(sample.Data, sample.PktLen, wp.erspan)
 		if ps.SrcIP == nil && ps.DstIP == nil {
 			wp.batcher.Metrics.DecodeErrors.Add(1)
 			return
@@ -141,7 +142,7 @@ func (wp *WorkerPool) runParallel(s *Sampler) {
 func (wp *WorkerPool) workerLoop(id int, rawCh <-chan Sample, parsedCh chan<- PacketSample) {
 	parser := NewPacketParser()
 	for sample := range rawCh {
-		ps := parser.Parse(sample.Data, sample.PktLen)
+		ps := parser.ParseMode(sample.Data, sample.PktLen, wp.erspan)
 		if ps.SrcIP == nil && ps.DstIP == nil {
 			wp.batcher.Metrics.DecodeErrors.Add(1)
 			continue

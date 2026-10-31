@@ -48,6 +48,30 @@ import (
 // Layer A — inline counters
 // ─────────────────────────────────────────────────────────────────────────────
 
+// StateWriteFailures counts exhausted state writes by their bounded operation.
+var StateWriteFailures = prometheus.NewCounterVec(
+	prometheus.CounterOpts{Name: "xsight_state_write_failures_total", Help: "Failed state writes by operation."}, []string{"op"},
+)
+
+var BGPStaleWrites = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "xsight_bgp_stale_writes_total", Help: "BGP state writes not applied."}, []string{"op"})
+
+var BGPWithdrawingReconcile = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "xsight_bgp_withdrawing_reconcile_total", Help: "Runtime BGP withdrawing reconciliation outcomes; claimed does not imply terminal success."}, []string{"outcome"})
+
+var BGPAnnouncingReconcile = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "xsight_bgp_announcing_reconcile_total", Help: "Runtime BGP announcing label reconciliation outcomes."}, []string{"outcome"})
+
+var ConfigPublishFailures = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "xsight_config_publish_failures_total", Help: "Config changes saved but publishAfterChange got an error: threshold tree rebuild, or node publish (build config / list nodes) failed."}, []string{"stage"})
+
+var StartupCleanup = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "xsight_startup_cleanup_total", Help: "Startup cleanup outcomes."}, []string{"kind", "outcome"})
+
+var XDropReconcile = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "xsight_xdrop_reconcile_total", Help: "Automatic xDrop withdrawal and reconciliation outcomes."}, []string{"outcome"})
+
+var EndedSweep = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "xsight_ended_sweep_total", Help: "Ended attack sweep outcomes."}, []string{"kind", "outcome"})
+
+var GRPCIdentityRejects = prometheus.NewCounterVec(
+	prometheus.CounterOpts{Name: "xsight_grpc_identity_rejects_total", Help: "Reports rejected for missing handshake."}, []string{"stream"},
+)
+var RingEstimatedMemoryBytes = prometheus.NewGauge(prometheus.GaugeOpts{Name: "xsight_ring_estimated_memory_bytes", Help: "Estimated memory for both ring directions."})
+
 // VtyshOps counts outcomes of vtysh commands xSight issues for BGP state
 // changes. Incremented by bgp.go at each performBGPAnnounce / performBGPWithdraw
 // / retry / recovery call site.
@@ -55,9 +79,9 @@ import (
 // Labels:
 //   - operation: "announce" | "withdraw"
 //   - result:    "success" | "failed" | "idempotent"
-//                ("idempotent" = vtysh returned a "route-absent" error on
-//                 withdraw that xSight treats as success; tracked separately
-//                 so operators can see how often FRR drift is absorbed).
+//     ("idempotent" = vtysh returned a "route-absent" error on
+//     withdraw that xSight treats as success; tracked separately
+//     so operators can see how often FRR drift is absorbed).
 var VtyshOps = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "xsight_vtysh_ops_total",
@@ -69,11 +93,12 @@ var VtyshOps = prometheus.NewCounterVec(
 // ActionExecutions counts action engine dispatch outcomes.
 //
 // Labels:
-//   - action_type: "bgp" | "xdrop" | "webhook" | "shell"
+//   - action_type: "bgp" | "xdrop" | "webhook" | "shell" | "xdrop_api" | "manual_override"
+//     or other unknown action_type values on the skip path
 //   - status:      "success" | "failed" | "timeout" | "skipped" | "scheduled"
-//                  "scheduled" = action was queued for delayed execution
-//                  (not yet run). "success" is fired when the delayed action
-//                  completes. Operator can rate-monitor any dimension.
+//     "scheduled" = action was queued for delayed execution
+//     (not yet run). "success" is fired when the delayed action
+//     completes. Operator can rate-monitor any dimension.
 var ActionExecutions = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "xsight_action_executions_total",
@@ -90,13 +115,31 @@ var ActionExecutions = prometheus.NewCounterVec(
 // Labels:
 //   - skip_reason: one of SkipReason* enum values in action.engine.go
 //
-// Cardinality: bounded by the enum (currently 6 values), no explosion.
+// Values: precondition_not_matched, first_match_suppressed, mode_observe,
+// manual_override, already_executed, decoder_not_xdrop_compatible,
+// xdrop_anomaly_requires_drop (historical), global_no_target, deprecated_xdrop_api,
+// unknown_action_type, no_connector, connector_disabled, unknown_trigger_phase,
+// stale_generation, incomplete_config, connector_lookup_failed, no_rules_to_unblock,
+// outbound_block_forbidden.
+// Cardinality: bounded by the enum (currently 18 values).
 var ActionSkip = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "xsight_action_skip_total",
 		Help: "Total actions skipped by dispatch gate, broken down by skip_reason.",
 	},
 	[]string{"skip_reason"},
+)
+
+// PreconditionLookupErrors counts structured lookup errors that fall back to legacy fields.
+var PreconditionLookupErrors = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "xsight_action_precondition_lookup_errors_total",
+	Help: "Structured precondition lookup errors; evaluation falls back to the legacy preconditions field.",
+})
+
+// ActionQueueEvents exposes producer backpressure and bounded drain failures.
+var ActionQueueEvents = prometheus.NewCounterVec(
+	prometheus.CounterOpts{Name: "xsight_action_queue_total", Help: "Action queue backpressure and drain timeouts."},
+	[]string{"outcome"}, // full | drain_timeout
 )
 
 // ScheduledActionsRecovered counts outcomes of the startup reconciliation
@@ -130,8 +173,8 @@ func RecordAction(actionType, status string) {
 }
 
 // RecordSkip increments xsight_action_skip_total for the given skip_reason.
-// Called from writeSkipLog in the action package so every logged skip
-// simultaneously bumps both the log row and the counter.
+// Called from writeSkipLog and recordSkip in the action package once per
+// skipped log attempt, including attempts where Create fails.
 func RecordSkip(skipReason string) {
 	ActionSkip.WithLabelValues(skipReason).Inc()
 }
@@ -266,11 +309,81 @@ func (c *trackerCollector) Collect(ch chan<- prometheus.Metric) {
 // The Go runtime collector is already auto-registered in the default
 // registry, so callers using promhttp.Handler() get it for free.
 func Register(reg prometheus.Registerer, s store.Store, t *tracker.Tracker) error {
+	for _, stage := range []string{"rebuild", "publish"} {
+		ConfigPublishFailures.WithLabelValues(stage)
+	}
+	if err := reg.Register(ConfigPublishFailures); err != nil {
+		return err
+	}
+	for _, outcome := range []string{"claimed", "claim_lost", "claim_error", "list_error", "busy", "failed_claimed", "failed_busy", "failed_claim_lost", "failed_claim_error", "failed_list_error"} {
+		BGPWithdrawingReconcile.WithLabelValues(outcome)
+	}
+	if err := reg.Register(BGPWithdrawingReconcile); err != nil {
+		return err
+	}
+	for _, outcome := range []string{"list_error", "lookup_error", "skipped_disabled", "probe_error", "absent", "config_only", "announced", "stale", "state_write_error"} {
+		BGPAnnouncingReconcile.WithLabelValues(outcome)
+	}
+	if err := reg.Register(BGPAnnouncingReconcile); err != nil {
+		return err
+	}
+	for _, op := range []string{"announced", "withdrawn", "failed_announce", "failed_withdraw", "schedule"} {
+		BGPStaleWrites.WithLabelValues(op)
+	}
+	if err := reg.Register(BGPStaleWrites); err != nil {
+		return err
+	}
+	for kind, outcomes := range map[string][]string{
+		"bgp":   {"dispatched", "detached_kept", "skipped_status", "skipped_connector", "failed"},
+		"xdrop": {"dispatched", "skipped_connector", "skipped_override", "skipped_scheduled", "skipped_claimed", "failed"},
+	} {
+		for _, outcome := range outcomes {
+			EndedSweep.WithLabelValues(kind, outcome)
+		}
+	}
+	if err := reg.Register(EndedSweep); err != nil {
+		return err
+	}
+	for _, collector := range []prometheus.Collector{GRPCIdentityRejects, RingEstimatedMemoryBytes} {
+		if err := reg.Register(collector); err != nil {
+			return err
+		}
+	}
+	for _, outcome := range []string{"candidate", "busy", "backoff", "skipped_live", "skipped_scheduled", "skipped_connector", "skipped_override", "skipped_synthetic", "list_error", "claimed", "withdrawn", "failed", "state_write_error", "synthetic_unrecoverable", "synthetic_identity_not_found", "late_create_leak"} {
+		XDropReconcile.WithLabelValues(outcome)
+	}
+	if err := reg.Register(XDropReconcile); err != nil {
+		return err
+	}
+	t.StateWriteFailure = func(op string) { StateWriteFailures.WithLabelValues(op).Inc() }
+	for _, op := range []string{"attack_create", "attack_update_expired", "attack_update_evicted", "bgp_ann_state", "sched_mark_executing", "force_remove_override", "force_remove_mark_withdrawn", "xdrop_mark_withdrawn", "xdrop_mark_failed", "xdrop_schedule_finish", "xdrop_exec_log", "xdrop_claim"} {
+		StateWriteFailures.WithLabelValues(op)
+	}
+	if err := reg.Register(StateWriteFailures); err != nil {
+		return err
+	}
 	// Inline counters
+	for kind, outcomes := range map[string][]string{
+		"bgp":   {"dispatched", "detached_kept", "recounted_up", "skipped_inconsistent", "skipped_scheduled", "skipped_connector", "failed"},
+		"xdrop": {"dispatched", "skipped_scheduled", "skipped_claimed", "failed"},
+	} {
+		for _, outcome := range outcomes {
+			StartupCleanup.WithLabelValues(kind, outcome)
+		}
+	}
+	if err := reg.Register(StartupCleanup); err != nil {
+		return err
+	}
+	if err := reg.Register(ActionQueueEvents); err != nil {
+		return err
+	}
 	if err := reg.Register(VtyshOps); err != nil {
 		return err
 	}
 	if err := reg.Register(ActionExecutions); err != nil {
+		return err
+	}
+	if err := reg.Register(PreconditionLookupErrors); err != nil {
 		return err
 	}
 	if err := reg.Register(ActionSkip); err != nil {

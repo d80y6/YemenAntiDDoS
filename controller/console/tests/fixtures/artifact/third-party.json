@@ -1,0 +1,10 @@
+[
+  {
+    "group": "browser",
+    "name": "vue",
+    "version": "3.5.44",
+    "license": "MIT",
+    "licenseText": "Permission is hereby granted, free of charge, to any person obtaining a copy of this software.",
+    "note": "https://evil.invalid/metadata"
+  }
+]

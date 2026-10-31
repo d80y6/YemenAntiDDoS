@@ -85,7 +85,7 @@ type flowStore struct {
 }
 
 func (s *flowStore) FlowListeners() store.FlowListenerRepo { return s.listeners }
-func (s *flowStore) FlowSources() store.FlowSourceRepo    { return s.sources }
+func (s *flowStore) FlowSources() store.FlowSourceRepo     { return s.sources }
 
 func newFlowStore(listener *store.FlowListener, source *store.FlowSource) *flowStore {
 	ms := &MockStore{}

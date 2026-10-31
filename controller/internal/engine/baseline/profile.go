@@ -36,9 +36,6 @@ func SlotLabel(slot int) string {
 	return fmt.Sprintf("%s %02d:00 UTC", days[day], hour)
 }
 
-// profileKey builds "nodeID:prefix" key.
-func profileKey(nodeID, prefix string) string { return nodeID + ":" + prefix }
-
 // ProfileStatus is returned by the status API for one prefix.
 type ProfileStatus struct {
 	Prefix      string `json:"prefix"`
@@ -194,8 +191,8 @@ func (e *ProfileEngine) UpdateHourly() {
 	yearWeek := isoYear*100 + isoWeek
 
 	// Query P95 from ts_stats for the closed hour that just ended
-	hourEnd := now.Truncate(time.Hour)        // e.g. 14:00 UTC
-	hourStart := hourEnd.Add(-time.Hour)      // e.g. 13:00 UTC
+	hourEnd := now.Truncate(time.Hour)   // e.g. 14:00 UTC
+	hourStart := hourEnd.Add(-time.Hour) // e.g. 13:00 UTC
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

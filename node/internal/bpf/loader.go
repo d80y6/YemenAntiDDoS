@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -53,8 +54,8 @@ func readBPFHash(iface string) string {
 
 // writeBPFHash stamps the current BPF hash for this iface. Called after a
 // successful Load so subsequent restarts can compare. Creates the state
-// dir if missing. Failure is logged but non-fatal — the hash check just
-// degrades to "always rebuild never triggers", same behavior as pre-v1.3.4.
+// dir if missing. Failure is logged but non-fatal; the next Load rebuilds
+// if its stamp is empty, unreadable, or different from the embedded ELF hash.
 func writeBPFHash(iface, hash string) {
 	if err := os.MkdirAll(bpfHashStateDir, 0700); err != nil {
 		log.Printf("warning: mkdir %s: %v", bpfHashStateDir, err)
@@ -95,6 +96,7 @@ type XDPAttachment struct {
 
 // Manager holds the loaded BPF collection and all XDP attachments.
 type Manager struct {
+	swapMu           sync.Mutex // Serializes HotSwap migration and idle deletion.
 	Objs             *xsightObjects
 	Attachments      []XDPAttachment
 	PinPath          string // per-interface pin directory (empty = no pin)
@@ -143,7 +145,7 @@ func Load(ifaceName string, maxEntries uint32) (*Manager, error) {
 	// effect on restart (previously required manual rm -rf + xdp off).
 	newHash := currentBPFHash()
 	pinnedHash := readBPFHash(ifaceName)
-	hashMismatch := pinnedHash != "" && pinnedHash != newHash
+	hashMismatch := pinnedHash != newHash
 	if hashMismatch {
 		log.Printf("BPF ELF hash changed (old=%s… new=%s…), forcing clean rebuild on %s",
 			shortHash(pinnedHash), shortHash(newHash), ifaceName)
@@ -360,7 +362,7 @@ func (m *Manager) Unload() {
 func (m *Manager) PopulateTrie(prefixes []PrefixEntry) error {
 	for _, p := range prefixes {
 		key := p.LPMKey()
-		val := p.Prefixlen
+		val := key.Prefixlen
 
 		if err := m.Objs.WatchTrieA.Update(&key, &val, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("update watch_trie_a for %s: %w", p.String(), err)
@@ -531,6 +533,8 @@ func (m *Manager) SetSampleRate(rate uint32) error {
 
 // HotSwap performs a double-buffer swap of watch_prefix configuration.
 func (m *Manager) HotSwap(prefixes []PrefixEntry) error {
+	m.swapMu.Lock()
+	defer m.swapMu.Unlock()
 	slot, err := m.ReadActiveSlot()
 	if err != nil {
 		return fmt.Errorf("hotswap: read slot: %w", err)
@@ -571,7 +575,7 @@ func (m *Manager) HotSwap(prefixes []PrefixEntry) error {
 
 	for _, p := range prefixes {
 		key := p.LPMKey()
-		val := p.Prefixlen
+		val := key.Prefixlen
 		if err := shadowTrie.Update(&key, &val, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("hotswap: write shadow trie %s: %w", p.String(), err)
 		}
@@ -642,6 +646,45 @@ func (m *Manager) HotSwap(prefixes []PrefixEntry) error {
 	log.Printf("hotswap: slot %d→%d, %d prefixes, %d ip_stats migrated, %d src_stats migrated",
 		slot, newSlot, len(prefixes), migrated, srcMigrated)
 	return nil
+}
+
+// DeleteIdleStats rechecks the slot and every counter before deleting idle keys.
+func (m *Manager) DeleteIdleStats(src bool, slot uint32, keys []LPMKey, seen map[LPMKey]DstIPStats) (deleted []LPMKey, skipped bool, err error) {
+	if !m.swapMu.TryLock() {
+		return nil, true, nil
+	}
+	defer m.swapMu.Unlock()
+	active, err := m.ReadActiveSlot()
+	if err != nil {
+		return nil, false, err
+	}
+	if active != slot {
+		return nil, true, nil
+	}
+	maps := [2]*ebpf.Map{m.Objs.IpStatsA, m.Objs.IpStatsB}
+	if src {
+		maps = [2]*ebpf.Map{m.Objs.SrcStatsA, m.Objs.SrcStatsB}
+	}
+	for _, k := range keys {
+		var cur DstIPStats
+		if err := maps[slot].Lookup(&k, &cur); err != nil {
+			if errors.Is(err, ebpf.ErrKeyNotExist) {
+				continue
+			}
+			return deleted, false, err
+		}
+		if observed, ok := seen[k]; !ok || cur != observed {
+			continue
+		}
+		if err := maps[slot].Delete(&k); err != nil {
+			if errors.Is(err, ebpf.ErrKeyNotExist) {
+				continue
+			}
+			return deleted, false, err
+		}
+		deleted = append(deleted, k)
+	}
+	return deleted, false, nil
 }
 
 // clearIPStatsMap clears an ip_stats hash map using batch delete (kernel 5.6+).

@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
+
+var errValidationLookup = errors.New("validation lookup failed")
 
 // GlobalPrefix is the virtual prefix used for global threshold detection.
 const GlobalPrefix = "0.0.0.0/0"
@@ -22,7 +25,7 @@ func responseHasXDropOrBGP(ctx context.Context, s store.Store, responseID int) (
 		return false, err
 	}
 	for _, a := range actions {
-		if a.ActionType == "xdrop" || a.ActionType == "bgp" {
+		if a.ActionType == store.ActionTypeXDrop || a.ActionType == store.ActionTypeBGP {
 			return true, nil
 		}
 	}
@@ -82,6 +85,20 @@ func isResponseReferencedByGlobalPrefix(ctx context.Context, s store.Store, resp
 	return false, nil
 }
 
+// isResponseReferencedBySendsRule includes disabled and unbound template rules.
+func isResponseReferencedBySendsRule(ctx context.Context, s store.Store, responseID int) (bool, error) {
+	thresholds, err := s.Thresholds().List(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, th := range thresholds {
+		if th.Direction == "sends" && th.ResponseID != nil && *th.ResponseID == responseID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // prefixForThresholdRule returns the CIDR of the prefix associated with a threshold rule.
 // Works for both direct prefix rules (prefix_id) and template rules (template_id → prefix binding).
 func prefixForThresholdRule(ctx context.Context, s store.Store, th *store.Threshold) (string, error) {
@@ -120,7 +137,7 @@ func validateGlobalPrefixConstraints(ctx context.Context, s store.Store, th *sto
 	// Check if this rule is under a global prefix
 	pfx, err := prefixForThresholdRule(ctx, s, th)
 	if err != nil {
-		return fmt.Errorf("validation lookup failed: %w", err)
+		return fmt.Errorf("%w: %w", errValidationLookup, err)
 	}
 	if isGlobalPrefix(pfx) {
 		if th.Domain == "internal_ip" {
@@ -129,7 +146,7 @@ func validateGlobalPrefixConstraints(ctx context.Context, s store.Store, th *sto
 		if th.ResponseID != nil {
 			hasXDrop, err := responseHasXDropOrBGP(ctx, s, *th.ResponseID)
 			if err != nil {
-				return fmt.Errorf("validation lookup failed: %w", err)
+				return fmt.Errorf("%w: %w", errValidationLookup, err)
 			}
 			if hasXDrop {
 				return fmt.Errorf("global prefix (0.0.0.0/0) rules cannot use responses containing xDrop/BGP actions")
@@ -141,7 +158,7 @@ func validateGlobalPrefixConstraints(ctx context.Context, s store.Store, th *sto
 	if th.Direction == "sends" && th.ResponseID != nil {
 		hasXDrop, err := responseHasXDropOrBGP(ctx, s, *th.ResponseID)
 		if err != nil {
-			return fmt.Errorf("validation lookup failed: %w", err)
+			return fmt.Errorf("%w: %w", errValidationLookup, err)
 		}
 		if hasXDrop {
 			return fmt.Errorf("outbound (sends) rules cannot use responses containing xDrop/BGP actions")

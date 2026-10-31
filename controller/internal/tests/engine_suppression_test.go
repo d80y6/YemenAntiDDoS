@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
 
@@ -14,7 +13,7 @@ import (
 // audit log entry (v1.1 behavior, retained for downstream audits).
 func insertManualOverride(t *testing.T, ms *MockStore, attackID, actionID, connectorID int, ruleID string) {
 	t.Helper()
-	// v1.2 PR-2: index table — authoritative for HasManualOverride lookups
+	// v1.2 PR-2: index table — authoritative for ManualOverrides.Exists lookups
 	if _, err := ms.manualOverrides.Create(context.Background(), &store.ActionManualOverride{
 		AttackID:       attackID,
 		ActionID:       actionID,
@@ -39,53 +38,62 @@ func insertManualOverride(t *testing.T, ms *MockStore, attackID, actionID, conne
 	}
 }
 
-// U31: A manual_override success log causes HasManualOverride to return true.
+// U31: A manual_override success log causes ManualOverrides.Exists to return true.
 func TestManualOverride_SuppressesOnExpired(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 
 	insertManualOverride(t, ms, 1, 2, 3, "r1")
 
-	got := eng.HasManualOverride(context.Background(), 1, 2, 3, "r1")
+	got, err := ms.ManualOverrides().Exists(context.Background(), 1, 2, 3, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !got {
-		t.Error("U31: HasManualOverride should return true when manual_override success log exists")
+		t.Error("U31: ManualOverrides.Exists should return true when manual_override success log exists")
 	}
 }
 
 // U32: A manual_override for attack 1 does NOT suppress actions for attack 2.
 func TestManualOverride_DoesNotAffectOtherAttacks(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 
 	// Override recorded for attack 1.
 	insertManualOverride(t, ms, 1, 2, 3, "r1")
 
 	// Query for attack 2 — should return false.
-	got := eng.HasManualOverride(context.Background(), 2, 2, 3, "r1")
+	got, err := ms.ManualOverrides().Exists(context.Background(), 2, 2, 3, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got {
-		t.Error("U32: HasManualOverride should return false for a different attackID")
+		t.Error("U32: ManualOverrides.Exists should return false for a different attackID")
 	}
 }
 
 // U33: Manual override is per-artifact (connectorID + externalRuleID combination).
 func TestManualOverride_PerArtifactSuppression(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 
 	// Override only for connector 3 / rule "r1".
 	insertManualOverride(t, ms, 1, 2, 3, "r1")
 
 	t.Run("matching artifact returns true", func(t *testing.T) {
-		got := eng.HasManualOverride(context.Background(), 1, 2, 3, "r1")
+		got, err := ms.ManualOverrides().Exists(context.Background(), 1, 2, 3, "r1")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !got {
-			t.Error("U33a: HasManualOverride should return true for the exact (connector=3, rule=r1)")
+			t.Error("U33a: ManualOverrides.Exists should return true for the exact (connector=3, rule=r1)")
 		}
 	})
 
 	t.Run("different connector+rule returns false", func(t *testing.T) {
-		got := eng.HasManualOverride(context.Background(), 1, 2, 4, "r2")
+		got, err := ms.ManualOverrides().Exists(context.Background(), 1, 2, 4, "r2")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if got {
-			t.Error("U33b: HasManualOverride should return false for (connector=4, rule=r2)")
+			t.Error("U33b: ManualOverrides.Exists should return false for (connector=4, rule=r2)")
 		}
 	})
 }

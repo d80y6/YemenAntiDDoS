@@ -45,6 +45,10 @@ func ServeSPA(r *gin.Engine, webFS fs.FS) {
 						contentType = "image/svg+xml"
 					case ".json":
 						contentType = "application/json"
+					case ".woff":
+						contentType = "font/woff"
+					case ".ico":
+						contentType = "image/x-icon"
 					case ".woff2":
 						contentType = "font/woff2"
 					case ".png":

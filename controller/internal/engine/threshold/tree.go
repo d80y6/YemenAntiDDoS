@@ -28,7 +28,7 @@ type Tree struct {
 	mu              sync.RWMutex
 	byPrefix        map[string][]engine.ResolvedThreshold
 	bySplit         map[string]splitResult // pre-computed ForPrefixSplit cache
-	allPrefixes     []string              // pre-computed prefix list
+	allPrefixes     []string               // pre-computed prefix list
 	prefixes        []prefixNode
 	hasGlobalPrefix bool // true if 0.0.0.0/0 is an enabled watched prefix
 }
@@ -66,21 +66,25 @@ func (t *Tree) Rebuild(ctx context.Context, s store.Store) error {
 		return err
 	}
 
-	// Build prefix nodes
+	// Disabled prefixes stay in the parent chain: their templates and overrides
+	// still propagate, but the prefixes themselves are not watched.
 	nodes := make([]prefixNode, 0, len(prefixes))
+	chainNodes := make([]prefixNode, 0, len(prefixes))
 	nodeByID := make(map[int]*prefixNode)
 	for _, p := range prefixes {
-		if !p.Enabled {
-			continue
-		}
 		_, ipnet, err := net.ParseCIDR(p.Prefix)
 		if err != nil {
-			log.Printf("threshold_tree: skip bad prefix %q: %v", p.Prefix, err)
+			if p.Enabled {
+				log.Printf("threshold_tree: skip bad prefix %q: %v", p.Prefix, err)
+			}
 			continue
 		}
 		n := prefixNode{ID: p.ID, Prefix: p.Prefix, ParentID: p.ParentID, ThresholdTemplateID: p.ThresholdTemplateID, IPNet: ipnet}
-		nodes = append(nodes, n)
-		nodeByID[p.ID] = &nodes[len(nodes)-1]
+		chainNodes = append(chainNodes, n)
+		nodeByID[p.ID] = &chainNodes[len(chainNodes)-1]
+		if p.Enabled {
+			nodes = append(nodes, n)
+		}
 	}
 
 	// Group thresholds by template_id and prefix_id
@@ -171,14 +175,22 @@ func (t *Tree) Rebuild(ctx context.Context, s store.Store) error {
 }
 
 // resolveForPrefix resolves thresholds for a prefix using:
-//   Priority: per-prefix override > self template > parent template (recursive)
+//
+//	Priority: per-prefix override > self template > parent template (recursive)
 func resolveForPrefix(node prefixNode, nodeByID map[int]*prefixNode,
 	threshByTemplate, threshByPrefix map[int][]store.Threshold) []engine.ResolvedThreshold {
 
 	merged := make(map[ruleKey]engine.ResolvedThreshold)
 
 	// 1. Walk parent chain to find template rules (lowest priority first)
-	chain := collectAncestorChain(node, nodeByID)
+	chain, cycle := collectAncestorChain(node, nodeByID)
+	if cycle {
+		ids := make([]int, 0, len(chain))
+		for _, ancestor := range chain {
+			ids = append(ids, ancestor.ID)
+		}
+		log.Printf("ERROR threshold_tree: parent cycle prefix_id=%d chain=%v", node.ID, ids)
+	}
 	for i := len(chain) - 1; i >= 0; i-- {
 		ancestor := chain[i]
 		if ancestor.ThresholdTemplateID == nil {
@@ -219,18 +231,23 @@ func resolveForPrefix(node prefixNode, nodeByID map[int]*prefixNode,
 	return result
 }
 
-func collectAncestorChain(node prefixNode, nodeByID map[int]*prefixNode) []prefixNode {
+func collectAncestorChain(node prefixNode, nodeByID map[int]*prefixNode) ([]prefixNode, bool) {
 	chain := []prefixNode{node}
+	visited := map[int]bool{node.ID: true}
 	cur := node.ParentID
 	for cur != nil {
+		if visited[*cur] {
+			return chain, true
+		}
 		parent := nodeByID[*cur]
 		if parent == nil {
 			break
 		}
+		visited[*cur] = true
 		chain = append(chain, *parent)
 		cur = parent.ParentID
 	}
-	return chain
+	return chain, false
 }
 
 func thresholdToResolved(th store.Threshold, node prefixNode) engine.ResolvedThreshold {

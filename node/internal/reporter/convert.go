@@ -75,9 +75,10 @@ func reportToProto(
 	// Prefix deltas
 	for _, d := range r.PrefixDeltas {
 		n := collector.PrefixKeyToIPNet(d.Key)
+		ones, _ := n.Mask.Size()
 		msg.PrefixStats = append(msg.PrefixStats, &pb.PrefixStatsMsg{
 			Prefix:            n.IP,
-			PrefixLen:         d.Key.Prefixlen,
+			PrefixLen:         uint32(ones),
 			PktCount:          d.Stats.PktCount,
 			ByteCount:         d.Stats.ByteCount,
 			ActiveIps:         d.ActiveIPs,
@@ -103,9 +104,10 @@ func reportToProto(
 	}
 	for _, d := range r.SrcPrefixDeltas {
 		n := collector.PrefixKeyToIPNet(d.Key)
+		ones, _ := n.Mask.Size()
 		msg.SrcPrefixStats = append(msg.SrcPrefixStats, &pb.PrefixStatsMsg{
 			Prefix:            n.IP,
-			PrefixLen:         d.Key.Prefixlen,
+			PrefixLen:         uint32(ones),
 			PktCount:          d.Stats.PktCount,
 			ByteCount:         d.Stats.ByteCount,
 			ActiveIps:         d.ActiveIPs,

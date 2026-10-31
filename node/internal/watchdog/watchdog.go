@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func Ready()    { send("READY=1") }
+func Ready()     { send("READY=1") }
 func Heartbeat() { send("WATCHDOG=1") }
 func Stopping()  { send("STOPPING=1") }
 

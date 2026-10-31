@@ -1,69 +1,76 @@
-# packet-fixtures.json — cross-repo byte-compat contract fixtures
+# packet-fixtures.json — decoder byte-compatibility fixtures
 
-**目的**：给 xSight 的 decoder 定义 + xdrop 的 decoder 匹配原语建立机械化的字节级对齐机制。一份 fixture、两边 consume；任一方实现偏离 → CI 立刻打脸。
+These fixtures pin the byte-level behaviour of the xSight decoders (the `DECODER_SWITCH` and `parse_ip` logic in `node/bpf/xsight.c`). One fixture file is consumed by every implementation that must classify packets the same way, so any divergence fails a test instead of drifting silently.
 
-## 契约所有权
+## Ownership
 
-- **xSight 仓持有真相源** (这个文件)
-- xdrop 仓通过 submodule / copy / 共享 repo 机制拉取，但**不修改**
-- 语义定义发生变化（`xsight.c` decoder 逻辑改动）→ 先改 fixture + xSight 侧测试 → 再改 xdrop
+- This repository holds the source of truth (this directory).
+- Other projects that match on the same decoders (for example the XDrop decoder contract test) copy the file and do not modify it.
+- When decoder semantics change in `xsight.c`, update the fixtures and the xSight-side tests first, then the consumers.
 
 ## Schema
 
+`packet-fixtures.json` is a JSON object:
+
 ```json
-[
-  {
-    "name": "unique_string_identifier",
-    "hex": "hex_encoded_packet_bytes_starting_from_eth_or_ip_header",
-    "frame_type": "ethernet" | "ip",
-    "expected_decoders": ["tcp", "tcp_ack"],
-    "expected_is_invalid": false,
-    "expected_is_bad_fragment": false,
-    "notes": "context on why this fixture exists, especially edge cases"
-  }
-]
+{
+  "_comment": "free text",
+  "version": 1,
+  "generated_by": "path of the generator",
+  "fixtures": [
+    {
+      "name": "unique_string_identifier",
+      "hex": "hex_encoded_packet_bytes_starting_from_eth_or_ip_header",
+      "frame_type": "ethernet" | "ip",
+      "expected_decoders": ["tcp", "tcp_ack"],
+      "expected_is_invalid": false,
+      "expected_is_bad_fragment": false,
+      "notes": "why this fixture exists, especially for edge cases"
+    }
+  ]
+}
 ```
 
-### 字段
+`version` is set in `generate.go`; raise it there when the fixture contract changes. `version: 0` marks an ungenerated scaffold and makes `TestFixtureJSONInSync` skip.
 
-- `name`：全局唯一字符串（下划线风格）。约定前缀： `tcp_`, `udp_`, `icmp_`, `gre_`, `esp_`, `igmp_`, `frag_`, `invalid_`, `pod_`（PoD fragment）
-- `hex`：数据包字节（十六进制字符串，无分隔符）。若 `frame_type=ethernet`，从 L2 开始；若 `ip`，从 IP header 开始
-- `frame_type`：`"ethernet"` 或 `"ip"`。xSight / xdrop 两边的 parse 入口可能不同
-- `expected_decoders`：xSight `DECODER_SWITCH` 应该增加计数的 decoder name 集合（不含 additive 标签如 fragment/anomaly）
-- `expected_is_invalid`：xSight `parse_ip` 输出 `is_invalid` 的 bool 期望值
-- `expected_is_bad_fragment`：xSight `parse_ip` 输出 `is_bad_fragment` 的 bool 期望值
-- `notes`：一行注释说明 fixture 的存在理由 / 边界值 / 反例语义
+### Fixture fields
 
-## 覆盖要求（xdrop v2.6 proposal 规定）
+- `name`: globally unique, snake_case. Conventional prefixes: `tcp_`, `udp_`, `icmp_`, `gre_`, `esp_`, `igmp_`, `frag_`, `invalid_`, `pod_` (ping-of-death fragment).
+- `hex`: packet bytes as a hex string without separators. Starts at L2 when `frame_type` is `ethernet`, at the IP header when it is `ip`.
+- `frame_type`: `"ethernet"` or `"ip"`; consumers may use different parse entry points.
+- `expected_decoders`: decoder names whose counters `DECODER_SWITCH` must increment (excluding additive labels such as fragment / anomaly).
+- `expected_is_invalid`: expected `is_invalid` output of `parse_ip`.
+- `expected_is_bad_fragment`: expected `is_bad_fragment` output of `parse_ip`.
+- `notes`: one line explaining the purpose, boundary value or counter-example.
 
-每个 decoder 至少：
-- **1 正例**：最典型的命中包
-- **1 正例变体**：易被误读排除的形态（如 `tcp_ack_with_psh` — ACK flood 主要攻击面）
-- **1 反例**：语义上相邻但契约排除的包（如 `tcp_syn_ack` — 握手第 2 包不算 tcp_ack）
-- **边界值**（Phase 4 相关的 anomaly decoder）：PoD `frag_end=65535` vs `65536`；tiny TCP payload 19 vs 20；IHL 4 vs 5；TCP doff 4 vs 5
+## Coverage rules
 
-## 生成方式
+Each decoder has at least:
 
-**不手写 hex**。`generate.go` 用纯 Go 标准库（`encoding/binary` + `encoding/hex`）构造字节。不依赖 scapy / gopacket，避免给 shared 包引入外部依赖。
+- **one positive case**: the most typical matching packet;
+- **one positive variant**: a form that is easy to exclude by mistake (for example `tcp_ack_with_psh`, the main ACK-flood shape);
+- **one negative case**: a neighbouring packet the contract excludes (for example `tcp_syn_ack`, which is not `tcp_ack`);
+- **boundary values** for the anomaly decoders: ping-of-death `frag_end` 65535 vs 65536, tiny TCP payload 19 vs 20, IHL 4 vs 5, TCP data offset 4 vs 5.
+
+## Regenerating
+
+Do not write hex by hand and do not edit `packet-fixtures.json` directly. `generate.go` builds the bytes with the Go standard library only (`encoding/binary`, `encoding/hex`), so the `shared` module stays dependency-free. From the repository root:
 
 ```bash
-cd xsight/shared/decoder/testdata
-go run generate.go
+cd shared/decoder/testdata
+go run generate.go          # writes packet-fixtures.json in this directory
+cd ..
+go test ./...               # TestGoParityMatchesFixtures and TestFixtureJSONInSync must pass
 ```
 
-目录下当前没有 `//go:generate` 指令 —— 这是一次性生成器，fixture 期望跟着 `shared/decoder/contract_test.go` 里 `allTestFixtures()` 同步维护。两边任何一侧改动都应手动 `go run generate.go` 再 `go test ./shared/decoder/...` 走一遍 `TestFixtureJSONInSync`。
+`generate.go` carries a `//go:build ignore` tag and there is no `//go:generate` directive; run it by hand. Its fixture definitions are kept in sync with `allTestFixtures()` in `shared/decoder/contract_test.go`, which also contains the Go parity implementation (`goParityParse`). When `xsight.c` changes:
 
-生成器由 `xsight.c` 的 DECODER_SWITCH + parse_ip 语义驱动（Go 侧 parity 实现在 `contract_test.go:goParityParse`）。若 `xsight.c` 改动：
-1. 改 `contract_test.go:allTestFixtures` 期望
-2. 同步 `generate.go` 的对应 fixture 定义
-3. `go run generate.go` 更新 `packet-fixtures.json`（会把 `version` 往上推）
-4. `go test ./shared/decoder/...` 验证 `TestGoParityMatchesFixtures` + `TestFixtureJSONInSync` 都过
+1. Update the expectations in `allTestFixtures()`.
+2. Update the matching fixture definitions in `generate.go`.
+3. Raise `version` in `generate.go` if the contract changed, then run `go run generate.go` to rewrite `packet-fixtures.json`.
+4. Run `go test ./...` in `shared/decoder` and check that `TestGoParityMatchesFixtures` and `TestFixtureJSONInSync` pass.
 
-## 两边消费
+## Consumers
 
-- **xSight 侧**：`shared/decoder/contract_test.go`（Go 侧实现 parity，assert `expected_decoders`）
-- **xdrop 侧**：`node/agent/bpf/decoder_contract_test.go`（integration tag，CAP_BPF）— 下发对应 decoder 的 rule 后发 fixture 包，assert BPF 命中与否
-
-## 当前状态
-
-2026-04-23：已落地。`generate.go` + `packet-fixtures.json` (version 1, 33 fixtures) 在仓。xSight 侧 `TestFixtureJSONInSync` 绿，锁住了 on-disk 契约。xdrop 侧 integration test 待 xdrop v2.6 Phase 0 完成后接上。
+- **xSight**: `shared/decoder/contract_test.go` checks the Go parity implementation against `expected_decoders` and that the on-disk JSON matches the generator.
+- **XDrop**: its BPF decoder contract test installs a rule for each decoder, sends the fixture packets and asserts whether the BPF program matches.

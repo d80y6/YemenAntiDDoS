@@ -156,9 +156,9 @@ func TestListenerMatchesProtocolModeAuto(t *testing.T) {
 
 	// Auto should match everything
 	for _, payload := range [][]byte{
-		{0, 0, 0, 5, 0, 0, 0, 1}, // sFlow
-		{0, 5, 0, 1, 0, 0, 0, 0}, // NFv5
-		{0, 9, 0, 1, 0, 0, 0, 0}, // NFv9
+		{0, 0, 0, 5, 0, 0, 0, 1},  // sFlow
+		{0, 5, 0, 1, 0, 0, 0, 0},  // NFv5
+		{0, 9, 0, 1, 0, 0, 0, 0},  // NFv9
 		{0, 10, 0, 1, 0, 0, 0, 0}, // IPFIX
 	} {
 		if !l.matchesProtocolMode(payload) {

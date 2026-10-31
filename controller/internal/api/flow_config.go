@@ -24,7 +24,7 @@ func listFlowListeners(deps Dependencies) gin.HandlerFunc {
 		}
 		list, err := deps.Store.FlowListeners().List(c, nodeID)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		if list == nil {
@@ -45,7 +45,7 @@ func getFlowListener(deps Dependencies) gin.HandlerFunc {
 		// Include sources
 		sources, err := deps.Store.FlowSources().List(c, id)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, "failed to load sources: "+err.Error())
+			dbError(c, "failed to load sources: ", err)
 			return
 		}
 		if sources == nil {
@@ -61,6 +61,9 @@ func createFlowListener(deps Dependencies) gin.HandlerFunc {
 		if err := c.ShouldBindJSON(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
+		}
+		if req.ProtocolMode == "" {
+			req.ProtocolMode = "auto"
 		}
 		if err := validateFlowListener(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
@@ -79,9 +82,10 @@ func createFlowListener(deps Dependencies) gin.HandlerFunc {
 		req.Enabled = true
 		id, err := deps.Store.FlowListeners().Create(c, &req)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
+		req.ID = id
 		publishAfterChange(c, deps, "flow_listener", strconv.Itoa(id), "create", makeDiff(nil, req))
 		created(c, gin.H{"id": id})
 	}
@@ -114,7 +118,7 @@ func updateFlowListener(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		if err := deps.Store.FlowListeners().Update(c, &req); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "flow_listener", strconv.Itoa(id), "update", makeDiff(old, req))
@@ -127,7 +131,7 @@ func deleteFlowListener(deps Dependencies) gin.HandlerFunc {
 		id, _ := strconv.Atoi(c.Param("id"))
 		old, _ := deps.Store.FlowListeners().Get(c, id)
 		if err := deps.Store.FlowListeners().Delete(c, id); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "flow_listener", strconv.Itoa(id), "delete", makeDiff(old, nil))
@@ -146,7 +150,7 @@ func listFlowSources(deps Dependencies) gin.HandlerFunc {
 		}
 		list, err := deps.Store.FlowSources().List(c, listenerID)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		if list == nil {
@@ -175,6 +179,9 @@ func createFlowSource(deps Dependencies) gin.HandlerFunc {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
+		if req.SampleMode == "" {
+			req.SampleMode = "auto"
+		}
 		if err := validateFlowSource(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
@@ -187,9 +194,10 @@ func createFlowSource(deps Dependencies) gin.HandlerFunc {
 		req.Enabled = true
 		id, err := deps.Store.FlowSources().Create(c, &req)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
+		req.ID = id
 		publishAfterChange(c, deps, "flow_source", strconv.Itoa(id), "create", makeDiff(nil, req))
 		created(c, gin.H{"id": id})
 	}
@@ -222,7 +230,7 @@ func updateFlowSource(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		if err := deps.Store.FlowSources().Update(c, &req); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "flow_source", strconv.Itoa(id), "update", makeDiff(old, req))
@@ -235,7 +243,7 @@ func deleteFlowSource(deps Dependencies) gin.HandlerFunc {
 		id, _ := strconv.Atoi(c.Param("id"))
 		old, _ := deps.Store.FlowSources().Get(c, id)
 		if err := deps.Store.FlowSources().Delete(c, id); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "flow_source", strconv.Itoa(id), "delete", makeDiff(old, nil))

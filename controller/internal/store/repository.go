@@ -2,8 +2,15 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var ErrNotPending = errors.New("scheduled action no longer pending")
+
+var ErrLastAdmin = errors.New("at least one enabled admin is required")
+
+var ErrStaleAnnouncement = errors.New("announcement generation or status no longer current")
 
 // Store groups all repository interfaces. Implementations (postgres, sqlite)
 // provide a concrete Store via their constructor.
@@ -86,6 +93,8 @@ type NodeRepo interface {
 	UpdateMode(ctx context.Context, id, mode string) error
 	UpdateDeliveryVersionCurrent(ctx context.Context, id string, version int64) error
 	UpdateACK(ctx context.Context, id string, versionApplied int64) error
+	// MarkConfigFailed writes failed only when version is current and has not been applied.
+	MarkConfigFailed(ctx context.Context, id string, version int64) error
 }
 
 // PrefixRepo manages watch prefixes (CIDR tree).
@@ -144,12 +153,15 @@ type ResponseRepo interface {
 
 // AttackRepo manages attack records.
 type AttackRepo interface {
+	LiveIDs(ctx context.Context, ids []int) (map[int]bool, error)
 	List(ctx context.Context, filter AttackFilter) ([]Attack, error)
 	Count(ctx context.Context, filter AttackFilter) (int, error)
 	Get(ctx context.Context, id int) (*Attack, error)
 	Create(ctx context.Context, a *Attack) (int, error)
 	Update(ctx context.Context, a *Attack) error
 	ListActive(ctx context.Context, limit int) ([]Attack, error)
+	// ListAllActive is only for recovery and has no limit.
+	ListAllActive(ctx context.Context) ([]Attack, error)
 	CountActive(ctx context.Context) (int, error)
 }
 
@@ -162,6 +174,7 @@ type ActionsLogRepo interface {
 }
 
 // UserRepo manages Web UI user accounts.
+// Update and Delete return ErrLastAdmin without writing when the result would leave no enabled admin.
 type UserRepo interface {
 	List(ctx context.Context) ([]User, error)
 	Get(ctx context.Context, id int) (*User, error)
@@ -215,9 +228,8 @@ type ShellConnectorRepo interface {
 type ActionExecLogRepo interface {
 	Create(ctx context.Context, l *ActionExecutionLog) (int, error)
 	ListByAttack(ctx context.Context, attackID int) ([]ActionExecutionLog, error)
-	FindByAttackAndAction(ctx context.Context, attackID, actionID int, triggerPhase string) (*ActionExecutionLog, error)
-	FindExternalRuleIDs(ctx context.Context, attackID, actionID int) ([]string, error)
-	FindExternalRulesWithActions(ctx context.Context, attackID int) ([]RuleWithAction, error)
+	// AllTargetsDone checks each connector's newest non-skipped result; an older NULL group is superseded.
+	AllTargetsDone(ctx context.Context, attackID, actionID int, triggerPhase string) (bool, error)
 }
 
 // v1.2 PR-5: BGPAnnouncementRepo manages refcount-based BGP announcements.
@@ -230,6 +242,7 @@ type ActionExecLogRepo interface {
 // compensating consistency, not atomic — the `announcing` and `withdrawing`
 // statuses exist as crash-recovery landmarks.
 type BGPAnnouncementRepo interface {
+	ReconcileAttachments(ctx context.Context, annID int, endedAttackIDs []int, detach bool) (BGPReconcileResult, error)
 	// Get returns an announcement by ID, or nil if not found.
 	Get(ctx context.Context, id int) (*BGPAnnouncement, error)
 	// FindByBusinessKey returns an announcement by (prefix, route_map, connector_id).
@@ -244,8 +257,8 @@ type BGPAnnouncementRepo interface {
 	//   No existing row         → INSERT status='announcing', refcount=1 → NeedAnnounce=true
 	//   Existing row (active)   → refcount++ → NeedAnnounce=false (already announced)
 	//   Existing row (delayed)  → refcount++, status back to 'active' → NeedAnnounce=false (cancel delay)
-	//   Existing row (withdrawn)→ resurrect: status='announcing', refcount=1 → NeedAnnounce=true
-	//   Existing row (failed)   → resurrect: status='announcing', refcount=1 → NeedAnnounce=true
+	//   Existing row (withdrawn)→ resurrect: status='announcing', refcount=1+live residuals → NeedAnnounce=true
+	//   Existing row (failed)   → resurrect: status='announcing', refcount=1+live residuals → NeedAnnounce=true
 	Attach(ctx context.Context, params BGPAttachParams) (BGPAttachResult, error)
 
 	// Detach atomically records an attack's detachment (sets detached_at)
@@ -258,22 +271,30 @@ type BGPAnnouncementRepo interface {
 	Detach(ctx context.Context, attackID int, prefix, routeMap string, connectorID int) (BGPDetachResult, error)
 
 	// MarkAnnounced transitions announcing → active after a successful vtysh announce.
-	MarkAnnounced(ctx context.Context, id int) error
-	// MarkWithdrawing transitions active/delayed → withdrawing before vtysh no network.
+	MarkAnnounced(ctx context.Context, id, gen int) error
+	// MarkWithdrawing claims delayed → withdrawing in the supplied generation.
 	// Used on delay expiry to trigger the actual withdraw.
-	MarkWithdrawing(ctx context.Context, id int) (bool, error)
-	// MarkWithdrawn transitions withdrawing → withdrawn after a successful vtysh no network.
-	MarkWithdrawn(ctx context.Context, id int) error
-	// MarkFailedAnnounce handles compensation for announce failure. If refcount=1
-	// (no concurrent attach), deletes the row; otherwise sets status=failed.
-	MarkFailedAnnounce(ctx context.Context, id int, errMsg string) error
-	// MarkFailedWithdraw sets status=failed on withdraw failure. Row kept for
-	// operator retry via ForceWithdraw.
-	MarkFailedWithdraw(ctx context.Context, id int, errMsg string) error
+	MarkWithdrawing(ctx context.Context, id, gen int) (bool, error)
+	// ClaimWithdrawing advances only the matching withdrawing generation.
+	// A missing row or mismatched generation/status returns (0, false, nil).
+	ClaimWithdrawing(ctx context.Context, id, gen int) (newGen int, ok bool, err error)
+	// ClaimFailedWithdraw advances a matching failed generation to withdrawing
+	// only when refcount is zero and no undetached attachments remain.
+	ClaimFailedWithdraw(ctx context.Context, id, gen int) (newGen int, ok bool, err error)
+	// MarkWithdrawn accepts withdrawing/delayed/failed in the supplied generation.
+	MarkWithdrawn(ctx context.Context, id, gen int) error
+	// MarkFailedAnnounce accepts the same generation's unfinished lifecycle.
+	// Only a never-recycled announcing row (gen = 0, refcount = 1) is deleted;
+	// recycled rows (gen > 0) and other hits become failed.
+	MarkFailedAnnounce(ctx context.Context, id, gen int, errMsg string) error
+	// MarkFailedWithdraw sets status=failed on withdraw failure. Unattached
+	// zero-refcount rows can be retried by runtime reconciliation; operators
+	// can also retry via ForceWithdraw.
+	MarkFailedWithdraw(ctx context.Context, id, gen int, errMsg string) error
 
 	// ForceWithdraw transitions any active/delayed/failed announcement to
-	// withdrawing, detaching all attached attacks. Used by operator Force Withdraw.
-	ForceWithdraw(ctx context.Context, id int) error
+	// withdrawing, returning detached attachments and the resulting generation.
+	ForceWithdraw(ctx context.Context, id int) ([]BGPAnnouncementAttack, int, error)
 
 	// Dismiss transitions an orphan to dismissed (operator rejected).
 	Dismiss(ctx context.Context, id int) error
@@ -292,6 +313,9 @@ type BGPAnnouncementRepo interface {
 	ListDismissed(ctx context.Context) ([]BGPAnnouncement, error)
 	// ListByStatus is used by reconciliation.
 	ListByStatus(ctx context.Context, status string) ([]BGPAnnouncement, error)
+	// CountLiveByConnector counts announcements still managed by xSight:
+	// announcing, active, delayed, withdrawing, failed, and orphan.
+	CountLiveByConnector(ctx context.Context, connectorID int) (int, error)
 
 	// ListAttacks returns attacks attached to an announcement (both attached and detached).
 	ListAttacks(ctx context.Context, announcementID int) ([]BGPAnnouncementAttack, error)
@@ -331,6 +355,14 @@ type BGPAnnouncementRepo interface {
 	ListEvents(ctx context.Context, announcementID int) ([]BGPAnnouncementEvent, error)
 }
 
+type BGPReconcileResult struct {
+	Gen                           int
+	Detached                      []int
+	RefcountBefore, RefcountAfter int
+	NeedWithdraw                  bool
+	Skipped                       string
+}
+
 // BGPAttachParams bundles the inputs to Attach. action_id / response_name /
 // delay_minutes are per-attack snapshot fields; the announcement-level delay
 // is recomputed inside the transaction from bgp_announcement_attacks.
@@ -347,6 +379,7 @@ type BGPAttachParams struct {
 // BGPAttachResult tells the caller what side effect (if any) to execute
 // outside the transaction.
 type BGPAttachResult struct {
+	Gen            int
 	AnnouncementID int
 	NeedAnnounce   bool // caller must run vtysh announce and report back via MarkAnnounced/MarkFailedAnnounce
 }
@@ -354,6 +387,7 @@ type BGPAttachResult struct {
 // BGPDetachResult tells the caller whether to invoke vtysh withdraw now
 // (delay=0) or arm a delay timer (delay>0).
 type BGPDetachResult struct {
+	Gen            int
 	AnnouncementID int
 	NeedWithdraw   bool
 	Delayed        bool
@@ -366,15 +400,18 @@ type BGPDetachResult struct {
 // Mitigations UI / mitigation-summary API read from this table instead of
 // reverse-engineering state from action_execution_log.
 type XDropActiveRuleRepo interface {
+	// CountLiveByConnector includes active, delayed, withdrawing and failed (including synthetic IDs).
+	CountLiveByConnector(ctx context.Context, connectorID int) (int, error)
+	ClaimActive(ctx context.Context, attackID, actionID, connectorID int, externalRuleID string) (bool, error)
 	// Upsert inserts a new row or updates an existing one (idempotent on the
 	// business key). Used by executeXDrop and by reconciliation paths that
 	// need to record an observed state without a full state machine.
 	Upsert(ctx context.Context, r *XDropActiveRule) (int, error)
-	// MarkWithdrawing transitions active/delayed → withdrawing before the
+	// MarkWithdrawing transitions active/delayed/failed → withdrawing before the
 	// DELETE side effect. Returns false if the row is not in a transitioning
 	// state (lets callers bail out — another goroutine got there first).
 	MarkWithdrawing(ctx context.Context, attackID, actionID, connectorID int, externalRuleID string) (bool, error)
-	// MarkWithdrawn is called after DELETE success (or 404 idempotent).
+	// MarkWithdrawn is called after confirmed HTTP 204 release or local synthetic cleanup.
 	MarkWithdrawn(ctx context.Context, attackID, actionID, connectorID int, externalRuleID string) error
 	// MarkFailed sets status=failed with an error message.
 	MarkFailed(ctx context.Context, attackID, actionID, connectorID int, externalRuleID, errMsg string) error
@@ -504,6 +541,7 @@ type FlowSourceRepo interface {
 
 // TimeseriesFilter for querying ts_stats.
 type TimeseriesFilter struct {
+	DstIP      string
 	Prefix     string
 	NodeID     string
 	From       time.Time
@@ -513,7 +551,7 @@ type TimeseriesFilter struct {
 	Limit      int
 	// IncludeExtras controls whether the response TimeseriesPoints populate
 	// ExtraDecoderPPS / ExtraDecoderBPS. Default false preserves the pre-v1.3.2
-	// 12-field JSON shape; set to true when the caller (chart UI) wants the
+	// 13-field JSON shape; set to true when the caller (chart UI) wants the
 	// 9 v1.3 decoders merged in. Applies to both raw ts_stats and CAGG paths.
 	IncludeExtras bool
 }
@@ -532,6 +570,7 @@ type TimeseriesPoint struct {
 	UDPBPS    int64     `json:"udp_bps"`
 	ICMPBPS   int64     `json:"icmp_bps"`
 	FragBPS   int64     `json:"frag_bps,omitempty"`
+	TCPSynBPS int64     `json:"tcp_syn_bps"`
 	// v1.3 Phase 1a: extra decoders (index >= StandardCount) live in JSONB.
 	// Only populated when the DB row has non-NULL values. Key = decoder.Names[i].
 	ExtraDecoderPPS map[string]int32 `json:"extra_decoder_pps,omitempty"`

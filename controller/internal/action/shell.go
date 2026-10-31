@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
+
+const shellWaitDelay = 2 * time.Second
 
 // executeShell executes a shell action using the configured ShellConnector.
 func executeShell(
@@ -25,13 +29,29 @@ func executeShell(
 	attackDBID int,
 	fa *FlowAnalysis,
 ) (*store.ActionExecutionLog, error) {
+	skipLog := func(reason, message string) *store.ActionExecutionLog {
+		row := &store.ActionExecutionLog{
+			AttackID:     attackDBID,
+			ActionID:     action.ID,
+			ResponseName: responseName,
+			ActionType:   "shell",
+			TriggerPhase: triggerPhase,
+			Status:       "skipped",
+			ErrorMessage: message,
+			ExecutedAt:   time.Now(),
+		}
+		recordSkip(row, reason)
+		return row
+	}
 	if action.ShellConnectorID == nil {
-		return nil, fmt.Errorf("shell action %d has no shell_connector_id", action.ID)
+		log.Printf("action: shell action %d skipped: no shell_connector_id", action.ID)
+		return skipLog(SkipReasonNoConnector, "shell action has no shell_connector_id"), nil
 	}
 
 	connector, err := s.ShellConnectors().Get(ctx, *action.ShellConnectorID)
 	if err != nil {
-		return nil, fmt.Errorf("get shell connector %d: %w", *action.ShellConnectorID, err)
+		err = fmt.Errorf("get shell connector %d: %w", *action.ShellConnectorID, err)
+		return skipLog(SkipReasonConnectorLookupFailed, err.Error()), err
 	}
 	if !connector.Enabled {
 		execLog := &store.ActionExecutionLog{
@@ -45,6 +65,7 @@ func executeShell(
 			ErrorMessage:  "shell connector is disabled",
 			ExecutedAt:    time.Now(),
 		}
+		recordSkip(execLog, SkipReasonConnectorDisabled)
 		return execLog, nil
 	}
 
@@ -52,14 +73,12 @@ func executeShell(
 	// Both support {var} expansion
 	var args []string
 
-	if connector.DefaultArgs != "" {
-		expanded := expandParams(connector.DefaultArgs, attack, eventType, prefixStr, fa)
-		args = append(args, splitArgs(expanded)...)
+	for _, tok := range splitArgs(connector.DefaultArgs) {
+		args = append(args, expandParams(tok, attack, eventType, prefixStr, fa))
 	}
 
-	if action.ShellExtraArgs != "" {
-		expanded := expandParams(action.ShellExtraArgs, attack, eventType, prefixStr, fa)
-		args = append(args, splitArgs(expanded)...)
+	for _, tok := range splitArgs(action.ShellExtraArgs) {
+		args = append(args, expandParams(tok, attack, eventType, prefixStr, fa))
 	}
 
 	// Set up command with timeout
@@ -71,6 +90,7 @@ func executeShell(
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, connector.Command, args...)
+	cmd.WaitDelay = shellWaitDelay
 
 	// If pass_stdin, pipe JSON payload via stdin
 	if connector.PassStdin {
@@ -111,6 +131,8 @@ func executeShell(
 	}
 
 	start := time.Now()
+	deadline, _ := cmdCtx.Deadline()
+	budget := deadline.Sub(start)
 	err = cmd.Run()
 	execLog.DurationMs = int(time.Since(start).Milliseconds())
 
@@ -118,14 +140,16 @@ func executeShell(
 	output := truncateStr(outBuf.String(), 1024)
 	execLog.ResponseBody = output
 
-	if err != nil {
-		if cmdCtx.Err() == context.DeadlineExceeded {
-			execLog.Status = "timeout"
-			execLog.ErrorMessage = fmt.Sprintf("command timed out after %dms", connector.TimeoutMs)
-		} else {
-			execLog.Status = "failed"
-			execLog.ErrorMessage = err.Error()
-		}
+	if cmdCtx.Err() != nil {
+		execLog.Status = "timeout"
+		execLog.ErrorMessage = fmt.Sprintf("command timed out after %dms", budget.Round(time.Millisecond).Milliseconds())
+		return execLog, cmdCtx.Err()
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		execLog.ErrorMessage = "background process held output; output truncated"
+	} else if err != nil {
+		execLog.Status = "failed"
+		execLog.ErrorMessage = err.Error()
 		return execLog, err
 	}
 

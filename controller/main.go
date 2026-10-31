@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -22,9 +23,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/config"
 	"github.com/littlewolf9527/xsight/controller/internal/action"
 	"github.com/littlewolf9527/xsight/controller/internal/api"
+	"github.com/littlewolf9527/xsight/controller/internal/config"
 	"github.com/littlewolf9527/xsight/controller/internal/configpub"
 	"github.com/littlewolf9527/xsight/controller/internal/engine"
 	"github.com/littlewolf9527/xsight/controller/internal/engine/baseline"
@@ -35,22 +36,24 @@ import (
 
 	"github.com/littlewolf9527/xsight/controller/internal/ingestion"
 	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	"github.com/littlewolf9527/xsight/controller/internal/retention"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
-	"github.com/littlewolf9527/xsight/controller/internal/watchdog"
 	"github.com/littlewolf9527/xsight/controller/internal/netutil"
 	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
+	"github.com/littlewolf9527/xsight/controller/internal/retention"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 	"github.com/littlewolf9527/xsight/controller/internal/store/postgres"
 	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
+	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/littlewolf9527/xsight/controller/internal/watchdog"
 	"github.com/littlewolf9527/xsight/shared/decoder"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (
 	configPath  = flag.String("config", "config.yaml", "path to config file")
 	migrateOnly = flag.Bool("migrate", false, "run migrations and exit")
 )
+
+const withdrawingReconcileInterval = 2 * time.Minute
+const announcingReconcileInterval = 2 * time.Minute
 
 func main() {
 	flag.Parse()
@@ -61,6 +64,7 @@ func main() {
 	}
 	log.Printf("config loaded: grpc=%s http=%s db=%s",
 		cfg.Listen.GRPC, cfg.Listen.HTTP, cfg.Database.Driver)
+	reportRingEstimate(cfg)
 
 	// Dump the decoder registry snapshot the binary was compiled against
 	// (v1.3.4). A deployment regression (controller built before shared/
@@ -114,28 +118,8 @@ func main() {
 		return
 	}
 
-	// Seed default admin user if no users exist
-	{
-		users, err := db.Users().List(ctx)
-		if err != nil {
-			log.Fatalf("list users for seed check: %v", err)
-		}
-		if len(users) == 0 {
-			hash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
-			if err != nil {
-				log.Fatalf("hash default password: %v", err)
-			}
-			_, err = db.Users().Create(ctx, &store.User{
-				Username: "admin",
-				Password: string(hash),
-				Role:     "admin",
-				Enabled:  true,
-			})
-			if err != nil {
-				log.Fatalf("seed admin user: %v", err)
-			}
-			log.Println("created default admin user (username: admin, password: admin) — change this immediately!")
-		}
+	if err := api.EnsureInitialAdmin(ctx, db.Users(), cfg.Auth.InitialAdminPassword); err != nil {
+		log.Fatalf("initial admin: %v", err)
 	}
 
 	// --- Phase 2: Ring Buffer + DB writer ---
@@ -163,6 +147,8 @@ func main() {
 
 	// 3.2 Hard threshold detector
 	detector := threshold.NewDetector(threshTree, rings)
+	sustainWindow := threshold.SustainWindow(cfg.Detection.HardThresholdConfirmSeconds, cfg.Detection.DynamicThresholdConfirmSeconds, cfg.Ring.MaxPointsPerIP)
+	detector.SetSustainWindow(sustainWindow)
 
 	// 3.3 Dynamic baseline (beta)
 	baselineCfg := baseline.DefaultConfig()
@@ -219,13 +205,14 @@ func main() {
 
 	// --- Phase 4: AttackTracker ---
 	trackerCfg := tracker.Config{
-		HardConfirmSeconds:     cfg.Detection.HardThresholdConfirmSeconds,
-		DynamicConfirmSeconds:  cfg.Detection.DynamicThresholdConfirmSeconds,
-		ExpiryIntervalSeconds:  cfg.Detection.ExpiryIntervalSeconds,
-		ExpiryFunction:         cfg.Detection.ExpiryFunction,
-		ExpiryScaleBaseSeconds: cfg.Detection.ExpiryScaleBaseSeconds,
-		ExpiryMaxScale:         cfg.Detection.ExpiryMaxScale,
-		MaxActiveAttacks:       cfg.Detection.MaxActiveAttacks,
+		HardConfirmSeconds:      cfg.Detection.HardThresholdConfirmSeconds,
+		DynamicConfirmSeconds:   cfg.Detection.DynamicThresholdConfirmSeconds,
+		ExpiryIntervalSeconds:   cfg.Detection.ExpiryIntervalSeconds,
+		ExpiryFunction:          cfg.Detection.ExpiryFunction,
+		ExpiryScaleBaseSeconds:  cfg.Detection.ExpiryScaleBaseSeconds,
+		ExpiryMaxScale:          cfg.Detection.ExpiryMaxScale,
+		MaxActiveAttacks:        cfg.Detection.MaxActiveAttacks,
+		ManualExpireHoldSeconds: cfg.Detection.ResolvedManualExpireHoldSeconds(),
 	}
 	// --- Phase 5: Action Engine ---
 	// Wrap the concrete postgres store with a metrics-instrumented decorator
@@ -235,33 +222,27 @@ func main() {
 	// behaves identically to `db` at the Store interface level.
 	// Postgres-specific methods (AutoMigrate, Close) still use `db` directly.
 	iStore := metrics.InstrumentStore(db)
+	action.SetXDropShapeConfig(cfg.Action.XDropNarrowPct, cfg.Action.XDropMinSamplePackets)
+	action.SetXDropTopKConfig(cfg.Action.XDropTopKPct, cfg.Action.XDropTopKMax)
 	actionEngine := action.NewEngine(iStore, cfg.Action.Mode)
+	actionEngine.Start()
 
-	attackTracker := tracker.New(trackerCfg, iStore, rings, alertDedup, actionEngine.HandleEvent)
-	attackTracker.SetRebreachCallback(actionEngine.CancelDelaysForAttack)
+	attackTracker := tracker.New(trackerCfg, iStore, rings, alertDedup, actionEngine.Enqueue)
+	attackTracker.SetRebreachCallback(actionEngine.EnqueueRebreach)
 
-	// v1.2 PR-3/PR-4 crash recovery: run before serving traffic.
-	// Three phases (executed in order by ReconcileOnStartup):
-	//   1. Retry side effects for scheduled_actions stuck in 'executing'
-	//      (PR-3 leftover: crashed between MarkExecuting and Complete)
-	//   2. Retry DELETE for xdrop_active_rules stuck in 'withdrawing'
-	//      (PR-4: crashed between MarkWithdrawing and MarkWithdrawn)
-	//   3. Re-arm timers for pending scheduled_actions; overdue ones fire
-	//      immediately (PR-3: timer lost during downtime).
-	actionEngine.ReconcileOnStartup(ctx)
-
-	// Crash recovery: rebuild active attacks from DB
-	if err := attackTracker.RecoverFromDB(ctx); err != nil {
-		log.Printf("tracker recovery: %v", err)
-	}
-
-	// BGP recovery: re-inject ephemeral routes for active attacks (FRR state lost on restart)
-	action.RecoverBGPRoutes(ctx, iStore)
-
-	// BGP bootstrap: scan FRR for routes not represented in bgp_announcements
-	// and mark them as orphan / dismissed_on_upgrade. See bgp_bootstrap.go for
-	// the first-boot vs. runtime semantics.
-	action.BootstrapBGPOrphans(ctx, iStore)
+	// Restore FRR synchronously before reconciliation starts side-effect workers.
+	var pre action.StartupScheduleSnapshot
+	var preErr error
+	recoverOnStartup(ctx,
+		func(ctx context.Context) { action.RecoverBGPRoutes(ctx, iStore) },
+		func(ctx context.Context) { pre, preErr = actionEngine.PrepareStartupCleanup(ctx) },
+		actionEngine.ReconcileOnStartup,
+		func(ctx context.Context) { actionEngine.CleanupEndedAttachments(ctx, pre, preErr) },
+		attackTracker.RecoverFromDB,
+		func(ctx context.Context) { action.BootstrapBGPOrphans(ctx, iStore) })
+	go actionEngine.RunXDropReconcile(ctx, 2*time.Minute)
+	go actionEngine.RunWithdrawingReconcile(ctx, withdrawingReconcileInterval)
+	go actionEngine.RunAnnouncingReconcile(ctx, announcingReconcileInterval)
 
 	// Prometheus metrics: register v1.2.1 custom collectors + counters with
 	// the default registry (the /metrics HTTP route uses promhttp.Handler()
@@ -288,30 +269,7 @@ func main() {
 				exceeded := detector.Tick(connectedNodes)
 
 				// Dynamic baseline detection: check prefix-level per-node
-				for _, nodeID := range connectedNodes {
-					for _, prefix := range threshTree.AllPrefixes() {
-						pr := rings.GetPrefixRing(nodeID, prefix)
-						if pr == nil {
-							continue
-						}
-						if dp, ok := pr.LatestOne(5 * time.Second); ok {
-							if yes, reason := profileEngine.IsExceeded(nodeID, prefix, dp.PPS, dp.BPS); yes {
-								exceeded = append(exceeded, engine.ThresholdExceeded{
-									Prefix:    prefix,
-									Direction: "receives",
-									Decoder:   "ip",
-									Unit:      "pps",
-									Value:     0,
-									Actual:    dp.PPS,
-									Domain:    "subnet",
-									NodeID:    nodeID,
-									Source:    "dynamic",
-								})
-								_ = reason
-							}
-						}
-					}
-				}
+				exceeded = append(exceeded, dynamicBreaches(connectedNodes, threshTree.AllPrefixes(), rings, profileEngine, sustainWindow)...)
 
 				// Filter through dedup
 				var filtered []engine.ThresholdExceeded
@@ -330,7 +288,7 @@ func main() {
 					}
 					filtered = nil // don't feed tracker
 				}
-					attackTracker.Feed(filtered)
+				attackTracker.Feed(filtered)
 
 				// Classifier: try to upgrade active attacks with sample data
 				for _, dstIP := range attackTracker.ActiveDstIPs() {
@@ -372,7 +330,7 @@ func main() {
 		if h := report.GetHealth(); h != nil && len(h.Message) > 1 && h.Message[0] == '{' {
 			var parsed struct {
 				Sources   []ingestion.SourceStatus   `json:"sources"`
-				Listeners []ingestion.ListenerStatus  `json:"listeners"`
+				Listeners []ingestion.ListenerStatus `json:"listeners"`
 			}
 			if json.Unmarshal([]byte(h.Message), &parsed) == nil {
 				nodeState.UpdateSourceStatuses(nodeID, parsed.Sources)
@@ -427,14 +385,13 @@ func main() {
 		FlowLogsDays:  cfg.Retention.FlowLogsDays,
 	})
 	// Serve embedded Vue SPA (Phase 8)
-	webFS, _ := fs.Sub(webDist, "web/dist")
+	webFS, _ := fs.Sub(webDist, webRoot)
 	api.ServeSPA(router, webFS)
 
+	httpSrv := &http.Server{Addr: cfg.Listen.HTTP, Handler: router, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Printf("http: listening on %s", cfg.Listen.HTTP)
-		if err := router.Run(cfg.Listen.HTTP); err != nil {
-			log.Fatalf("http server fatal: %v", err)
-		}
+		_ = serveHTTP(httpSrv)
 	}()
 
 	// Wait briefly for listeners to bind, then signal ready
@@ -442,18 +399,19 @@ func main() {
 	log.Printf("xsight-controller running (mode=%s)", cfg.Action.Mode)
 
 	// Data retention cleaner
-	if cfg.Retention.TSStatsDays > 0 || cfg.Retention.AttacksDays > 0 || cfg.Retention.AuditLogDays > 0 {
+	if cfg.Retention.TSStatsDays > 0 || cfg.Retention.FlowLogsDays > 0 || cfg.Retention.AttacksDays > 0 || cfg.Retention.AuditLogDays > 0 {
 		cleaner := retention.New(db.Pool(), retention.Config{
-			TSStatsDays:   cfg.Retention.TSStatsDays,
-			FlowLogsDays:  cfg.Retention.FlowLogsDays,
-			AttacksDays:   cfg.Retention.AttacksDays,
-			AuditLogDays:  cfg.Retention.AuditLogDays,
-			IntervalHours: cfg.Retention.IntervalHours,
-			HasTimescale:  db.HasTimescale(),
+			TSStatsDays:        cfg.Retention.TSStatsDays,
+			FlowLogsDays:       cfg.Retention.FlowLogsDays,
+			AttacksDays:        cfg.Retention.AttacksDays,
+			AuditLogDays:       cfg.Retention.AuditLogDays,
+			IntervalHours:      cfg.Retention.IntervalHours,
+			TSStatsHypertable:  db.IsHypertable("ts_stats"),
+			FlowLogsHypertable: db.IsHypertable("flow_logs"),
 		})
 		go cleaner.Run(ctx)
-		log.Printf("retention: ts_stats=%dd attacks=%dd audit=%dd interval=%dh",
-			cfg.Retention.TSStatsDays, cfg.Retention.AttacksDays, cfg.Retention.AuditLogDays, cfg.Retention.IntervalHours)
+		log.Printf("retention: ts_stats=%dd flow_logs=%dd attacks=%dd audit=%dd interval=%dh",
+			cfg.Retention.TSStatsDays, cfg.Retention.FlowLogsDays, cfg.Retention.AttacksDays, cfg.Retention.AuditLogDays, cfg.Retention.IntervalHours)
 	}
 
 	// Systemd watchdog: signal ready + start heartbeat
@@ -468,7 +426,36 @@ func main() {
 	watchdog.Stopping()
 	close(watchdogDone)
 	cancel()
+	shCtx, shCancel := context.WithTimeout(context.Background(), httpShutdownLimit)
+	if err := httpSrv.Shutdown(shCtx); err != nil {
+		log.Printf("WARN http: shutdown: %v", err)
+	} else {
+		log.Println("http: shutdown complete")
+	}
+	shCancel()
 	grpcSrv.GracefulStop()
+	const actionDrainLimit = 30 * time.Second
+	actionEngine.Drain(actionDrainLimit)
+}
+
+const httpShutdownLimit = 5 * time.Second
+
+var httpFatalf = log.Fatalf
+
+func serveHTTP(srv *http.Server) error {
+	err := srv.ListenAndServe()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		httpFatalf("http server fatal: %v", err)
+	}
+	return err
+}
+
+func reportRingEstimate(cfg *config.Config) {
+	estimate := config.RingEstimateBytes(cfg)
+	metrics.RingEstimatedMemoryBytes.Set(float64(estimate))
+	if estimate > 8192*1024*1024 {
+		log.Printf("WARN ring: estimated memory %d bytes exceeds 8 GiB", estimate)
+	}
 }
 
 func reportToStatPoints(nodeID string, report *pb.StatsReport) []store.StatPoint {
@@ -485,7 +472,10 @@ func reportToStatPoints(nodeID string, report *pb.StatsReport) []store.StatPoint
 
 	// Inbound prefix stats (direction=receives)
 	for _, ps := range report.PrefixStats {
-		prefix := netutil.FormatPrefix(ps.Prefix, ps.PrefixLen)
+		prefix, _, ok := netutil.CanonicalPrefix(ps.Prefix, ps.PrefixLen)
+		if !ok {
+			continue
+		}
 		sp := store.StatPoint{
 			Time:      ts,
 			NodeID:    nodeID,
@@ -514,7 +504,10 @@ func reportToStatPoints(nodeID string, report *pb.StatsReport) []store.StatPoint
 	}
 	// Inbound per-IP stats (direction=receives)
 	for _, ip := range report.IpStats {
-		dstIP := net.IP(ip.DstIp).String()
+		dstIP, ok := netutil.CanonicalIP(ip.DstIp)
+		if !ok {
+			continue
+		}
 		sp := store.StatPoint{
 			Time:      ts,
 			NodeID:    nodeID,
@@ -544,7 +537,10 @@ func reportToStatPoints(nodeID string, report *pb.StatsReport) []store.StatPoint
 
 	// Outbound prefix stats (direction=sends)
 	for _, sps := range report.GetSrcPrefixStats() {
-		prefix := netutil.FormatPrefix(sps.Prefix, sps.PrefixLen)
+		prefix, _, ok := netutil.CanonicalPrefix(sps.Prefix, sps.PrefixLen)
+		if !ok {
+			continue
+		}
 		sp := store.StatPoint{
 			Time:      ts,
 			NodeID:    nodeID,
@@ -566,7 +562,10 @@ func reportToStatPoints(nodeID string, report *pb.StatsReport) []store.StatPoint
 
 	// Outbound per-IP stats (direction=sends)
 	for _, sip := range report.GetSrcIpStats() {
-		srcIP := net.IP(sip.DstIp).String() // proto reuses dst_ip bytes for src_ip
+		srcIP, ok := netutil.CanonicalIP(sip.DstIp) // proto reuses dst_ip bytes for src_ip
+		if !ok {
+			continue
+		}
 		sp := store.StatPoint{
 			Time:      ts,
 			NodeID:    nodeID,
@@ -603,4 +602,49 @@ func knownDecoderList() string {
 		}
 	}
 	return fmt.Sprintf("%d:[%s]", len(names), strings.Join(names, ","))
+}
+
+// recoverOnStartup is shared by main and the startup ordering behavior test.
+func recoverOnStartup(ctx context.Context, routes, prepare, reconcile, cleanup func(context.Context), attacks func(context.Context) error, orphans func(context.Context)) {
+	routes(ctx)
+	prepare(ctx)
+	reconcile(ctx)
+	cleanup(ctx)
+	if err := attacks(ctx); err != nil {
+		log.Printf("tracker recovery: %v", err)
+	}
+	orphans(ctx)
+}
+
+func dynamicBreaches(nodes, prefixes []string, rings *ring.RingStore, pe *baseline.ProfileEngine, window int) []engine.ThresholdExceeded {
+	if window < 1 {
+		window = 1
+	}
+	var exceeded []engine.ThresholdExceeded
+	for _, nodeID := range nodes {
+		for _, prefix := range prefixes {
+			if dp, ok := rings.LatestPrefix(nodeID, prefix, 5*time.Second); ok {
+				if yes, reason := pe.IsExceeded(nodeID, prefix, dp.PPS, dp.BPS); yes {
+					n := threshold.SustainedRun(rings.LatestNPrefix(nodeID, prefix, window), func(p ring.DataPoint) bool {
+						y, _ := pe.IsExceeded(nodeID, prefix, p.PPS, p.BPS)
+						return y
+					})
+					exceeded = append(exceeded, engine.ThresholdExceeded{
+						Prefix:    prefix,
+						Direction: "receives",
+						Decoder:   "ip",
+						Unit:      "pps",
+						Value:     0,
+						Actual:    dp.PPS,
+						Domain:    "subnet",
+						NodeID:    nodeID,
+						Source:    "dynamic",
+						Sustained: max(n, 1),
+					})
+					_ = reason
+				}
+			}
+		}
+	}
+	return exceeded
 }

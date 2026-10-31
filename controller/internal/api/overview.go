@@ -17,17 +17,23 @@ type nodeInfo struct {
 	Mode string `json:"mode"`
 }
 
+type nodeTraffic struct {
+	ID  string `json:"id"`
+	PPS int64  `json:"pps"`
+	BPS int64  `json:"bps"`
+}
+
 type prefixTraffic struct {
-	Prefix  string     `json:"prefix"`
-	PPS     int64      `json:"pps"`
-	BPS     int64      `json:"bps"`
-	TCPPPS  int32      `json:"tcp_pps"`
-	UDPPPS  int32      `json:"udp_pps"`
-	ICMPPPS int32      `json:"icmp_pps"`
-	TCPBPS  int64      `json:"tcp_bps"`
-	UDPBPS  int64      `json:"udp_bps"`
-	ICMPBPS int64      `json:"icmp_bps"`
-	Nodes   []nodeInfo `json:"nodes"`
+	Prefix  string          `json:"prefix"`
+	PPS     int64           `json:"pps"`
+	BPS     int64           `json:"bps"`
+	TCPPPS  int32           `json:"tcp_pps"`
+	UDPPPS  int32           `json:"udp_pps"`
+	ICMPPPS int32           `json:"icmp_pps"`
+	TCPBPS  int64           `json:"tcp_bps"`
+	UDPBPS  int64           `json:"udp_bps"`
+	ICMPBPS int64           `json:"icmp_bps"`
+	Nodes   []nodeInfo      `json:"nodes"`
 	nodeSet map[string]bool `json:"-"`
 }
 
@@ -41,6 +47,7 @@ func trafficOverview(deps Dependencies) gin.HandlerFunc {
 				"node_count":      0,
 				"active_prefixes": 0,
 				"top_prefixes":    []any{},
+				"nodes":           []nodeTraffic{},
 			})
 			return
 		}
@@ -58,24 +65,25 @@ func trafficOverview(deps Dependencies) gin.HandlerFunc {
 		// Collect prefix traffic from the appropriate ring(s)
 		type ringSource struct {
 			nps    []ring.NodePrefix
-			getRing func(nodeID, prefix string) *ring.PrefixRing
+			latest func(nodeID, prefix string, maxAge time.Duration) (ring.DataPoint, bool)
 		}
 		var sources []ringSource
 		if direction == "receives" || direction == "both" {
 			sources = append(sources, ringSource{
 				nps:    rings.AllNodePrefixes(),
-				getRing: rings.GetPrefixRing,
+				latest: rings.LatestPrefix,
 			})
 		}
 		if direction == "sends" || direction == "both" {
 			sources = append(sources, ringSource{
 				nps:    rings.AllOutboundNodePrefixes(),
-				getRing: rings.GetSrcPrefixRing,
+				latest: rings.LatestSrcPrefix,
 			})
 		}
 
 		prefixMap := make(map[string]*prefixTraffic)
 		nodeSet := make(map[string]bool)
+		nodeTotals := make(map[string]nodeTraffic)
 		var totalPPS, totalBPS int64
 
 		for _, src := range sources {
@@ -84,11 +92,7 @@ func trafficOverview(deps Dependencies) gin.HandlerFunc {
 				if np.Prefix == "0.0.0.0/0" {
 					continue
 				}
-				pr := src.getRing(np.NodeID, np.Prefix)
-				if pr == nil {
-					continue
-				}
-				dp, found := pr.LatestOne(10 * time.Second)
+				dp, found := src.latest(np.NodeID, np.Prefix, 10*time.Second)
 				if !found {
 					continue
 				}
@@ -99,6 +103,11 @@ func trafficOverview(deps Dependencies) gin.HandlerFunc {
 				}
 
 				nodeSet[np.NodeID] = true
+				nt := nodeTotals[np.NodeID]
+				nt.ID = np.NodeID
+				nt.PPS += dp.PPS
+				nt.BPS += dp.BPS
+				nodeTotals[np.NodeID] = nt
 				totalPPS += dp.PPS
 				totalBPS += dp.BPS
 
@@ -153,8 +162,14 @@ func trafficOverview(deps Dependencies) gin.HandlerFunc {
 			topPrefixes = topPrefixes[:topN]
 		}
 
+		nodes := make([]nodeTraffic, 0, len(nodeTotals))
+		for _, node := range nodeTotals {
+			nodes = append(nodes, node)
+		}
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 		ok(c, gin.H{
 			"total_pps":       totalPPS,
+			"nodes":           nodes,
 			"total_bps":       totalBPS,
 			"node_count":      len(nodeSet),
 			"active_prefixes": len(prefixMap),
@@ -181,6 +196,8 @@ func totalTimeseries(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		filter := store.TimeseriesFilter{
+			Prefix:        c.Query("prefix"),
+			NodeID:        c.Query("node_id"),
 			Resolution:    resolution,
 			Direction:     dir,
 			Limit:         limit,
@@ -199,10 +216,13 @@ func totalTimeseries(deps Dependencies) gin.HandlerFunc {
 		if filter.From.IsZero() {
 			filter.From = time.Now().Add(-1 * time.Hour)
 		}
+		if !parseTimeseriesDstIP(c, &filter) {
+			return
+		}
 
 		points, err := deps.Store.Stats().QueryTotalTimeseries(c, filter)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, points)

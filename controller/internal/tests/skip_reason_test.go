@@ -51,8 +51,9 @@ func dispatch(eng *action.Engine, attack *store.Attack) {
 
 // findSkipLog returns the first skipped log for the given action_id.
 func findSkipLog(ms *MockStore, actionID int) *store.ActionExecutionLog {
-	for i := range ms.actionExecLog.logs {
-		l := &ms.actionExecLog.logs[i]
+	logs := ms.actionExecLog.snapshotLogs()
+	for i := range logs {
+		l := &logs[i]
 		if l.ActionID == actionID && l.Status == "skipped" {
 			return l
 		}
@@ -85,7 +86,7 @@ func TestSkipReason_PreconditionNotMatched_StructuredFailure(t *testing.T) {
 
 	l := findSkipLog(ms, 10)
 	if l == nil {
-		t.Fatalf("S11: expected skipped log for action 10, got none: all=%+v", ms.actionExecLog.logs)
+		t.Fatalf("S11: expected skipped log for action 10, got none: all=%+v", ms.actionExecLog.snapshotLogs())
 	}
 	if l.SkipReason != action.SkipReasonPreconditionNotMatched {
 		t.Errorf("S11: skip_reason = %q, want %q", l.SkipReason, action.SkipReasonPreconditionNotMatched)
@@ -124,7 +125,7 @@ func TestSkipReason_FirstMatchSuppressed(t *testing.T) {
 	// first_match_suppressed.
 	l := findSkipLog(ms, 21)
 	if l == nil {
-		t.Fatalf("S12: expected skipped log for action 21, got none: all=%+v", ms.actionExecLog.logs)
+		t.Fatalf("S12: expected skipped log for action 21, got none: all=%+v", ms.actionExecLog.snapshotLogs())
 	}
 	if l.SkipReason != action.SkipReasonFirstMatchSuppressed {
 		t.Errorf("S12: skip_reason = %q, want %q", l.SkipReason, action.SkipReasonFirstMatchSuppressed)
@@ -193,8 +194,9 @@ func TestSkipReason_AlreadyExecuted_RunModeOnce(t *testing.T) {
 	dispatch(eng, attack)
 
 	var skipLog *store.ActionExecutionLog
-	for i := range ms.actionExecLog.logs {
-		l := &ms.actionExecLog.logs[i]
+	logs := ms.actionExecLog.snapshotLogs()
+	for i := range logs {
+		l := &logs[i]
 		if l.ActionID == 40 && l.Status == "skipped" {
 			skipLog = l
 			break
@@ -245,7 +247,7 @@ func TestSkipReason_AutoPairedChild_NotFirstMatchSuppressed(t *testing.T) {
 	// filtered by the phase gate — NOT logged as first_match_suppressed.
 	dispatch(eng, attack)
 
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 61 && l.SkipReason == action.SkipReasonFirstMatchSuppressed {
 			t.Fatalf("S15: on_expired child (id=61) was misattributed as first_match_suppressed; "+
 				"full log=%+v", l)
@@ -269,8 +271,9 @@ func TestSkipReason_ExecutionManual_NoSkipLog(t *testing.T) {
 
 	dispatch(eng, attack)
 
-	if len(ms.actionExecLog.logs) > 0 {
-		t.Errorf("S16: execution=manual should NOT produce any log; got %+v", ms.actionExecLog.logs)
+	logs := ms.actionExecLog.snapshotLogs()
+	if len(logs) > 0 {
+		t.Errorf("S16: execution=manual should NOT produce any log; got %+v", logs)
 	}
 }
 
@@ -298,13 +301,13 @@ func TestSkipReason_ExecutionManual_DoesNotBlockAutoFirstMatch(t *testing.T) {
 	dispatch(eng, attack)
 
 	// manual (id=80) must NOT have any log
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 80 {
 			t.Errorf("S17: manual action (id=80) must not produce any log; got %+v", l)
 		}
 	}
 	// auto (id=81) must NOT be logged as first_match_suppressed by the manual
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 81 && l.SkipReason == action.SkipReasonFirstMatchSuppressed {
 			t.Errorf("S17: auto action (id=81) should NOT be blocked by manual predecessor; got %+v", l)
 		}
@@ -327,7 +330,7 @@ func TestSkipReason_ExecutionManual_NotFirstMatchSuppressed_EvenWhenAfterAuto(t 
 	dispatch(eng, attack)
 
 	// manual (id=91) must NOT be logged as first_match_suppressed
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 91 {
 			t.Errorf("S17 inverse: manual action (id=91) must not produce any log even when it comes after a matched auto; got %+v", l)
 		}
@@ -355,7 +358,7 @@ func TestSkipReason_DecoderNotXDropCompatible_IPDecoder(t *testing.T) {
 
 	l := findSkipLog(ms, 100)
 	if l == nil {
-		t.Fatalf("expected skipped log for xdrop action with decoder=ip; got none: all=%+v", ms.actionExecLog.logs)
+		t.Fatalf("expected skipped log for xdrop action with decoder=ip; got none: all=%+v", ms.actionExecLog.snapshotLogs())
 	}
 	if l.SkipReason != action.SkipReasonDecoderNotSupported {
 		t.Errorf("skip_reason = %q, want %q", l.SkipReason, action.SkipReasonDecoderNotSupported)
@@ -382,7 +385,7 @@ func TestSkipReason_DecoderNotXDropCompatible_FragmentAllowed(t *testing.T) {
 	// Should NOT be skipped for decoder reasons. (It may still fail
 	// downstream due to missing xdrop connector, but that's `failed`,
 	// not `skipped+decoder_not_xdrop_compatible`.)
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 101 && l.SkipReason == action.SkipReasonDecoderNotSupported {
 			t.Errorf("fragment decoder should NOT be gated; got skip_reason=%q", l.SkipReason)
 		}
@@ -402,7 +405,7 @@ func TestSkipReason_DecoderNotXDropCompatible_TcpSynAllowed(t *testing.T) {
 
 	dispatch(eng, attack)
 
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 102 && l.SkipReason == action.SkipReasonDecoderNotSupported {
 			t.Errorf("tcp_syn decoder should NOT be gated; got skip_reason=%q", l.SkipReason)
 		}
@@ -412,10 +415,10 @@ func TestSkipReason_DecoderNotXDropCompatible_TcpSynAllowed(t *testing.T) {
 // v1.2.1 regression: pins the exact dispatch-loop ordering for the 3
 // intertwined gates (first_match / decoder / manual). The ordering is:
 //
-//   1. mode_observe, execution=manual, first_match check (all pre-existing)
-//   2. mark firstMatchTypes[act.ActionType]
-//   3. decoder compatibility gate (NEW in v1.2.1)
-//   4. goroutine → executeAction
+//  1. mode_observe, execution=manual, first_match check (all pre-existing)
+//  2. mark firstMatchTypes[act.ActionType]
+//  3. decoder compatibility gate (NEW in v1.2.1)
+//  4. goroutine → executeAction
 //
 // Scenario: two xDrop actions on the same response, attack decoder=ip.
 // Expected log outcomes:
@@ -472,44 +475,11 @@ func TestSkipReason_DecoderGateOrdering_WithFirstMatch(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSkipReason_XDropAnomalyRequiresDrop_BadFragmentRateLimit(t *testing.T) {
-	act := store.ResponseAction{
-		ID: 110, ActionType: "xdrop", XDropAction: "rate_limit",
-		TriggerPhase: "on_detected", RunMode: "once", Enabled: true,
-	}
-	ms, eng, attack := setupDispatchMock(t, "auto", []store.ResponseAction{act})
-	attack.DecoderFamily = "bad_fragment"
-
-	dispatch(eng, attack)
-
-	l := findSkipLog(ms, 110)
-	if l == nil {
-		t.Fatalf("expected skipped log for xdrop anomaly + rate_limit; got none: all=%+v", ms.actionExecLog.logs)
-	}
-	if l.SkipReason != action.SkipReasonXDropAnomalyRequiresDrop {
-		t.Errorf("skip_reason = %q, want %q", l.SkipReason, action.SkipReasonXDropAnomalyRequiresDrop)
-	}
-	if !strings.Contains(l.ErrorMessage, "bad_fragment") || !strings.Contains(l.ErrorMessage, "filter_l4") {
-		t.Errorf("error_message should name the decoder + suggest filter_l4; got %q", l.ErrorMessage)
-	}
+	assertLegacyAnomalyV3(t, "bad_fragment", 110)
 }
 
 func TestSkipReason_XDropAnomalyRequiresDrop_InvalidRateLimit(t *testing.T) {
-	act := store.ResponseAction{
-		ID: 111, ActionType: "xdrop", XDropAction: "rate_limit",
-		TriggerPhase: "on_detected", RunMode: "once", Enabled: true,
-	}
-	ms, eng, attack := setupDispatchMock(t, "auto", []store.ResponseAction{act})
-	attack.DecoderFamily = "invalid"
-
-	dispatch(eng, attack)
-
-	l := findSkipLog(ms, 111)
-	if l == nil {
-		t.Fatalf("expected skipped log for xdrop invalid + rate_limit; got none")
-	}
-	if l.SkipReason != action.SkipReasonXDropAnomalyRequiresDrop {
-		t.Errorf("skip_reason = %q, want %q", l.SkipReason, action.SkipReasonXDropAnomalyRequiresDrop)
-	}
+	assertLegacyAnomalyV3(t, "invalid", 111)
 }
 
 // Positive control: anomaly + filter_l4 (drop) passes the gate. Only the
@@ -525,7 +495,7 @@ func TestSkipReason_XDropAnomalyRequiresDrop_BadFragmentFilterL4Allowed(t *testi
 
 	dispatch(eng, attack)
 
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 112 && l.SkipReason == action.SkipReasonXDropAnomalyRequiresDrop {
 			t.Errorf("bad_fragment + filter_l4 should NOT be gated; got skip_reason=%q", l.SkipReason)
 		}
@@ -545,7 +515,7 @@ func TestSkipReason_XDropAnomalyRequiresDrop_UDPRateLimitAllowed(t *testing.T) {
 
 	dispatch(eng, attack)
 
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 113 && l.SkipReason == action.SkipReasonXDropAnomalyRequiresDrop {
 			t.Errorf("udp + rate_limit should NOT be gated; got skip_reason=%q", l.SkipReason)
 		}
@@ -565,7 +535,7 @@ func TestSkipReason_DecoderNotXDropCompatible_BGPNotGated(t *testing.T) {
 
 	dispatch(eng, attack)
 
-	for _, l := range ms.actionExecLog.logs {
+	for _, l := range ms.actionExecLog.snapshotLogs() {
 		if l.ActionID == 103 && l.SkipReason == action.SkipReasonDecoderNotSupported {
 			t.Errorf("BGP action must NOT be gated by xdrop decoder whitelist; got skip_reason=%q", l.SkipReason)
 		}

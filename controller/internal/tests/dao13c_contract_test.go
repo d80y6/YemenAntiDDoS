@@ -1,0 +1,10 @@
+package tests
+
+import (
+	"testing"
+
+	"github.com/littlewolf9527/xsight/controller/internal/store/storetest"
+)
+
+func TestDao13c_F5_Mock(t *testing.T) { storetest.RunDao13cF5(t, dao5bOpenMock) }
+func TestDao13c_K2_Mock(t *testing.T) { storetest.RunDao13cK2(t, dao5bOpenMock) }

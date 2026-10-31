@@ -1,0 +1,6125 @@
+{
+  "sites": [
+    {
+      "file": "views/Login.vue",
+      "count": 1,
+      "excluded": "Successful login has side effects outside the scope of these parity tests."
+    },
+    {
+      "file": "views/attacks/AttackDetail.vue",
+      "count": 1,
+      "excluded": "force-remove 成功路径划出"
+    },
+    {
+      "file": "views/attacks/ExpireConfirm.vue",
+      "count": 1,
+      "excluded": "手动结束攻击整条划出"
+    },
+    {
+      "file": "views/baseline/Baseline.vue",
+      "count": 1,
+      "steps": [
+        "config-save",
+        "config-order"
+      ]
+    },
+    {
+      "file": "views/connectors/Connectors.vue",
+      "count": 1,
+      "steps": [
+        "qg-bgp-in-use",
+        "qg-xdrop-in-use",
+        "qg-webhook-in-use",
+        "qg-shell-in-use",
+        "qg-bgp-delete-3",
+        "qg-bgp-delete-5",
+        "qg-bgp-delete-999",
+        "qg-xdrop-delete-3",
+        "qg-xdrop-delete-5",
+        "qg-xdrop-delete-999",
+        "qg-webhook-delete-3",
+        "qg-webhook-delete-5",
+        "qg-webhook-delete-999",
+        "qg-shell-delete-3",
+        "qg-shell-delete-5",
+        "qg-shell-delete-999",
+        "qg-bgp-announcements",
+        "qg-empty-shell-delete-1",
+        "qg-empty-shell-delete-2",
+        "qg-empty-webhook-delete-1",
+        "qg-empty-webhook-delete-2"
+      ]
+    },
+    {
+      "file": "views/connectors/data.ts",
+      "count": 4,
+      "steps": [
+        "qg-bgp-create",
+        "qg-bgp-duplicate",
+        "qg-bgp-after-duplicate",
+        "qg-xdrop-create",
+        "qg-xdrop-duplicate",
+        "qg-xdrop-after-duplicate",
+        "qg-webhook-create",
+        "qg-webhook-duplicate",
+        "qg-webhook-after-duplicate",
+        "qg-shell-create",
+        "qg-shell-duplicate",
+        "qg-shell-after-duplicate",
+        "qg-xdrop-address-key",
+        "qg-xdrop-timeout-no-key",
+        "qg-webhook-mask",
+        "qg-webhook-clear",
+        "qg-webhook-stale-mask",
+        "qg-shell-preserve-stdin",
+        "qg-shell-unknown-var",
+        "qg-bgp-clear-description"
+      ]
+    },
+    {
+      "file": "views/connectors/probe.ts",
+      "count": 1,
+      "excluded": "测试 / 路由端点真发 HTTP / exec，不进入差分执行器"
+    },
+    {
+      "file": "views/flow/data.ts",
+      "count": 6,
+      "steps": [
+        "qh-listener-create",
+        "qh-listener-duplicate",
+        "qh-listener-text-unique",
+        "qh-listener-format",
+        "qh-listener-zero",
+        "qh-listener-overflow",
+        "qh-listener-plus-port",
+        "qh-listener-edit",
+        "qh-listener-toggle",
+        "qh-listener-update-conflict",
+        "qh-source-v4",
+        "qh-source-v6",
+        "qh-source-inet-duplicate",
+        "qh-source-cidr",
+        "qh-source-leading-zero",
+        "qh-source-embedded",
+        "qh-source-force",
+        "qh-source-none",
+        "qh-source-edit",
+        "qh-source-update-conflict",
+        "qh-source-toggle",
+        "qh-source-seed-zero-edit",
+        "qh-source-delete",
+        "qh-source-delete-missing",
+        "qh-listener-cascade",
+        "qh-listener-delete-missing",
+        "qh-source-int32-max",
+        "qh-source-int32-overflow",
+        "qh-source-int32-update-overflow",
+        "qh-node-listener",
+        "qh-node-source"
+      ]
+    },
+    {
+      "file": "views/mitigations/Mitigations.vue",
+      "count": 1,
+      "steps": [
+        "orphan-dismiss",
+        "orphan-dismiss-twice",
+        "orphan-undismiss",
+        "orphan-undismiss-twice",
+        "orphan-dismiss-missing",
+        "orphan-undismiss-missing",
+        "orphan-withdraw-missing",
+        "orphan-withdraw-state"
+      ]
+    },
+    {
+      "file": "views/nodes/AddNode.vue",
+      "count": 1,
+      "steps": [
+        "node-create",
+        "node-duplicate",
+        "node-recreate"
+      ]
+    },
+    {
+      "file": "views/nodes/Detail.vue",
+      "count": 1,
+      "steps": [
+        "node-delete",
+        "node-delete-missing",
+        "qh-node-cascade"
+      ]
+    },
+    {
+      "file": "views/prefixes/Prefixes.vue",
+      "count": 3,
+      "steps": [
+        "B2-global-create",
+        "B2-global-update",
+        "parent-cycle",
+        "parent-clear",
+        "parent-bind",
+        "prefix-delete-max",
+        "parent-missing",
+        "prefix-next",
+        "prefix-update",
+        "cidr-invalid",
+        "cidr-host4",
+        "cidr-host6",
+        "cidr-expanded",
+        "cidr-leading",
+        "cidr-zeros",
+        "cidr-mapped",
+        "cidr-global6",
+        "global-template-missing",
+        "prefix-template-fk",
+        "prefix-after-fk",
+        "cidr-single-zero",
+        "cidr-bare-v4",
+        "cidr-short-v4",
+        "cidr-classful",
+        "cidr-bare-v6",
+        "cidr-mapped-expanded",
+        "cidr-mapped-uppercase",
+        "cidr-mapped-full",
+        "cidr-global-alias",
+        "cascade-parent",
+        "cascade-child",
+        "cascade-parent-delete",
+        "cidr-clean-prefix-1",
+        "cidr-clean-prefix-2",
+        "cidr-clean-prefix-3",
+        "cidr-clean-prefix-4",
+        "cidr-clean-prefix-5",
+        "cidr-clean-prefix-6",
+        "cidr-clean-prefix-8",
+        "cidr-clean-prefix-10",
+        "cidr-clean-prefix-11",
+        "cidr-clean-prefix-12",
+        "cidr-clean-prefix-13",
+        "cidr-clean-prefix-15",
+        "cidr-clean-prefix-16",
+        "cidr-clean-prefix-17",
+        "cidr-clean-prefix-18",
+        "cidr-clean-prefix-19",
+        "cidr-clean-prefix-20",
+        "cidr-clean-prefix-22",
+        "cidr-compatible"
+      ]
+    },
+    {
+      "file": "views/responses/ResponseDetail.vue",
+      "count": 2,
+      "steps": [
+        "response-update",
+        "action-delete-max",
+        "action-delete-stale",
+        "action-delete-pair",
+        "action-delete-once",
+        "action-delete-twice",
+        "action-after-cascade",
+        "qg-empty-clear-webhook-action-1"
+      ]
+    },
+    {
+      "file": "views/responses/Responses.vue",
+      "count": 2,
+      "steps": [
+        "P1",
+        "P1-renamed",
+        "response-create-stale",
+        "response-delete-max",
+        "response-next",
+        "response-cascade",
+        "P2-response-delete"
+      ]
+    },
+    {
+      "file": "views/responses/data.ts",
+      "count": 4,
+      "steps": [
+        "action-fk-fail",
+        "action-create",
+        "conditions-create",
+        "action-enable",
+        "action-next",
+        "condition-live-disable",
+        "conditions-action-fk",
+        "conditions-after-fk",
+        "action-update",
+        "conditions-clear-disable",
+        "conditions-delete-max",
+        "conditions-clear-enable",
+        "conditions-next-disable",
+        "conditions-next",
+        "conditions-next-enable",
+        "global-action-reject",
+        "sends-action-reject",
+        "xdrop-all",
+        "xdrop-update",
+        "action-after-pair-delete",
+        "action-stale-invalid"
+      ]
+    },
+    {
+      "file": "views/thresholds/Detail.vue",
+      "count": 1,
+      "steps": [
+        "rule-delete"
+      ]
+    },
+    {
+      "file": "views/thresholds/ResponseSelect.vue",
+      "count": 1,
+      "steps": [
+        "P3-sends",
+        "P3-global",
+        "B2-blocking-template",
+        "template-response-fk",
+        "rule-response-fk",
+        "global-bind-live",
+        "global-unbind",
+        "sends-bind-live",
+        "sends-unbind"
+      ]
+    },
+    {
+      "file": "views/thresholds/RuleDrawer.vue",
+      "count": 2,
+      "steps": [
+        "flat-unique",
+        "flat-after-unique",
+        "N1",
+        "flat-after-fk",
+        "template-rule-create",
+        "template-rule-unique",
+        "template-rule-next",
+        "rule-update-unique",
+        "rule-update",
+        "rule-pct-ip",
+        "rule-template-fk",
+        "rule-after-template-fk",
+        "cascade-rule"
+      ]
+    },
+    {
+      "file": "views/thresholds/Rules.vue",
+      "count": 1,
+      "steps": [
+        "P2-rule-delete"
+      ]
+    },
+    {
+      "file": "views/thresholds/TemplateDrawer.vue",
+      "count": 2,
+      "steps": [
+        "template-rename",
+        "template-next",
+        "template-unique",
+        "template-after-unique"
+      ]
+    },
+    {
+      "file": "views/thresholds/Templates.vue",
+      "count": 2,
+      "steps": [
+        "P4",
+        "template-delete-max",
+        "duplicate-unique",
+        "duplicate-after-unique",
+        "duplicate-single-rule"
+      ]
+    },
+    {
+      "file": "views/users/data.ts",
+      "count": 3,
+      "steps": [
+        "qi-user-create",
+        "qi-user-duplicate",
+        "qi-user-after-duplicate",
+        "qi-user-case",
+        "qi-user-role",
+        "qi-user-disable",
+        "qi-user-password",
+        "qi-user-empty-password",
+        "qi-user-seed-operator",
+        "qi-user-missing",
+        "qi-user-delete",
+        "qi-user-delete-missing",
+        "qi-user-pw-72",
+        "qi-user-pw-73",
+        "qi-user-pw-multibyte",
+        "qi-user-pw-after",
+        "qi-user-pw-update-73",
+        "qi-user-pw-update-trim",
+        "qj-admin-demote",
+        "qj-admin-disable",
+        "qj-last-demote",
+        "qj-last-disable",
+        "qj-last-delete",
+        "qj-last-password",
+        "qj-disabled-admin-delete",
+        "qj-promote",
+        "qj-demote-with-peer",
+        "qj-last-delete-peer"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "initial",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Initial state: exactly the specified set of read requests.",
+      "method": "GET",
+      "path": "/api/prefixes",
+      "body": null,
+      "reads": [
+        "/api/threshold-templates",
+        "/api/threshold-templates/8",
+        "/api/threshold-templates/7",
+        "/api/threshold-templates/9",
+        "/api/thresholds",
+        "/api/dynamic-detection/config",
+        "/api/responses",
+        "/api/responses/1",
+        "/api/responses/2",
+        "/api/responses/3",
+        "/api/actions/1/preconditions",
+        "/api/actions/2/preconditions",
+        "/api/actions/12/preconditions",
+        "/api/actions/17/preconditions",
+        "/api/actions/11/preconditions",
+        "/api/actions/13/preconditions",
+        "/api/actions/15/preconditions",
+        "/api/actions/14/preconditions",
+        "/api/actions/16/preconditions",
+        "/api/actions/18/preconditions",
+        "/api/settings/webhook-connectors",
+        "/api/settings/shell-connectors",
+        "/api/settings/bgp-connectors",
+        "/api/settings/xdrop-connectors"
+      ]
+    },
+    {
+      "id": "qg-bgp-in-use",
+      "site": "views/connectors/Connectors.vue",
+      "why": "种子动作 1/12/13/15/16 仍引用连接器，409",
+      "method": "DELETE",
+      "path": "/api/settings/bgp-connectors/1",
+      "body": null,
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ]
+    },
+    {
+      "id": "qg-bgp-create",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "POST",
+      "path": "/api/settings/bgp-connectors",
+      "body": {
+        "name": "qg BGP",
+        "bgp_asn": 65000,
+        "vtysh_path": "/mock/missing",
+        "description": "memo",
+        "enabled": false
+      },
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg BGP",
+          "bgp_asn": 65000,
+          "vtysh_path": "/mock/missing",
+          "description": "memo",
+          "enabled": false,
+          "kind": "bgp"
+        }
+      }
+    },
+    {
+      "id": "qg-bgp-duplicate",
+      "site": "views/connectors/data.ts",
+      "why": "名称 UNIQUE 409，失败 INSERT 消耗 4",
+      "method": "POST",
+      "path": "/api/settings/bgp-connectors",
+      "body": {
+        "name": "qg BGP",
+        "bgp_asn": 65000,
+        "vtysh_path": "/mock/missing",
+        "description": "memo",
+        "enabled": false
+      },
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg BGP",
+          "bgp_asn": 65000,
+          "vtysh_path": "/mock/missing",
+          "description": "memo",
+          "enabled": false,
+          "kind": "bgp"
+        }
+      }
+    },
+    {
+      "id": "qg-bgp-after-duplicate",
+      "site": "views/connectors/data.ts",
+      "why": "失败 INSERT 后新建获得 5",
+      "method": "POST",
+      "path": "/api/settings/bgp-connectors",
+      "body": {
+        "name": "qg BGP next",
+        "bgp_asn": 65000,
+        "vtysh_path": "/mock/missing",
+        "description": "memo",
+        "enabled": false
+      },
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg BGP next",
+          "bgp_asn": 65000,
+          "vtysh_path": "/mock/missing",
+          "description": "memo",
+          "enabled": false,
+          "kind": "bgp"
+        }
+      }
+    },
+    {
+      "id": "qg-xdrop-in-use",
+      "site": "views/connectors/Connectors.vue",
+      "why": "种子动作 1/12/13/15/16 仍引用连接器，409",
+      "method": "DELETE",
+      "path": "/api/settings/xdrop-connectors/1",
+      "body": null,
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ]
+    },
+    {
+      "id": "qg-xdrop-create",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "POST",
+      "path": "/api/settings/xdrop-connectors",
+      "body": {
+        "name": "qg XDrop",
+        "api_url": "http://192.0.2.3/api/v1",
+        "api_key": "qg-synthetic-1234",
+        "timeout_ms": 10000
+      },
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg XDrop",
+          "api_url": "http://192.0.2.3/api/v1",
+          "api_key": "qg-synthetic-1234",
+          "timeout_ms": 10000,
+          "kind": "xdrop"
+        }
+      }
+    },
+    {
+      "id": "qg-xdrop-duplicate",
+      "site": "views/connectors/data.ts",
+      "why": "名称 UNIQUE 409，失败 INSERT 消耗 4",
+      "method": "POST",
+      "path": "/api/settings/xdrop-connectors",
+      "body": {
+        "name": "qg XDrop",
+        "api_url": "http://192.0.2.3/api/v1",
+        "api_key": "qg-synthetic-1234",
+        "timeout_ms": 10000
+      },
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg XDrop",
+          "api_url": "http://192.0.2.3/api/v1",
+          "api_key": "qg-synthetic-1234",
+          "timeout_ms": 10000,
+          "kind": "xdrop"
+        }
+      }
+    },
+    {
+      "id": "qg-xdrop-after-duplicate",
+      "site": "views/connectors/data.ts",
+      "why": "失败 INSERT 后新建获得 5",
+      "method": "POST",
+      "path": "/api/settings/xdrop-connectors",
+      "body": {
+        "name": "qg XDrop next",
+        "api_url": "http://192.0.2.3/api/v1",
+        "api_key": "qg-synthetic-1234",
+        "timeout_ms": 10000
+      },
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg XDrop next",
+          "api_url": "http://192.0.2.3/api/v1",
+          "api_key": "qg-synthetic-1234",
+          "timeout_ms": 10000,
+          "kind": "xdrop"
+        }
+      }
+    },
+    {
+      "id": "qg-webhook-in-use",
+      "site": "views/connectors/Connectors.vue",
+      "why": "种子动作 1/12/13/15/16 仍引用连接器，409",
+      "method": "DELETE",
+      "path": "/api/settings/webhook-connectors/1",
+      "body": null,
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ]
+    },
+    {
+      "id": "qg-webhook-create",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "POST",
+      "path": "/api/settings/webhook-connectors",
+      "body": {
+        "name": "qg Webhook",
+        "url": "http://192.0.2.4/hook",
+        "method": "POST",
+        "headers": {
+          "Authorization": "qg-real"
+        },
+        "timeout_ms": 10000,
+        "global": true
+      },
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg Webhook",
+          "url": "http://192.0.2.4/hook",
+          "method": "POST",
+          "headers": "{\"Authorization\":\"qg-real\"}",
+          "timeout_ms": 10000,
+          "global": true,
+          "kind": "webhook"
+        }
+      }
+    },
+    {
+      "id": "qg-webhook-duplicate",
+      "site": "views/connectors/data.ts",
+      "why": "名称 UNIQUE 409，失败 INSERT 消耗 4",
+      "method": "POST",
+      "path": "/api/settings/webhook-connectors",
+      "body": {
+        "name": "qg Webhook",
+        "url": "http://192.0.2.4/hook",
+        "method": "POST",
+        "headers": {
+          "Authorization": "qg-real"
+        },
+        "timeout_ms": 10000,
+        "global": true
+      },
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg Webhook",
+          "url": "http://192.0.2.4/hook",
+          "method": "POST",
+          "headers": "{\"Authorization\":\"qg-real\"}",
+          "timeout_ms": 10000,
+          "global": true,
+          "kind": "webhook"
+        }
+      }
+    },
+    {
+      "id": "qg-webhook-after-duplicate",
+      "site": "views/connectors/data.ts",
+      "why": "失败 INSERT 后新建获得 5",
+      "method": "POST",
+      "path": "/api/settings/webhook-connectors",
+      "body": {
+        "name": "qg Webhook next",
+        "url": "http://192.0.2.4/hook",
+        "method": "POST",
+        "headers": {
+          "Authorization": "qg-real"
+        },
+        "timeout_ms": 10000,
+        "global": true
+      },
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg Webhook next",
+          "url": "http://192.0.2.4/hook",
+          "method": "POST",
+          "headers": "{\"Authorization\":\"qg-real\"}",
+          "timeout_ms": 10000,
+          "global": true,
+          "kind": "webhook"
+        }
+      }
+    },
+    {
+      "id": "qg-shell-in-use",
+      "site": "views/connectors/Connectors.vue",
+      "why": "种子动作 1/12/13/15/16 仍引用连接器，409",
+      "method": "DELETE",
+      "path": "/api/settings/shell-connectors/1",
+      "body": null,
+      "reads": [
+        "/api/settings/shell-connectors"
+      ]
+    },
+    {
+      "id": "qg-shell-create",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "POST",
+      "path": "/api/settings/shell-connectors",
+      "body": {
+        "name": "qg Shell",
+        "command": "/bin/true",
+        "default_args": "--attack {attack_id}",
+        "timeout_ms": 30000
+      },
+      "reads": [
+        "/api/settings/shell-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg Shell",
+          "command": "/bin/true",
+          "default_args": "--attack {attack_id}",
+          "timeout_ms": 30000,
+          "kind": "shell"
+        }
+      }
+    },
+    {
+      "id": "qg-shell-duplicate",
+      "site": "views/connectors/data.ts",
+      "why": "名称 UNIQUE 409，失败 INSERT 消耗 4",
+      "method": "POST",
+      "path": "/api/settings/shell-connectors",
+      "body": {
+        "name": "qg Shell",
+        "command": "/bin/true",
+        "default_args": "--attack {attack_id}",
+        "timeout_ms": 30000
+      },
+      "reads": [
+        "/api/settings/shell-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg Shell",
+          "command": "/bin/true",
+          "default_args": "--attack {attack_id}",
+          "timeout_ms": 30000,
+          "kind": "shell"
+        }
+      }
+    },
+    {
+      "id": "qg-shell-after-duplicate",
+      "site": "views/connectors/data.ts",
+      "why": "失败 INSERT 后新建获得 5",
+      "method": "POST",
+      "path": "/api/settings/shell-connectors",
+      "body": {
+        "name": "qg Shell next",
+        "command": "/bin/true",
+        "default_args": "--attack {attack_id}",
+        "timeout_ms": 30000
+      },
+      "reads": [
+        "/api/settings/shell-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg Shell next",
+          "command": "/bin/true",
+          "default_args": "--attack {attack_id}",
+          "timeout_ms": 30000,
+          "kind": "shell"
+        }
+      }
+    },
+    {
+      "id": "qg-xdrop-address-key",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "PUT",
+      "path": "/api/settings/xdrop-connectors/3",
+      "body": {
+        "name": "qg XDrop",
+        "api_url": "http://192.0.2.5/api/v1",
+        "api_key": "qg-next-5678",
+        "timeout_ms": 10000,
+        "enabled": false
+      },
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg XDrop",
+          "api_url": "http://192.0.2.5/api/v1",
+          "api_key": "qg-next-5678",
+          "timeout_ms": 10000,
+          "enabled": false,
+          "kind": "xdrop",
+          "row": {
+            "id": 3,
+            "api_url": "http://192.0.2.3/api/v1"
+          }
+        }
+      }
+    },
+    {
+      "id": "qg-xdrop-timeout-no-key",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "PUT",
+      "path": "/api/settings/xdrop-connectors/3",
+      "body": {
+        "name": "qg XDrop",
+        "api_url": "http://192.0.2.5/api/v1",
+        "timeout_ms": 12000,
+        "enabled": false
+      },
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg XDrop",
+          "api_url": "http://192.0.2.5/api/v1",
+          "api_key": "",
+          "timeout_ms": 12000,
+          "enabled": false,
+          "kind": "xdrop",
+          "row": {
+            "id": 3,
+            "api_url": "http://192.0.2.5/api/v1"
+          }
+        }
+      }
+    },
+    {
+      "id": "qg-webhook-mask",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "PUT",
+      "path": "/api/settings/webhook-connectors/1",
+      "body": {
+        "name": "Alert hook",
+        "url": "http://192.0.2.1/hook",
+        "method": "POST",
+        "headers": {
+          "Authorization": "******"
+        },
+        "timeout_ms": 10000,
+        "global": false,
+        "enabled": true
+      },
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "Alert hook",
+          "url": "http://192.0.2.1/hook",
+          "method": "POST",
+          "headers": "{\"Authorization\":\"******\"}",
+          "timeout_ms": 10000,
+          "global": false,
+          "enabled": true,
+          "kind": "webhook",
+          "row": {
+            "id": 1,
+            "headers": {
+              "Authorization": "******"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "qg-webhook-clear",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "PUT",
+      "path": "/api/settings/webhook-connectors/1",
+      "body": {
+        "name": "Alert hook",
+        "url": "http://192.0.2.1/hook",
+        "method": "POST",
+        "headers": {},
+        "timeout_ms": 10000,
+        "global": false,
+        "enabled": true
+      },
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "Alert hook",
+          "url": "http://192.0.2.1/hook",
+          "method": "POST",
+          "headers": "",
+          "timeout_ms": 10000,
+          "global": false,
+          "enabled": true,
+          "kind": "webhook",
+          "row": {
+            "id": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "qg-webhook-stale-mask",
+      "site": "views/connectors/data.ts",
+      "why": "陈旧页面仍持有 Authorization 掩码；仓储已清空，400",
+      "method": "PUT",
+      "path": "/api/settings/webhook-connectors/1",
+      "body": {
+        "name": "Alert hook",
+        "url": "http://192.0.2.1/hook",
+        "method": "POST",
+        "headers": {
+          "Authorization": "******"
+        },
+        "timeout_ms": 10000,
+        "global": false,
+        "enabled": true
+      },
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "Alert hook",
+          "url": "http://192.0.2.1/hook",
+          "method": "POST",
+          "headers": "{\"Authorization\":\"******\"}",
+          "timeout_ms": 10000,
+          "global": false,
+          "enabled": true,
+          "kind": "webhook",
+          "row": {
+            "id": 1,
+            "headers": {
+              "Authorization": "******"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "qg-shell-preserve-stdin",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "PUT",
+      "path": "/api/settings/shell-connectors/2",
+      "body": {
+        "name": "Disabled shell",
+        "command": "/bin/true",
+        "default_args": "--ip {dst_ip}",
+        "timeout_ms": 10000,
+        "enabled": false
+      },
+      "reads": [
+        "/api/settings/shell-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "Disabled shell",
+          "command": "/bin/true",
+          "default_args": "--ip {dst_ip}",
+          "timeout_ms": 10000,
+          "enabled": false,
+          "kind": "shell",
+          "row": {
+            "id": 2,
+            "pass_stdin": true
+          }
+        }
+      }
+    },
+    {
+      "id": "qg-shell-unknown-var",
+      "site": "views/connectors/data.ts",
+      "why": "后端原文 default_args contains unknown template variable {qg_unknown}",
+      "method": "POST",
+      "path": "/api/settings/shell-connectors",
+      "body": {
+        "name": "qg Shell",
+        "command": "/bin/true",
+        "default_args": "{qg_unknown}",
+        "timeout_ms": 30000
+      },
+      "reads": [
+        "/api/settings/shell-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg Shell",
+          "command": "/bin/true",
+          "default_args": "{qg_unknown}",
+          "timeout_ms": 30000,
+          "kind": "shell"
+        }
+      }
+    },
+    {
+      "id": "qg-bgp-clear-description",
+      "site": "views/connectors/data.ts",
+      "why": "连接器写入后逐字段读回",
+      "method": "PUT",
+      "path": "/api/settings/bgp-connectors/3",
+      "body": {
+        "name": "qg BGP",
+        "bgp_asn": 65000,
+        "vtysh_path": "/mock/missing",
+        "description": "",
+        "enabled": false
+      },
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ],
+      "builder": {
+        "fn": "connectorBody",
+        "form": {
+          "name": "qg BGP",
+          "bgp_asn": 65000,
+          "vtysh_path": "/mock/missing",
+          "description": "",
+          "enabled": false,
+          "kind": "bgp",
+          "row": {
+            "id": 3,
+            "description": "memo"
+          }
+        }
+      }
+    },
+    {
+      "id": "qg-bgp-delete-3",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/bgp-connectors/3",
+      "body": null,
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ]
+    },
+    {
+      "id": "qg-bgp-delete-5",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/bgp-connectors/5",
+      "body": null,
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ]
+    },
+    {
+      "id": "qg-bgp-delete-999",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/bgp-connectors/999",
+      "body": null,
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ]
+    },
+    {
+      "id": "qg-xdrop-delete-3",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/xdrop-connectors/3",
+      "body": null,
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ]
+    },
+    {
+      "id": "qg-xdrop-delete-5",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/xdrop-connectors/5",
+      "body": null,
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ]
+    },
+    {
+      "id": "qg-xdrop-delete-999",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/xdrop-connectors/999",
+      "body": null,
+      "reads": [
+        "/api/settings/xdrop-connectors"
+      ]
+    },
+    {
+      "id": "qg-webhook-delete-3",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/webhook-connectors/3",
+      "body": null,
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ]
+    },
+    {
+      "id": "qg-webhook-delete-5",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/webhook-connectors/5",
+      "body": null,
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ]
+    },
+    {
+      "id": "qg-webhook-delete-999",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/webhook-connectors/999",
+      "body": null,
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ]
+    },
+    {
+      "id": "qg-shell-delete-3",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/shell-connectors/3",
+      "body": null,
+      "reads": [
+        "/api/settings/shell-connectors"
+      ]
+    },
+    {
+      "id": "qg-shell-delete-5",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/shell-connectors/5",
+      "body": null,
+      "reads": [
+        "/api/settings/shell-connectors"
+      ]
+    },
+    {
+      "id": "qg-shell-delete-999",
+      "site": "views/connectors/Connectors.vue",
+      "why": "连接器写入后逐字段读回",
+      "method": "DELETE",
+      "path": "/api/settings/shell-connectors/999",
+      "body": null,
+      "reads": [
+        "/api/settings/shell-connectors"
+      ]
+    },
+    {
+      "id": "flat-unique",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "A flat default rule conflicts with seed 107; the failed INSERT consumes an ID.",
+      "method": "POST",
+      "path": "/api/thresholds",
+      "body": {
+        "prefix_id": 1,
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "tcp_syn",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/thresholds",
+        "/api/prefixes",
+        "/api/responses"
+      ],
+      "builder": {
+        "fn": "flatBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "tcp_syn",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true,
+          "prefix_id": 1
+        }
+      }
+    },
+    {
+      "id": "flat-after-unique",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "A successful INSERT immediately afterward exposes the consumed ID.",
+      "method": "POST",
+      "path": "/api/thresholds",
+      "body": {
+        "prefix_id": 1,
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "udp",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/thresholds",
+        "/api/prefixes",
+        "/api/responses"
+      ],
+      "builder": {
+        "fn": "flatBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "udp",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true,
+          "prefix_id": 1
+        }
+      }
+    },
+    {
+      "id": "N1",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "N1：前缀编号自由数值 999；FK 失败消耗号",
+      "method": "POST",
+      "path": "/api/thresholds",
+      "body": {
+        "prefix_id": 999,
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "tcp_syn",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/thresholds",
+        "/api/prefixes",
+        "/api/responses"
+      ],
+      "builder": {
+        "fn": "flatBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "tcp_syn",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true,
+          "prefix_id": 999
+        }
+      }
+    },
+    {
+      "id": "flat-after-fk",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "N1 后同表成功 INSERT",
+      "method": "POST",
+      "path": "/api/thresholds",
+      "body": {
+        "prefix_id": 1,
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "icmp",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/thresholds",
+        "/api/prefixes",
+        "/api/responses"
+      ],
+      "builder": {
+        "fn": "flatBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "icmp",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true,
+          "prefix_id": 1
+        }
+      }
+    },
+    {
+      "id": "template-rule-create",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "First insertion of this key from the template details view.",
+      "method": "POST",
+      "path": "/api/threshold-templates/7/rules",
+      "body": {
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "tcp_syn",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ],
+      "builder": {
+        "fn": "ruleBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "tcp_syn",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true
+        }
+      }
+    },
+    {
+      "id": "template-rule-unique",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "A second insertion of the same key from template details returns 23505.",
+      "method": "POST",
+      "path": "/api/threshold-templates/7/rules",
+      "body": {
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "tcp_syn",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ],
+      "builder": {
+        "fn": "ruleBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "tcp_syn",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true
+        }
+      }
+    },
+    {
+      "id": "template-rule-next",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "唯一冲突后同表新建观察跳号",
+      "method": "POST",
+      "path": "/api/threshold-templates/7/rules",
+      "body": {
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "udp",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ],
+      "builder": {
+        "fn": "ruleBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "udp",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true
+        }
+      }
+    },
+    {
+      "id": "rule-update-unique",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "Editing to the same key as rule 112 in the same template fails; read back the original row.",
+      "method": "PUT",
+      "path": "/api/threshold-rules/114",
+      "body": {
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "tcp_syn",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ],
+      "builder": {
+        "fn": "ruleBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "tcp_syn",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true
+        }
+      }
+    },
+    {
+      "id": "rule-update",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "编辑规则成功",
+      "method": "PUT",
+      "path": "/api/threshold-rules/114",
+      "body": {
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "udp",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 501,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ],
+      "builder": {
+        "fn": "ruleBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "udp",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 501,
+          "inheritable": true
+        }
+      }
+    },
+    {
+      "id": "rule-pct-ip",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "The page can select ip and pct; the value 80 passes pctError.",
+      "method": "POST",
+      "path": "/api/threshold-templates/7/rules",
+      "body": {
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "ip",
+        "unit": "pct",
+        "comparison": "over",
+        "value": 80,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ],
+      "builder": {
+        "fn": "ruleBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "ip",
+          "unit": "pct",
+          "comparison": "over",
+          "value": 80,
+          "inheritable": true
+        }
+      }
+    },
+    {
+      "id": "rule-delete",
+      "site": "views/thresholds/Detail.vue",
+      "why": "模板详情删除规则",
+      "method": "DELETE",
+      "path": "/api/threshold-rules/114",
+      "body": null,
+      "reads": [
+        "/api/threshold-templates/7"
+      ]
+    },
+    {
+      "id": "P1",
+      "site": "views/responses/Responses.vue",
+      "why": "P1：删除被当前模板引用的响应",
+      "method": "DELETE",
+      "path": "/api/responses/1",
+      "body": null,
+      "reads": [
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "template-rename",
+      "site": "views/thresholds/TemplateDrawer.vue",
+      "why": "P1′ 前置：模板详情改名",
+      "method": "PUT",
+      "path": "/api/threshold-templates/7",
+      "body": {
+        "name": "Transit renamed",
+        "description": "Shared traffic thresholds"
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ]
+    },
+    {
+      "id": "P1-renamed",
+      "site": "views/responses/Responses.vue",
+      "why": "P1′：删除冲突原文必须使用新模板名",
+      "method": "DELETE",
+      "path": "/api/responses/1",
+      "body": null,
+      "reads": [
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "P4",
+      "site": "views/thresholds/Templates.vue",
+      "why": "P4：旧页面快照显示未绑定，别处绑定后删除；前缀文本序",
+      "method": "DELETE",
+      "path": "/api/threshold-templates/7",
+      "body": null,
+      "reads": [
+        "/api/threshold-templates",
+        "/api/thresholds",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "P3-sends",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "P3：sends 规则选择含 xdrop/bgp 且非 XDrop action 描述的响应 3",
+      "method": "PUT",
+      "path": "/api/threshold-rules/103",
+      "body": {
+        "response_id": 3
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ]
+    },
+    {
+      "id": "P3-global",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "P3：全局模板选择同一阻断响应 3",
+      "method": "PUT",
+      "path": "/api/threshold-templates/8",
+      "body": {
+        "response_id": 3
+      },
+      "reads": [
+        "/api/threshold-templates/8"
+      ]
+    },
+    {
+      "id": "B2-blocking-template",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "Prerequisite: bind a blocking response to a template with no outbound rules.",
+      "method": "PUT",
+      "path": "/api/threshold-templates/9",
+      "body": {
+        "response_id": 2
+      },
+      "reads": [
+        "/api/threshold-templates/9"
+      ]
+    },
+    {
+      "id": "B2-global-create",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Select a blocking template for the global prefix.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "0.0.0.0/0",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": 9
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "0.0.0.0/0",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "9",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "B2-global-update",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Select a blocking template while editing the global prefix.",
+      "method": "PUT",
+      "path": "/api/prefixes/8",
+      "body": {
+        "name": "Global",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": 9,
+        "enabled": true
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "0.0.0.0/0",
+          "name": "Global",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "9",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "parent-cycle",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "前缀选择其子前缀为父级，handler 先行拒绝",
+      "method": "PUT",
+      "path": "/api/prefixes/1",
+      "body": {
+        "name": "Transit",
+        "ip_group": "",
+        "parent_id": 4,
+        "threshold_template_id": 7,
+        "enabled": true
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.0/24",
+          "name": "Transit",
+          "ip_group": "",
+          "parent_id": "4",
+          "threshold_template_id": "7",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "parent-clear",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Explicit null clears the parent and template.",
+      "method": "PUT",
+      "path": "/api/prefixes/4",
+      "body": {
+        "name": "Transit child",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null,
+        "enabled": true
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.0/24",
+          "name": "Transit child",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "parent-bind",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Valid numeric values restore the bindings.",
+      "method": "PUT",
+      "path": "/api/prefixes/4",
+      "body": {
+        "name": "Transit child",
+        "ip_group": "",
+        "parent_id": 1,
+        "threshold_template_id": 7,
+        "enabled": true
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.0/24",
+          "name": "Transit child",
+          "ip_group": "",
+          "parent_id": "1",
+          "threshold_template_id": "7",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "prefix-delete-max",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "前缀最大 id 删除，旧快照保留父级 9",
+      "method": "DELETE",
+      "path": "/api/prefixes/9",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ]
+    },
+    {
+      "id": "parent-missing",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Parent 9 from the stale page snapshot has already been deleted elsewhere.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "198.51.100.0/24",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": 9,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.0/24",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "9",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "prefix-next",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "前缀删除最大后新建不复用 9",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "198.51.100.0/24",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.0/24",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "prefix-update",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "前缀编辑成功不发送 prefix",
+      "method": "PUT",
+      "path": "/api/prefixes/10",
+      "body": {
+        "name": "Parity edited",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null,
+        "enabled": true
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.0/24",
+          "name": "Parity edited",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-invalid",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "前缀自由文本输入；PG cidr 或 handler 先行拒绝",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "not-a-prefix",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "not-a-prefix",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-host4",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "前缀自由文本输入；PG cidr 或 handler 先行拒绝",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "198.51.100.1/24",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.1/24",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-host6",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Free-text prefix input is rejected first by PostgreSQL cidr parsing or the handler; an equivalent address in a documentation range preserves branch coverage and text sort constraints.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "2001:db8:fffb::1/48",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "2001:db8:fffb::1/48",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-expanded",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Free-text prefix input is rejected first by PostgreSQL cidr parsing or the handler; an equivalent address in a documentation range preserves branch coverage and text sort constraints.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "2001:db8:fffb:0:0:0:0:0/48",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "2001:db8:fffb:0:0:0:0:0/48",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-leading",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Free-text prefix input is rejected first by PostgreSQL cidr parsing or the handler; an equivalent address in a documentation range preserves branch coverage and text sort constraints.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "2001:0db8:fffc:0000::/48",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "2001:0db8:fffc:0000::/48",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-zeros",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Free-text prefix input is rejected first by PostgreSQL cidr parsing or the handler; an equivalent address in a documentation range preserves branch coverage and text sort constraints.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "2001:db8:fffd:0:1:0:0:0/80",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "2001:db8:fffd:0:1:0:0:0/80",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-mapped",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "前缀自由文本输入；PG cidr 或 handler 先行拒绝",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "::ffff:192.0.2.0/120",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "::ffff:192.0.2.0/120",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-global6",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "前缀自由文本输入；PG cidr 或 handler 先行拒绝",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "::/0",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "::/0",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "template-delete-max",
+      "site": "views/thresholds/Templates.vue",
+      "why": "删除最大模板 9；旧页面快照保留引用供后续 FK 见证",
+      "method": "DELETE",
+      "path": "/api/threshold-templates/9",
+      "body": null,
+      "reads": [
+        "/api/threshold-templates",
+        "/api/thresholds",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "global-template-missing",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "旧页面快照模板 9 被删；全局 handler 先行拒绝，不消耗号",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "0.0.0.0/0",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": 9
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "0.0.0.0/0",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "9",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "prefix-template-fk",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "旧页面快照模板 9 被删；非全局前缀 FK 失败消耗号",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "198.51.100.0/24",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": 9
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.0/24",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "9",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "prefix-after-fk",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "A successful creation in the same table immediately after a failed INSERT exposes the consumed ID; an equivalent address in a documentation range preserves branch coverage and text sort constraints.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "198.51.100.128/25",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.128/25",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "rule-template-fk",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "旧页面快照模板 9 被删；模板规则 FK 失败",
+      "method": "POST",
+      "path": "/api/threshold-templates/9/rules",
+      "body": {
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "gre",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/threshold-templates/9"
+      ],
+      "builder": {
+        "fn": "ruleBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "gre",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true
+        }
+      }
+    },
+    {
+      "id": "rule-after-template-fk",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "FK 失败后紧跟同表成功新建观察跳号",
+      "method": "POST",
+      "path": "/api/threshold-templates/7/rules",
+      "body": {
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "gre",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ],
+      "builder": {
+        "fn": "ruleBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "gre",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true
+        }
+      }
+    },
+    {
+      "id": "template-next",
+      "site": "views/thresholds/TemplateDrawer.vue",
+      "why": "最大模板 9 删除后新建不复用",
+      "method": "POST",
+      "path": "/api/threshold-templates",
+      "body": {
+        "name": "Unused next",
+        "description": ""
+      },
+      "reads": [
+        "/api/threshold-templates",
+        "/api/thresholds",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "template-unique",
+      "site": "views/thresholds/TemplateDrawer.vue",
+      "why": "A duplicate template name consumes an ID.",
+      "method": "POST",
+      "path": "/api/threshold-templates",
+      "body": {
+        "name": "Unused next",
+        "description": ""
+      },
+      "reads": [
+        "/api/threshold-templates",
+        "/api/thresholds",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "template-after-unique",
+      "site": "views/thresholds/TemplateDrawer.vue",
+      "why": "重名失败后紧跟成功新建观察跳号",
+      "method": "POST",
+      "path": "/api/threshold-templates",
+      "body": {
+        "name": "Unused other",
+        "description": ""
+      },
+      "reads": [
+        "/api/threshold-templates",
+        "/api/thresholds",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "duplicate-unique",
+      "site": "views/thresholds/Templates.vue",
+      "why": "Copying to a duplicate name consumes an ID.",
+      "method": "POST",
+      "path": "/api/threshold-templates/12/duplicate",
+      "body": {
+        "name": "Unused next"
+      },
+      "reads": [
+        "/api/threshold-templates",
+        "/api/thresholds",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "duplicate-after-unique",
+      "site": "views/thresholds/Templates.vue",
+      "why": "复制重名后紧跟成功复制；源模板无规则，免不确定规则 id",
+      "method": "POST",
+      "path": "/api/threshold-templates/12/duplicate",
+      "body": {
+        "name": "Unused replica"
+      },
+      "reads": [
+        "/api/threshold-templates",
+        "/api/thresholds",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "config-save",
+      "site": "views/baseline/Baseline.vue",
+      "why": "配置保存成功",
+      "method": "PUT",
+      "path": "/api/dynamic-detection/config",
+      "body": {
+        "enabled": false,
+        "deviation_min": 50,
+        "deviation_max": 150,
+        "stable_weeks": 6,
+        "min_pps": 2000,
+        "min_bps": 16000,
+        "ewma_alpha": 0.25
+      },
+      "reads": [],
+      "builder": {
+        "fn": "configBody",
+        "form": {
+          "enabled": false,
+          "deviation_min": 50,
+          "deviation_max": 150,
+          "stable_weeks": 6,
+          "min_pps": 2000,
+          "min_bps": 16000,
+          "ewma_alpha": 0.25
+        }
+      }
+    },
+    {
+      "id": "config-order",
+      "site": "views/baseline/Baseline.vue",
+      "why": "The numeric controls allow min to exceed max.",
+      "method": "PUT",
+      "path": "/api/dynamic-detection/config",
+      "body": {
+        "enabled": true,
+        "deviation_min": 151,
+        "deviation_max": 150,
+        "stable_weeks": 6,
+        "min_pps": 2000,
+        "min_bps": 16000,
+        "ewma_alpha": 0.25
+      },
+      "reads": [],
+      "builder": {
+        "fn": "configBody",
+        "form": {
+          "enabled": true,
+          "deviation_min": 151,
+          "deviation_max": 150,
+          "stable_weeks": 6,
+          "min_pps": 2000,
+          "min_bps": 16000,
+          "ewma_alpha": 0.25
+        }
+      }
+    },
+    {
+      "id": "response-create-stale",
+      "site": "views/responses/Responses.vue",
+      "why": "新增响应 4；其他页面保留快照",
+      "method": "POST",
+      "path": "/api/responses",
+      "body": {
+        "name": "Parity temporary",
+        "description": ""
+      },
+      "reads": [
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "response-delete-max",
+      "site": "views/responses/Responses.vue",
+      "why": "删除最大响应 4，旧页面快照待保存",
+      "method": "DELETE",
+      "path": "/api/responses/4",
+      "body": null,
+      "reads": [
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "response-next",
+      "site": "views/responses/Responses.vue",
+      "why": "删除最大后新建响应不复用",
+      "method": "POST",
+      "path": "/api/responses",
+      "body": {
+        "name": "Parity live",
+        "description": ""
+      },
+      "reads": [
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "response-update",
+      "site": "views/responses/ResponseDetail.vue",
+      "why": "响应基本信息保存",
+      "method": "PUT",
+      "path": "/api/responses/5",
+      "body": {
+        "name": "Parity live renamed",
+        "description": "Updated",
+        "enabled": true
+      },
+      "reads": [
+        "/api/responses/5"
+      ]
+    },
+    {
+      "id": "template-response-fk",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "旧页面快照响应 4 已被删除；模板 UPDATE FK 失败，读回原行",
+      "method": "PUT",
+      "path": "/api/threshold-templates/7",
+      "body": {
+        "response_id": 4
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ]
+    },
+    {
+      "id": "rule-response-fk",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "旧页面快照响应 4 已被删除；规则 UPDATE FK 失败，读回原行",
+      "method": "PUT",
+      "path": "/api/threshold-rules/103",
+      "body": {
+        "response_id": 4
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ]
+    },
+    {
+      "id": "action-fk-fail",
+      "site": "views/responses/data.ts",
+      "why": "旧页面快照响应 4 被删；动作 INSERT FK 失败",
+      "method": "POST",
+      "path": "/api/responses/4/actions",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/4",
+        "/api/actions/100/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": null,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [],
+          "phase": "on_detected"
+        }
+      }
+    },
+    {
+      "id": "action-create",
+      "site": "views/responses/data.ts",
+      "why": "FK 失败后紧跟同表成功 INSERT；三步保存第一步禁用",
+      "method": "POST",
+      "path": "/api/responses/5/actions",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": false,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/5",
+        "/api/actions/101/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": null,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [
+            {
+              "attribute": "decoder",
+              "operator": "eq",
+              "value": "udp"
+            }
+          ],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": false
+        }
+      }
+    },
+    {
+      "id": "conditions-create",
+      "site": "views/responses/data.ts",
+      "why": "三步保存第二步条件；写后 GET 观察全局 id 3",
+      "method": "PUT",
+      "path": "/api/actions/101/preconditions",
+      "body": {
+        "preconditions": [
+          {
+            "attribute": "decoder",
+            "operator": "eq",
+            "value": "udp"
+          }
+        ]
+      },
+      "reads": [
+        "/api/responses/5",
+        "/api/actions/101/preconditions"
+      ]
+    },
+    {
+      "id": "action-enable",
+      "site": "views/responses/data.ts",
+      "why": "三步保存第三步启用",
+      "method": "PUT",
+      "path": "/api/actions/101",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/5",
+        "/api/actions/101/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 101,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [
+            {
+              "attribute": "decoder",
+              "operator": "eq",
+              "value": "udp"
+            }
+          ],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "action-delete-max",
+      "site": "views/responses/ResponseDetail.vue",
+      "why": "删除最大动作 101；条件级联删除",
+      "method": "DELETE",
+      "path": "/api/actions/101",
+      "body": null,
+      "reads": [
+        "/api/responses/5"
+      ]
+    },
+    {
+      "id": "action-next",
+      "site": "views/responses/data.ts",
+      "why": "删除最大后新建不复用动作 id；旧快照保存中途准备删除",
+      "method": "POST",
+      "path": "/api/responses/5/actions",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": false,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/5",
+        "/api/actions/102/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": null,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [
+            {
+              "attribute": "decoder",
+              "operator": "eq",
+              "value": "udp"
+            }
+          ],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": false
+        }
+      }
+    },
+    {
+      "id": "condition-live-disable",
+      "site": "views/responses/data.ts",
+      "why": "另一编辑器三步保存第一步禁用，暂停等候条件提交",
+      "method": "PUT",
+      "path": "/api/actions/1",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": false,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 1,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [
+            {
+              "attribute": "decoder",
+              "operator": "eq",
+              "value": "udp"
+            }
+          ],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": false
+        }
+      }
+    },
+    {
+      "id": "action-delete-stale",
+      "site": "views/responses/ResponseDetail.vue",
+      "why": "保存中途别处删除动作 102",
+      "method": "DELETE",
+      "path": "/api/actions/102",
+      "body": null,
+      "reads": [
+        "/api/responses/5"
+      ]
+    },
+    {
+      "id": "conditions-action-fk",
+      "site": "views/responses/data.ts",
+      "why": "保存中途别处删除动作 102；非空条件 INSERT 23503 并消耗号",
+      "method": "PUT",
+      "path": "/api/actions/102/preconditions",
+      "body": {
+        "preconditions": [
+          {
+            "attribute": "decoder",
+            "operator": "eq",
+            "value": "udp"
+          }
+        ]
+      },
+      "reads": [
+        "/api/responses/5",
+        "/api/actions/102/preconditions"
+      ]
+    },
+    {
+      "id": "conditions-after-fk",
+      "site": "views/responses/data.ts",
+      "why": "失败条件 INSERT 后紧跟同表成功条件写入；GET 观察跳号 5",
+      "method": "PUT",
+      "path": "/api/actions/1/preconditions",
+      "body": {
+        "preconditions": [
+          {
+            "attribute": "decoder",
+            "operator": "eq",
+            "value": "udp"
+          }
+        ]
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ]
+    },
+    {
+      "id": "action-update",
+      "site": "views/responses/data.ts",
+      "why": "条件成功后第三步重新启用",
+      "method": "PUT",
+      "path": "/api/actions/1",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 1,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [
+            {
+              "attribute": "decoder",
+              "operator": "eq",
+              "value": "udp"
+            }
+          ],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "conditions-clear-disable",
+      "site": "views/responses/data.ts",
+      "why": "清空条件前第一步禁用",
+      "method": "PUT",
+      "path": "/api/actions/1",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": false,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 1,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": false
+        }
+      }
+    },
+    {
+      "id": "conditions-delete-max",
+      "site": "views/responses/data.ts",
+      "why": "动作编辑器清空最大 id 条件；空数组只 DELETE",
+      "method": "PUT",
+      "path": "/api/actions/1/preconditions",
+      "body": {
+        "preconditions": []
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ]
+    },
+    {
+      "id": "conditions-clear-enable",
+      "site": "views/responses/data.ts",
+      "why": "清空条件后第三步重新启用",
+      "method": "PUT",
+      "path": "/api/actions/1",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 1,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "conditions-next-disable",
+      "site": "views/responses/data.ts",
+      "why": "再次添加条件前第一步禁用",
+      "method": "PUT",
+      "path": "/api/actions/1",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": false,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 1,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [
+            {
+              "attribute": "decoder",
+              "operator": "eq",
+              "value": "udp"
+            }
+          ],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": false
+        }
+      }
+    },
+    {
+      "id": "conditions-next",
+      "site": "views/responses/data.ts",
+      "why": "条件删除最大后再次写入不复用 id；GET 观察 6",
+      "method": "PUT",
+      "path": "/api/actions/1/preconditions",
+      "body": {
+        "preconditions": [
+          {
+            "attribute": "decoder",
+            "operator": "eq",
+            "value": "udp"
+          }
+        ]
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ]
+    },
+    {
+      "id": "conditions-next-enable",
+      "site": "views/responses/data.ts",
+      "why": "再次添加条件后第三步启用",
+      "method": "PUT",
+      "path": "/api/actions/1",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/1",
+        "/api/actions/1/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 1,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [
+            {
+              "attribute": "decoder",
+              "operator": "eq",
+              "value": "udp"
+            }
+          ],
+          "phase": "on_detected"
+        },
+        "extra": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "global-bind-live",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "无阻断动作的响应绑定全局模板成功",
+      "method": "PUT",
+      "path": "/api/threshold-templates/8",
+      "body": {
+        "response_id": 5
+      },
+      "reads": [
+        "/api/threshold-templates/8"
+      ]
+    },
+    {
+      "id": "global-action-reject",
+      "site": "views/responses/data.ts",
+      "why": "全局模板引用当前响应时拒绝新增阻断动作",
+      "method": "POST",
+      "path": "/api/responses/5/actions",
+      "body": {
+        "action_type": "bgp",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected",
+        "bgp_route_map": "RTBH",
+        "bgp_withdraw_delay_minutes": 0
+      },
+      "reads": [
+        "/api/responses/5"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": null,
+          "action_type": "bgp",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "RTBH",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [],
+          "phase": "on_detected"
+        }
+      }
+    },
+    {
+      "id": "global-unbind",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "全局模板清空默认响应",
+      "method": "PUT",
+      "path": "/api/threshold-templates/8",
+      "body": {
+        "response_id": null
+      },
+      "reads": [
+        "/api/threshold-templates/8"
+      ]
+    },
+    {
+      "id": "sends-bind-live",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "出方向规则选择无阻断动作的响应成功",
+      "method": "PUT",
+      "path": "/api/threshold-rules/103",
+      "body": {
+        "response_id": 5
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ]
+    },
+    {
+      "id": "sends-action-reject",
+      "site": "views/responses/data.ts",
+      "why": "当前出方向规则引用时拒绝新增阻断动作",
+      "method": "POST",
+      "path": "/api/responses/5/actions",
+      "body": {
+        "action_type": "xdrop",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": null,
+        "period_seconds": null,
+        "trigger_phase": "on_detected",
+        "xdrop_action": "filter_l4",
+        "xdrop_fields": [
+          "dst_ip"
+        ],
+        "xdrop_rate_limit": null,
+        "target_node_ids": null,
+        "xdrop_custom_payload": {
+          "dst_ip": "{dst_ip}",
+          "action": "drop",
+          "comment": "attack #{attack_id} {decoder}"
+        },
+        "unblock_delay_minutes": 0
+      },
+      "reads": [
+        "/api/responses/5"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": null,
+          "action_type": "xdrop",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [],
+          "phase": "on_detected"
+        }
+      }
+    },
+    {
+      "id": "sends-unbind",
+      "site": "views/thresholds/ResponseSelect.vue",
+      "why": "出方向规则清空响应",
+      "method": "PUT",
+      "path": "/api/threshold-rules/103",
+      "body": {
+        "response_id": null
+      },
+      "reads": [
+        "/api/threshold-templates/7"
+      ]
+    },
+    {
+      "id": "xdrop-all",
+      "site": "views/responses/data.ts",
+      "why": "P5：选全部目标，payload 发 null，读回 []；自动配对",
+      "method": "POST",
+      "path": "/api/responses/5/actions",
+      "body": {
+        "action_type": "xdrop",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": null,
+        "period_seconds": null,
+        "trigger_phase": "on_detected",
+        "xdrop_action": "filter_l4",
+        "xdrop_fields": [
+          "dst_ip"
+        ],
+        "xdrop_rate_limit": null,
+        "target_node_ids": null,
+        "xdrop_custom_payload": {
+          "dst_ip": "{dst_ip}",
+          "action": "drop",
+          "comment": "attack #{attack_id} {decoder}"
+        },
+        "unblock_delay_minutes": 0
+      },
+      "reads": [
+        "/api/responses/5",
+        "/api/actions/103/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": null,
+          "action_type": "xdrop",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [],
+          "phase": "on_detected"
+        }
+      }
+    },
+    {
+      "id": "xdrop-update",
+      "site": "views/responses/data.ts",
+      "why": "xdrop 动作编辑与配对同步，条件读回",
+      "method": "PUT",
+      "path": "/api/actions/103",
+      "body": {
+        "action_type": "xdrop",
+        "priority": 6,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": null,
+        "period_seconds": null,
+        "trigger_phase": "on_detected",
+        "xdrop_action": "filter_l4",
+        "xdrop_fields": [
+          "dst_ip"
+        ],
+        "xdrop_rate_limit": null,
+        "target_node_ids": null,
+        "xdrop_custom_payload": {
+          "dst_ip": "{dst_ip}",
+          "action": "drop",
+          "comment": "attack #{attack_id} {decoder}"
+        },
+        "unblock_delay_minutes": 0
+      },
+      "reads": [
+        "/api/responses/5",
+        "/api/actions/103/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 103,
+          "action_type": "xdrop",
+          "connector_id": 1,
+          "priority": 6,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [],
+          "phase": "on_detected"
+        }
+      }
+    },
+    {
+      "id": "action-delete-pair",
+      "site": "views/responses/ResponseDetail.vue",
+      "why": "删除父动作及配对；当前最大 id 104 被删",
+      "method": "DELETE",
+      "path": "/api/actions/103",
+      "body": null,
+      "reads": [
+        "/api/responses/5"
+      ]
+    },
+    {
+      "id": "action-after-pair-delete",
+      "site": "views/responses/data.ts",
+      "why": "删除最大配对动作后新建保持单调",
+      "method": "POST",
+      "path": "/api/responses/5/actions",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": 1,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [
+        "/api/responses/5",
+        "/api/actions/105/preconditions"
+      ],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": null,
+          "action_type": "webhook",
+          "connector_id": 1,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": true,
+          "preconditions": [],
+          "phase": "on_detected"
+        }
+      }
+    },
+    {
+      "id": "action-delete-once",
+      "site": "views/responses/ResponseDetail.vue",
+      "why": "The first deletion of the action succeeds.",
+      "method": "DELETE",
+      "path": "/api/actions/105",
+      "body": null,
+      "reads": [
+        "/api/responses/5"
+      ]
+    },
+    {
+      "id": "action-delete-twice",
+      "site": "views/responses/ResponseDetail.vue",
+      "why": "Deleting the same action again from a stale page snapshot returns 404.",
+      "method": "DELETE",
+      "path": "/api/actions/105",
+      "body": null,
+      "reads": [
+        "/api/responses/5"
+      ]
+    },
+    {
+      "id": "response-cascade",
+      "site": "views/responses/Responses.vue",
+      "why": "W7：删除响应 3 级联动作／条件／目标",
+      "method": "DELETE",
+      "path": "/api/responses/3",
+      "body": null,
+      "reads": [
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "action-after-cascade",
+      "site": "views/responses/ResponseDetail.vue",
+      "why": "W7：旧页面快照删除原动作 13，应 404",
+      "method": "DELETE",
+      "path": "/api/actions/13",
+      "body": null,
+      "reads": [
+        "/api/responses/3"
+      ]
+    },
+    {
+      "id": "qg-bgp-announcements",
+      "site": "views/connectors/Connectors.vue",
+      "why": "既有 response-cascade 与 action-after-cascade 之后，2 条 orphan 宣告 409",
+      "method": "DELETE",
+      "path": "/api/settings/bgp-connectors/1",
+      "body": null,
+      "reads": [
+        "/api/settings/bgp-connectors"
+      ]
+    },
+    {
+      "id": "P2-rule-delete",
+      "site": "views/thresholds/Rules.vue",
+      "why": "P2：平铺规则页删除引用响应 2 的规则 107",
+      "method": "DELETE",
+      "path": "/api/thresholds/107",
+      "body": null,
+      "reads": [
+        "/api/thresholds",
+        "/api/prefixes",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "P2-response-delete",
+      "site": "views/responses/Responses.vue",
+      "why": "P2：规则引用解除后响应 2 删除成功",
+      "method": "DELETE",
+      "path": "/api/responses/2",
+      "body": null,
+      "reads": [
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "node-create",
+      "site": "views/nodes/AddNode.vue",
+      "why": "节点页面新建 mode=flow 成功",
+      "method": "POST",
+      "path": "/api/nodes",
+      "body": {
+        "id": "parity-node",
+        "api_key": "parity-only",
+        "description": "Parity node",
+        "mode": "flow"
+      },
+      "reads": []
+    },
+    {
+      "id": "node-duplicate",
+      "site": "views/nodes/AddNode.vue",
+      "why": "Recreating the same ID returns 409 in the node write response.",
+      "method": "POST",
+      "path": "/api/nodes",
+      "body": {
+        "id": "parity-node",
+        "api_key": "parity-only",
+        "description": "Parity node",
+        "mode": "flow"
+      },
+      "reads": []
+    },
+    {
+      "id": "node-delete",
+      "site": "views/nodes/Detail.vue",
+      "why": "节点删除成功",
+      "method": "DELETE",
+      "path": "/api/nodes/parity-node",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "node-delete-missing",
+      "site": "views/nodes/Detail.vue",
+      "why": "旧快照再次删除不存在节点仍 200",
+      "method": "DELETE",
+      "path": "/api/nodes/parity-node",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "node-recreate",
+      "site": "views/nodes/AddNode.vue",
+      "why": "已删 id 可重新注册；写状态不能写死种子",
+      "method": "POST",
+      "path": "/api/nodes",
+      "body": {
+        "id": "parity-node",
+        "api_key": "parity-only",
+        "description": "Parity node",
+        "mode": "flow"
+      },
+      "reads": []
+    },
+    {
+      "id": "orphan-dismiss",
+      "site": "views/mitigations/Mitigations.vue",
+      "why": "孤儿忽略成功",
+      "method": "POST",
+      "path": "/api/active-actions/bgp/orphan-dismiss",
+      "body": {
+        "announcement_id": 8
+      },
+      "reads": []
+    },
+    {
+      "id": "orphan-dismiss-twice",
+      "site": "views/mitigations/Mitigations.vue",
+      "why": "旧快照连忽略两次，第二次状态错误",
+      "method": "POST",
+      "path": "/api/active-actions/bgp/orphan-dismiss",
+      "body": {
+        "announcement_id": 8
+      },
+      "reads": []
+    },
+    {
+      "id": "orphan-undismiss",
+      "site": "views/mitigations/Mitigations.vue",
+      "why": "撤销忽略成功",
+      "method": "POST",
+      "path": "/api/active-actions/bgp/orphan-undismiss",
+      "body": {
+        "announcement_id": 8
+      },
+      "reads": []
+    },
+    {
+      "id": "orphan-undismiss-twice",
+      "site": "views/mitigations/Mitigations.vue",
+      "why": "旧快照撤销两次，第二次状态错误",
+      "method": "POST",
+      "path": "/api/active-actions/bgp/orphan-undismiss",
+      "body": {
+        "announcement_id": 8
+      },
+      "reads": []
+    },
+    {
+      "id": "orphan-dismiss-missing",
+      "site": "views/mitigations/Mitigations.vue",
+      "why": "旧快照公告已不存在",
+      "method": "POST",
+      "path": "/api/active-actions/bgp/orphan-dismiss",
+      "body": {
+        "announcement_id": 999
+      },
+      "reads": []
+    },
+    {
+      "id": "orphan-undismiss-missing",
+      "site": "views/mitigations/Mitigations.vue",
+      "why": "旧快照公告已不存在",
+      "method": "POST",
+      "path": "/api/active-actions/bgp/orphan-undismiss",
+      "body": {
+        "announcement_id": 999
+      },
+      "reads": []
+    },
+    {
+      "id": "orphan-withdraw-missing",
+      "site": "views/mitigations/Mitigations.vue",
+      "why": "The announcement in the stale snapshot no longer exists; return safely.",
+      "method": "POST",
+      "path": "/api/active-actions/bgp/orphan-force-withdraw",
+      "body": {
+        "announcement_id": 999
+      },
+      "reads": []
+    },
+    {
+      "id": "orphan-withdraw-state",
+      "site": "views/mitigations/Mitigations.vue",
+      "why": "The stale page snapshot shows an orphan that has since been ignored elsewhere; return safely.",
+      "method": "POST",
+      "path": "/api/active-actions/bgp/orphan-force-withdraw",
+      "body": {
+        "announcement_id": 20
+      },
+      "reads": []
+    },
+    {
+      "id": "cidr-single-zero",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Free-text prefix input contains exactly one zero group and no longer zero run; a single zero group must not be compressed.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "2001:db8:0:1:1:1:1:1/128",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "2001:db8:0:1:1:1:1:1/128",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-bare-v4",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "An omitted IPv4 mask is stored as /32.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "198.51.100.7",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "198.51.100.7",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-short-v4",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Abbreviated IPv4 input is padded with zero octets and uses the explicit /25 mask.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "203.0.113/25",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "203.0.113/25",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-classful",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Classful rules and the supplied octets jointly infer /16.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "10.9",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "10.9",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-bare-v6",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "An omitted IPv6 mask is inferred; distinct groups avoid collation ambiguity, and an equivalent address in a documentation range preserves branch coverage and text sort constraints.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "2001:db8:ffff::1",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "2001:db8:ffff::1",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-mapped-expanded",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "The handler rejects an expanded IPv4-mapped alias before storage, preserving its error message.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "0:0:0:0:0:ffff:c000:200/120",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "0:0:0:0:0:ffff:c000:200/120",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-mapped-uppercase",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "The handler rejects an uppercase IPv4-mapped alias before storage, preserving its error message.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "::FFFF:c000:200/120",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "::FFFF:c000:200/120",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-mapped-full",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "A fully expanded lowercase IPv4-mapped alias is rejected.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "0000:0000:0000:0000:0000:ffff:c000:0200/120",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "0000:0000:0000:0000:0000:ffff:c000:0200/120",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cidr-global-alias",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "The handler rejects a zero-mask IPv6 alias before storage, using the global-prefix error message.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "0:0:0:0:0:0:0:0/0",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "0:0:0:0:0:0:0:0/0",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cascade-parent",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Create dedicated parent prefix id21.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "172.20.0.0/16",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "172.20.0.0/16",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cascade-child",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Create dedicated child prefix id22.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "172.20.1.0/24",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": 21,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "172.20.1.0/24",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "21",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "cascade-rule",
+      "site": "views/thresholds/RuleDrawer.vue",
+      "why": "Create flat rule id117 for dedicated parent prefix 21.",
+      "method": "POST",
+      "path": "/api/thresholds",
+      "body": {
+        "prefix_id": 21,
+        "domain": "internal_ip",
+        "direction": "receives",
+        "decoder": "udp",
+        "unit": "pps",
+        "comparison": "over",
+        "value": 500,
+        "inheritable": true
+      },
+      "reads": [
+        "/api/thresholds",
+        "/api/prefixes",
+        "/api/responses"
+      ],
+      "builder": {
+        "fn": "flatBody",
+        "form": {
+          "domain": "internal_ip",
+          "direction": "receives",
+          "decoder": "udp",
+          "unit": "pps",
+          "comparison": "over",
+          "value": 500,
+          "inheritable": true,
+          "prefix_id": 21
+        }
+      }
+    },
+    {
+      "id": "cascade-parent-delete",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Delete parent 21; read back child 22 with parent_id=null and verify rule 117 is gone.",
+      "method": "DELETE",
+      "path": "/api/prefixes/21",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "duplicate-single-rule",
+      "site": "views/thresholds/Templates.vue",
+      "why": "Template 8 has only rule 105; copying this single rule makes the new rule 118 ID and ownership deterministic.",
+      "method": "POST",
+      "path": "/api/threshold-templates/8/duplicate",
+      "body": {
+        "name": "Global replica"
+      },
+      "reads": [
+        "/api/threshold-templates",
+        "/api/threshold-templates/15",
+        "/api/thresholds",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "action-stale-invalid",
+      "site": "views/responses/data.ts",
+      "why": "Open the stale form for action 105 and clear its connector, then save after action-delete-once deleted it elsewhere; existence is checked before validation.",
+      "method": "PUT",
+      "path": "/api/actions/105",
+      "body": {
+        "action_type": "webhook",
+        "priority": 5,
+        "run_mode": "once",
+        "execution": "automatic",
+        "enabled": true,
+        "connector_id": null,
+        "period_seconds": null,
+        "trigger_phase": "on_detected"
+      },
+      "reads": [],
+      "builder": {
+        "fn": "payload",
+        "form": {
+          "id": 105,
+          "action_type": "webhook",
+          "connector_id": null,
+          "priority": 5,
+          "run_mode": "once",
+          "period_seconds": 60,
+          "execution": "automatic",
+          "xdrop_action": "filter_l4",
+          "xdrop_fields": [
+            "dst_ip"
+          ],
+          "xdrop_rate_limit": 100000,
+          "target_node_ids": [],
+          "shell_extra_args": "",
+          "bgp_route_map": "",
+          "bgp_withdraw_delay_minutes": 0,
+          "unblock_delay_minutes": 0,
+          "enabled": true,
+          "preconditionsLoaded": false,
+          "preconditions": [],
+          "phase": "on_detected"
+        }
+      }
+    },
+    {
+      "id": "cidr-clean-prefix-1",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/1",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-2",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/2",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-3",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/3",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-4",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/4",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-5",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/5",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-6",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/6",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-8",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/8",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-10",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/10",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-11",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/11",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-12",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/12",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-13",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/13",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-15",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/15",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-16",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/16",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-17",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/17",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-18",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/18",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-19",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/19",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-20",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/20",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-clean-prefix-22",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "Before verifying acceptance of IPv4-compatible IPv6 input, remove prefixes to avoid collation mixing zero-compressed and numeric prefix text; the other checks are complete.",
+      "method": "DELETE",
+      "path": "/api/prefixes/22",
+      "body": null,
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates",
+        "/api/thresholds"
+      ]
+    },
+    {
+      "id": "cidr-compatible",
+      "site": "views/prefixes/Prefixes.vue",
+      "why": "The IPv4-compatible IPv6 address is not IPv4-mapped; create id23 and read it back separately to avoid mixed collation ordering.",
+      "method": "POST",
+      "path": "/api/prefixes",
+      "body": {
+        "prefix": "::192.0.2.0/120",
+        "name": "Parity",
+        "ip_group": "",
+        "parent_id": null,
+        "threshold_template_id": null
+      },
+      "reads": [
+        "/api/prefixes",
+        "/api/threshold-templates"
+      ],
+      "builder": {
+        "fn": "prefixBody",
+        "form": {
+          "prefix": "::192.0.2.0/120",
+          "name": "Parity",
+          "ip_group": "",
+          "parent_id": "",
+          "threshold_template_id": "",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qg-empty-clear-webhook-action-1",
+      "site": "views/responses/ResponseDetail.vue",
+      "why": "Existing cascades have removed actions 11/12/18; finally delete action 1, which still references Webhook 1.",
+      "method": "DELETE",
+      "path": "/api/actions/1",
+      "body": null,
+      "reads": [
+        "/api/responses/1",
+        "/api/responses"
+      ]
+    },
+    {
+      "id": "qg-empty-shell-delete-1",
+      "site": "views/connectors/Connectors.vue",
+      "why": "Finally delete shell 1 and read back the list.",
+      "method": "DELETE",
+      "path": "/api/settings/shell-connectors/1",
+      "body": null,
+      "reads": [
+        "/api/settings/shell-connectors"
+      ]
+    },
+    {
+      "id": "qg-empty-shell-delete-2",
+      "site": "views/connectors/Connectors.vue",
+      "why": "Finally delete shell 2 and read back the list; Go nil for the empty table must serialize as null.",
+      "method": "DELETE",
+      "path": "/api/settings/shell-connectors/2",
+      "body": null,
+      "reads": [
+        "/api/settings/shell-connectors"
+      ]
+    },
+    {
+      "id": "qg-empty-webhook-delete-1",
+      "site": "views/connectors/Connectors.vue",
+      "why": "Finally delete webhook 1 and read back the list.",
+      "method": "DELETE",
+      "path": "/api/settings/webhook-connectors/1",
+      "body": null,
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ]
+    },
+    {
+      "id": "qg-empty-webhook-delete-2",
+      "site": "views/connectors/Connectors.vue",
+      "why": "Finally delete webhook 2 and read back the list; Go nil for the empty table must serialize as null.",
+      "method": "DELETE",
+      "path": "/api/settings/webhook-connectors/2",
+      "body": null,
+      "reads": [
+        "/api/settings/webhook-connectors"
+      ]
+    },
+    {
+      "id": "qh-listener-create",
+      "site": "views/flow/data.ts",
+      "why": "Flow Listener write",
+      "method": "POST",
+      "path": "/api/flow-listeners",
+      "body": {
+        "node_id": "flow-b",
+        "listen_address": ":16343",
+        "protocol_mode": "sflow",
+        "description": "Parity listener"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": ":16343",
+          "protocol_mode": "sflow",
+          "description": "Parity listener",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qh-listener-duplicate",
+      "site": "views/flow/data.ts",
+      "why": "409; failed INSERT consumes listener id 3",
+      "method": "POST",
+      "path": "/api/flow-listeners",
+      "body": {
+        "node_id": "flow-b",
+        "listen_address": ":16343",
+        "protocol_mode": "sflow",
+        "description": "Parity listener"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": ":16343",
+          "protocol_mode": "sflow",
+          "description": "Parity listener",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qh-listener-text-unique",
+      "site": "views/flow/data.ts",
+      "why": "Text uniqueness; wildcard spelling is distinct, next id 4",
+      "method": "POST",
+      "path": "/api/flow-listeners",
+      "body": {
+        "node_id": "flow-b",
+        "listen_address": "0.0.0.0:16343",
+        "protocol_mode": "sflow",
+        "description": "Parity listener"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/4"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": "0.0.0.0:16343",
+          "protocol_mode": "sflow",
+          "description": "Parity listener",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qh-listener-format",
+      "site": "views/flow/data.ts",
+      "why": "400 validation before repository; no sequence allocation",
+      "method": "POST",
+      "path": "/api/flow-listeners",
+      "body": {
+        "node_id": "flow-b",
+        "listen_address": "16343",
+        "protocol_mode": "sflow",
+        "description": "Parity listener"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": "16343",
+          "protocol_mode": "sflow",
+          "description": "Parity listener",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qh-listener-zero",
+      "site": "views/flow/data.ts",
+      "why": "400 validation before repository; no sequence allocation",
+      "method": "POST",
+      "path": "/api/flow-listeners",
+      "body": {
+        "node_id": "flow-b",
+        "listen_address": ":0",
+        "protocol_mode": "sflow",
+        "description": "Parity listener"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": ":0",
+          "protocol_mode": "sflow",
+          "description": "Parity listener",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qh-listener-overflow",
+      "site": "views/flow/data.ts",
+      "why": "400 validation before repository; no sequence allocation",
+      "method": "POST",
+      "path": "/api/flow-listeners",
+      "body": {
+        "node_id": "flow-b",
+        "listen_address": ":65536",
+        "protocol_mode": "sflow",
+        "description": "Parity listener"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": ":65536",
+          "protocol_mode": "sflow",
+          "description": "Parity listener",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qh-listener-plus-port",
+      "site": "views/flow/data.ts",
+      "why": "strconv.Atoi accepts plus port; next listener id 5",
+      "method": "POST",
+      "path": "/api/flow-listeners",
+      "body": {
+        "node_id": "flow-b",
+        "listen_address": ":+80",
+        "protocol_mode": "sflow",
+        "description": "Parity listener"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/5"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": ":+80",
+          "protocol_mode": "sflow",
+          "description": "Parity listener",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qh-listener-edit",
+      "site": "views/flow/data.ts",
+      "why": "Flow Listener write",
+      "method": "PUT",
+      "path": "/api/flow-listeners/2",
+      "body": {
+        "listen_address": ":16344",
+        "protocol_mode": "ipfix",
+        "description": " edited ",
+        "enabled": true
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": " :16344 ",
+          "protocol_mode": "ipfix",
+          "description": " edited ",
+          "enabled": true,
+          "row": {
+            "id": 2,
+            "node_id": "flow-b",
+            "listen_address": ":16343",
+            "protocol_mode": "sflow",
+            "description": "Parity listener",
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "qh-listener-toggle",
+      "site": "views/flow/data.ts",
+      "why": "Flow Listener write",
+      "method": "PUT",
+      "path": "/api/flow-listeners/2",
+      "body": {
+        "listen_address": ":16344",
+        "protocol_mode": "ipfix",
+        "description": " edited ",
+        "enabled": false
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "id": 2,
+          "node_id": "flow-b",
+          "listen_address": ":16344",
+          "protocol_mode": "ipfix",
+          "description": " edited ",
+          "enabled": false,
+          "toggle": true,
+          "row": {
+            "id": 2,
+            "node_id": "flow-b",
+            "listen_address": ":16344",
+            "protocol_mode": "ipfix",
+            "description": " edited ",
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "qh-listener-update-conflict",
+      "site": "views/flow/data.ts",
+      "why": "409 UPDATE must preserve listener 4 original row",
+      "method": "PUT",
+      "path": "/api/flow-listeners/4",
+      "body": {
+        "listen_address": ":16344",
+        "protocol_mode": "ipfix",
+        "description": " edited ",
+        "enabled": true
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/4"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "flow-b",
+          "listen_address": ":16344",
+          "protocol_mode": "ipfix",
+          "description": " edited ",
+          "enabled": true,
+          "row": {
+            "id": 4,
+            "node_id": "flow-b",
+            "listen_address": "0.0.0.0:16343",
+            "protocol_mode": "sflow",
+            "description": "Parity listener",
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "qh-source-v4",
+      "site": "views/flow/data.ts",
+      "why": "Flow source write",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 2,
+        "name": "Parity IPv4",
+        "device_ip": "192.0.2.1",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/3"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "192.0.2.1",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2
+        }
+      }
+    },
+    {
+      "id": "qh-source-v6",
+      "site": "views/flow/data.ts",
+      "why": "Readback lowercase compressed IPv6 /128",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 2,
+        "name": "Parity IPv4",
+        "device_ip": "2001:DB8::1",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/4"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "2001:DB8::1",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2
+        }
+      }
+    },
+    {
+      "id": "qh-source-inet-duplicate",
+      "site": "views/flow/data.ts",
+      "why": "409 inet-equivalent IPv6; failed INSERT consumes source id 5",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 2,
+        "name": "Parity IPv4",
+        "device_ip": "2001:db8:0:0:0:0:0:1",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/4"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "2001:db8:0:0:0:0:0:1",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2
+        }
+      }
+    },
+    {
+      "id": "qh-source-cidr",
+      "site": "views/flow/data.ts",
+      "why": "400 Go ParseIP rejection before repository",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 2,
+        "name": "Parity IPv4",
+        "device_ip": "192.0.2.1/32",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/3"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "192.0.2.1/32",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2
+        }
+      }
+    },
+    {
+      "id": "qh-source-leading-zero",
+      "site": "views/flow/data.ts",
+      "why": "400 Go ParseIP rejection before repository",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 2,
+        "name": "Parity IPv4",
+        "device_ip": "192.0.2.01",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/3"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "192.0.2.01",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2
+        }
+      }
+    },
+    {
+      "id": "qh-source-embedded",
+      "site": "views/flow/data.ts",
+      "why": "Embedded IPv4 readback is hexadecimal; next source id 6",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 2,
+        "name": "Parity IPv4",
+        "device_ip": "2001:db8::192.0.2.1",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/6"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "2001:db8::192.0.2.1",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2
+        }
+      }
+    },
+    {
+      "id": "qh-source-force",
+      "site": "views/flow/data.ts",
+      "why": "Flow source write",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 2,
+        "name": "Parity IPv4",
+        "device_ip": "198.51.100.10",
+        "sample_mode": "force",
+        "sample_rate": 2000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/7"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "198.51.100.10",
+          "sample_mode": "force",
+          "sample_rate": 2000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2
+        }
+      }
+    },
+    {
+      "id": "qh-source-none",
+      "site": "views/flow/data.ts",
+      "why": "Flow source write",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 2,
+        "name": "Parity IPv4",
+        "device_ip": "198.51.100.11",
+        "sample_mode": "none",
+        "sample_rate": 1000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/8"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "198.51.100.11",
+          "sample_mode": "none",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2
+        }
+      }
+    },
+    {
+      "id": "qh-source-edit",
+      "site": "views/flow/data.ts",
+      "why": "Edit refill removes /32 before PUT, form name trims",
+      "method": "PUT",
+      "path": "/api/flow-sources/3",
+      "body": {
+        "name": "Renamed",
+        "device_ip": "192.0.2.2",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source ",
+        "enabled": true
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/3"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": " Renamed ",
+          "device_ip": "192.0.2.2",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2,
+          "row": {
+            "id": 3,
+            "listener_id": 2,
+            "name": "Parity IPv4",
+            "device_ip": "192.0.2.1/32",
+            "sample_mode": "auto",
+            "sample_rate": 1000,
+            "description": " source ",
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "qh-source-update-conflict",
+      "site": "views/flow/data.ts",
+      "why": "409 UPDATE preserves IPv6 source 4 original row",
+      "method": "PUT",
+      "path": "/api/flow-sources/4",
+      "body": {
+        "name": "Renamed",
+        "device_ip": "192.0.2.2",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source ",
+        "enabled": true
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/4"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": " Renamed ",
+          "device_ip": "192.0.2.2",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 2,
+          "row": {
+            "id": 4,
+            "listener_id": 2,
+            "name": "Parity IPv4",
+            "device_ip": "2001:db8::1/128",
+            "sample_mode": "auto",
+            "sample_rate": 1000,
+            "description": " source ",
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "qh-source-toggle",
+      "site": "views/flow/data.ts",
+      "why": "Toggle seed Auto/0 row retains rate 0, strips /128 and only changes enabled",
+      "method": "PUT",
+      "path": "/api/flow-sources/2",
+      "body": {
+        "name": "Router IPv6",
+        "device_ip": "2001:db8::1",
+        "sample_mode": "auto",
+        "sample_rate": 0,
+        "description": "IPv6 exporter",
+        "enabled": true
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/1",
+        "/api/flow-sources/2"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "id": 2,
+          "listener_id": 1,
+          "name": "Router IPv6",
+          "device_ip": "2001:db8::1/128",
+          "sample_mode": "auto",
+          "sample_rate": 0,
+          "description": "IPv6 exporter",
+          "enabled": true,
+          "created_at": "2026-10-27T00:00:00.000Z",
+          "toggle": true,
+          "row": {
+            "id": 2,
+            "listener_id": 1,
+            "name": "Router IPv6",
+            "device_ip": "2001:db8::1/128",
+            "sample_mode": "auto",
+            "sample_rate": 0,
+            "description": "IPv6 exporter",
+            "enabled": false,
+            "created_at": "2026-10-27T00:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "qh-source-seed-zero-edit",
+      "site": "views/flow/data.ts",
+      "why": "Only change the name of seed Auto/0 after its toggle; sourceForm yields 1000 and readback is 1000",
+      "method": "PUT",
+      "path": "/api/flow-sources/2",
+      "body": {
+        "name": "Router IPv6 renamed",
+        "device_ip": "2001:db8::1",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": "IPv6 exporter",
+        "enabled": true
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/1",
+        "/api/flow-sources/2"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Router IPv6 renamed",
+          "device_ip": "2001:db8::1",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": "IPv6 exporter",
+          "enabled": true,
+          "listener_id": 1,
+          "row": {
+            "id": 2,
+            "listener_id": 1,
+            "name": "Router IPv6",
+            "device_ip": "2001:db8::1/128",
+            "sample_mode": "auto",
+            "sample_rate": 0,
+            "description": "IPv6 exporter",
+            "enabled": true,
+            "created_at": "2026-10-27T00:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "qh-source-delete",
+      "site": "views/flow/data.ts",
+      "why": "Delete source",
+      "method": "DELETE",
+      "path": "/api/flow-sources/6",
+      "body": null,
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources/6"
+      ]
+    },
+    {
+      "id": "qh-source-delete-missing",
+      "site": "views/flow/data.ts",
+      "why": "Delete absent source succeeds",
+      "method": "DELETE",
+      "path": "/api/flow-sources/999",
+      "body": null,
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2"
+      ]
+    },
+    {
+      "id": "qh-listener-cascade",
+      "site": "views/flow/data.ts",
+      "why": "Listener deletion cascades source rows",
+      "method": "DELETE",
+      "path": "/api/flow-listeners/2",
+      "body": null,
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/2",
+        "/api/flow-sources?listener_id=2",
+        "/api/flow-sources/3",
+        "/api/flow-sources/4"
+      ]
+    },
+    {
+      "id": "qh-listener-delete-missing",
+      "site": "views/flow/data.ts",
+      "why": "Delete absent listener succeeds",
+      "method": "DELETE",
+      "path": "/api/flow-listeners/999",
+      "body": null,
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/999"
+      ]
+    },
+    {
+      "id": "qh-source-int32-max",
+      "site": "views/flow/data.ts",
+      "why": "Maximum int4 value accepted, source id 9",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 4,
+        "name": "Int32 max",
+        "device_ip": "203.0.113.20",
+        "sample_mode": "force",
+        "sample_rate": 2147483647,
+        "description": "int4 boundary"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/4",
+        "/api/flow-sources/9"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Int32 max",
+          "device_ip": "203.0.113.20",
+          "sample_mode": "force",
+          "sample_rate": 2147483647,
+          "description": "int4 boundary",
+          "enabled": true,
+          "listener_id": 4
+        }
+      }
+    },
+    {
+      "id": "qh-source-int32-overflow",
+      "site": "views/flow/data.ts",
+      "why": "int4 encoding fails before INSERT: 500 database error; source 10 absent; next create must get 10",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 4,
+        "name": "Int32 max",
+        "device_ip": "203.0.113.21",
+        "sample_mode": "force",
+        "sample_rate": 2147483648,
+        "description": "int4 boundary"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/4",
+        "/api/flow-sources/10",
+        "/api/flow-sources/9"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Int32 max",
+          "device_ip": "203.0.113.21",
+          "sample_mode": "force",
+          "sample_rate": 2147483648,
+          "description": "int4 boundary",
+          "enabled": true,
+          "listener_id": 4
+        }
+      }
+    },
+    {
+      "id": "qh-source-int32-update-overflow",
+      "site": "views/flow/data.ts",
+      "why": "int4 overflow UPDATE returns 500 database error; source 9 remains at 2147483647",
+      "method": "PUT",
+      "path": "/api/flow-sources/9",
+      "body": {
+        "name": "Int32 max",
+        "device_ip": "203.0.113.20",
+        "sample_mode": "force",
+        "sample_rate": 2147483648,
+        "description": "int4 boundary",
+        "enabled": true
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/4",
+        "/api/flow-sources/9"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Int32 max",
+          "device_ip": "203.0.113.20",
+          "sample_mode": "force",
+          "sample_rate": 2147483648,
+          "description": "int4 boundary",
+          "enabled": true,
+          "listener_id": 4,
+          "row": {
+            "id": 9,
+            "listener_id": 4,
+            "name": "Int32 max",
+            "device_ip": "203.0.113.20/32",
+            "sample_mode": "force",
+            "sample_rate": 2147483647,
+            "description": "int4 boundary",
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "qh-node-listener",
+      "site": "views/flow/data.ts",
+      "why": "Same address still exists on flow-b; listener uniqueness is scoped by node; expect 201",
+      "method": "POST",
+      "path": "/api/flow-listeners",
+      "body": {
+        "node_id": "parity-node",
+        "listen_address": "0.0.0.0:16343",
+        "protocol_mode": "sflow",
+        "description": "Parity listener"
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/6"
+      ],
+      "builder": {
+        "fn": "listenerBody",
+        "form": {
+          "node_id": "parity-node",
+          "listen_address": "0.0.0.0:16343",
+          "protocol_mode": "sflow",
+          "description": "Parity listener",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qh-node-source",
+      "site": "views/flow/data.ts",
+      "why": "Following rejected int4 INSERT, successful create uses source id 10 with no gap",
+      "method": "POST",
+      "path": "/api/flow-sources",
+      "body": {
+        "listener_id": 6,
+        "name": "Parity IPv4",
+        "device_ip": "192.0.2.1",
+        "sample_mode": "auto",
+        "sample_rate": 1000,
+        "description": " source "
+      },
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/6",
+        "/api/flow-sources/10"
+      ],
+      "builder": {
+        "fn": "sourceBody",
+        "form": {
+          "name": "Parity IPv4",
+          "device_ip": "192.0.2.1",
+          "sample_mode": "auto",
+          "sample_rate": 1000,
+          "description": " source ",
+          "enabled": true,
+          "listener_id": 6
+        }
+      }
+    },
+    {
+      "id": "qh-node-cascade",
+      "site": "views/nodes/Detail.vue",
+      "why": "Existing node page deletion cascades listener and source",
+      "method": "DELETE",
+      "path": "/api/nodes/parity-node",
+      "body": null,
+      "reads": [
+        "/api/flow-listeners?node_id=flow-b",
+        "/api/flow-listeners/6",
+        "/api/flow-listeners?node_id=parity-node",
+        "/api/flow-sources?listener_id=6",
+        "/api/flow-sources/10"
+      ]
+    },
+    {
+      "id": "qi-user-create",
+      "site": "views/users/data.ts",
+      "why": "Trim username; create enabled viewer id 5",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {
+        "username": "parity-user",
+        "password": "parity-only-1",
+        "role": "viewer"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": " parity-user ",
+          "password": "parity-only-1",
+          "role": "viewer",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qi-user-duplicate",
+      "site": "views/users/data.ts",
+      "why": "Exact username collision is 409 and consumes id 6",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {
+        "username": "parity-user",
+        "password": "parity-only-1",
+        "role": "viewer"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "parity-user",
+          "password": "parity-only-1",
+          "role": "viewer",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qi-user-after-duplicate",
+      "site": "views/users/data.ts",
+      "why": "Following collision, id is 7",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {
+        "username": "parity-user-2",
+        "password": "parity-only-1",
+        "role": "admin"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "parity-user-2",
+          "password": "parity-only-1",
+          "role": "admin",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qi-user-case",
+      "site": "views/users/data.ts",
+      "why": "Case-sensitive username is distinct; id 8",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {
+        "username": "Parity-User",
+        "password": "parity-only-1",
+        "role": "viewer"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "Parity-User",
+          "password": "parity-only-1",
+          "role": "viewer",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qi-user-role",
+      "site": "views/users/data.ts",
+      "why": "Change role; omit empty password",
+      "method": "PUT",
+      "path": "/api/users/5",
+      "body": {
+        "role": "operator",
+        "enabled": true
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "operator",
+          "enabled": true,
+          "row": {
+            "id": 5
+          }
+        }
+      }
+    },
+    {
+      "id": "qi-user-disable",
+      "site": "views/users/data.ts",
+      "why": "Disable without changing role",
+      "method": "PUT",
+      "path": "/api/users/5",
+      "body": {
+        "role": "operator",
+        "enabled": false
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "operator",
+          "enabled": false,
+          "row": {
+            "id": 5
+          }
+        }
+      }
+    },
+    {
+      "id": "qi-user-password",
+      "site": "views/users/data.ts",
+      "why": "Password is sent unchanged; handler trims",
+      "method": "PUT",
+      "path": "/api/users/5",
+      "body": {
+        "role": "operator",
+        "enabled": false,
+        "password": " parity-only-2 "
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": " parity-only-2 ",
+          "role": "operator",
+          "enabled": false,
+          "row": {
+            "id": 5
+          }
+        }
+      }
+    },
+    {
+      "id": "qi-user-empty-password",
+      "site": "views/users/data.ts",
+      "why": "Empty password omitted; values remain",
+      "method": "PUT",
+      "path": "/api/users/5",
+      "body": {
+        "role": "operator",
+        "enabled": false
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "operator",
+          "enabled": false,
+          "row": {
+            "id": 5
+          }
+        }
+      }
+    },
+    {
+      "id": "qi-user-seed-operator",
+      "site": "views/users/data.ts",
+      "why": "Seed legacy operator remains operator",
+      "method": "PUT",
+      "path": "/api/users/2",
+      "body": {
+        "role": "operator",
+        "enabled": true
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "operator",
+          "enabled": true,
+          "row": {
+            "id": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "qi-user-missing",
+      "site": "views/users/data.ts",
+      "why": "Missing row is 404 user not found",
+      "method": "PUT",
+      "path": "/api/users/999",
+      "body": {
+        "role": "viewer",
+        "enabled": true
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "viewer",
+          "enabled": true,
+          "row": {
+            "id": 999
+          }
+        }
+      }
+    },
+    {
+      "id": "qi-user-delete",
+      "site": "views/users/data.ts",
+      "why": "Deleting audit-ro sets historical user_id null",
+      "method": "DELETE",
+      "path": "/api/users/3",
+      "body": null,
+      "reads": [
+        "/api/users",
+        "/api/audit-log?from=2026-10-27T00%3A52%3A00.000Z&to=2026-10-27T00%3A52%3A00.000Z&limit=51&offset=0",
+        "/api/audit-log?user_id=3&to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0"
+      ]
+    },
+    {
+      "id": "qi-user-delete-missing",
+      "site": "views/users/data.ts",
+      "why": "Deleting nonexistent id is 200",
+      "method": "DELETE",
+      "path": "/api/users/999",
+      "body": null,
+      "reads": [
+        "/api/users"
+      ]
+    },
+    {
+      "id": "qi-audit-first",
+      "site": "views/audit/Audit.vue",
+      "why": "Newest 51 rows; first page plus sentinel",
+      "method": "GET",
+      "path": "/api/audit-log?to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-second",
+      "site": "views/audit/Audit.vue",
+      "why": "Offset 50 selects remaining nine rows",
+      "method": "GET",
+      "path": "/api/audit-log?to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=50",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-prefix",
+      "site": "views/audit/Audit.vue",
+      "why": "52 prefixes permit next page",
+      "method": "GET",
+      "path": "/api/audit-log?entity_type=watch_prefix&to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-empty",
+      "site": "views/audit/Audit.vue",
+      "why": "Empty repository slice is null",
+      "method": "GET",
+      "path": "/api/audit-log?entity_type=no_such_type&to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-webhook-connector",
+      "site": "views/audit/Audit.vue",
+      "why": "Recursive headers string maps masked",
+      "method": "GET",
+      "path": "/api/audit-log?entity_type=webhook_connector&to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-response-action",
+      "site": "views/audit/Audit.vue",
+      "why": "Number and array headers null; null map member masked",
+      "method": "GET",
+      "path": "/api/audit-log?entity_type=response_action&to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-webhook",
+      "site": "views/audit/Audit.vue",
+      "why": "Historical webhook type is masked",
+      "method": "GET",
+      "path": "/api/audit-log?entity_type=webhook&to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-user",
+      "site": "views/audit/Audit.vue",
+      "why": "Exact user id filter",
+      "method": "GET",
+      "path": "/api/audit-log?user_id=2&to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-from-boundary",
+      "site": "views/audit/Audit.vue",
+      "why": "Inclusive from and to on unique seed timestamp",
+      "method": "GET",
+      "path": "/api/audit-log?from=2026-10-27T00%3A52%3A00.000Z&to=2026-10-27T00%3A52%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-to-boundary",
+      "site": "views/audit/Audit.vue",
+      "why": "Latest row is included on both boundaries",
+      "method": "GET",
+      "path": "/api/audit-log?from=2026-10-27T00%3A58%3A00.000Z&to=2026-10-27T00%3A58%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-audit-time-empty",
+      "site": "views/audit/Audit.vue",
+      "why": "Window after all seed times is null",
+      "method": "GET",
+      "path": "/api/audit-log?from=2026-10-27T23%3A59%3A00.000Z&to=2026-10-28T00%3A00%3A00.000Z&limit=51&offset=0",
+      "body": null,
+      "reads": []
+    },
+    {
+      "id": "qi-user-pw-72",
+      "site": "views/users/data.ts",
+      "why": "72 ASCII bytes accepted; id 9",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {
+        "username": "parity-pw-72",
+        "password": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "role": "viewer"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "parity-pw-72",
+          "password": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "role": "viewer",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qi-user-pw-73",
+      "site": "views/users/data.ts",
+      "why": "73 ASCII bytes fail hashing before insert; no row or sequence consumption",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {
+        "username": "parity-pw-73",
+        "password": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "role": "viewer"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "parity-pw-73",
+          "password": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "role": "viewer",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qi-user-pw-multibyte",
+      "site": "views/users/data.ts",
+      "why": "25 characters are 75 UTF-8 bytes; hash failed before insert",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {
+        "username": "parity-pw-mb",
+        "password": "中中中中中中中中中中中中中中中中中中中中中中中中中",
+        "role": "viewer"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "parity-pw-mb",
+          "password": "中中中中中中中中中中中中中中中中中中中中中中中中中",
+          "role": "viewer",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qi-user-pw-after",
+      "site": "views/users/data.ts",
+      "why": "After two hash failures, next id is 10",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {
+        "username": "parity-pw-after",
+        "password": "parity-only-1",
+        "role": "viewer"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "parity-pw-after",
+          "password": "parity-only-1",
+          "role": "viewer",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "qi-user-pw-update-73",
+      "site": "views/users/data.ts",
+      "why": "Hash failure leaves original row unchanged",
+      "method": "PUT",
+      "path": "/api/users/9",
+      "body": {
+        "role": "viewer",
+        "enabled": true,
+        "password": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "parity-pw-72",
+          "password": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "role": "viewer",
+          "enabled": true,
+          "row": {
+            "id": 9
+          }
+        }
+      }
+    },
+    {
+      "id": "qi-user-pw-update-trim",
+      "site": "views/users/data.ts",
+      "why": "PUT hashes Go TrimSpace result: 72 bytes accepted",
+      "method": "PUT",
+      "path": "/api/users/9",
+      "body": {
+        "role": "viewer",
+        "enabled": true,
+        "password": " xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "parity-pw-72",
+          "password": " xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ",
+          "role": "viewer",
+          "enabled": true,
+          "row": {
+            "id": 9
+          }
+        }
+      }
+    },
+    {
+      "id": "qj-admin-demote",
+      "site": "views/users/data.ts",
+      "why": "Demote one admin while two enabled admins remain",
+      "method": "PUT",
+      "path": "/api/users/7",
+      "body": {
+        "role": "viewer",
+        "enabled": true
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "viewer",
+          "enabled": true,
+          "row": {
+            "id": 7
+          }
+        }
+      }
+    },
+    {
+      "id": "qj-admin-disable",
+      "site": "views/users/data.ts",
+      "why": "Disable an admin while another enabled admin remains",
+      "method": "PUT",
+      "path": "/api/users/4",
+      "body": {
+        "role": "admin",
+        "enabled": false
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "admin",
+          "enabled": false,
+          "row": {
+            "id": 4
+          }
+        }
+      }
+    },
+    {
+      "id": "qj-last-demote",
+      "site": "views/users/data.ts",
+      "why": "Reject demoting the last enabled admin without changing the row",
+      "method": "PUT",
+      "path": "/api/users/1",
+      "body": {
+        "role": "operator",
+        "enabled": true
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "operator",
+          "enabled": true,
+          "row": {
+            "id": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "qj-last-disable",
+      "site": "views/users/data.ts",
+      "why": "Reject disabling the last enabled admin",
+      "method": "PUT",
+      "path": "/api/users/1",
+      "body": {
+        "role": "admin",
+        "enabled": false
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "admin",
+          "enabled": false,
+          "row": {
+            "id": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "qj-last-delete",
+      "site": "views/users/data.ts",
+      "why": "Reject deleting the last enabled admin and retain the row",
+      "method": "DELETE",
+      "path": "/api/users/1",
+      "body": null,
+      "reads": [
+        "/api/users"
+      ]
+    },
+    {
+      "id": "qj-last-password",
+      "site": "views/users/data.ts",
+      "why": "Allow a password change that preserves the enabled admin",
+      "method": "PUT",
+      "path": "/api/users/1",
+      "body": {
+        "role": "admin",
+        "enabled": true,
+        "password": "parity-only-3"
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "parity-only-3",
+          "role": "admin",
+          "enabled": true,
+          "row": {
+            "id": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "qj-disabled-admin-delete",
+      "site": "views/users/data.ts",
+      "why": "Allow deleting a disabled admin because it is not counted",
+      "method": "DELETE",
+      "path": "/api/users/4",
+      "body": null,
+      "reads": [
+        "/api/users"
+      ]
+    },
+    {
+      "id": "qj-promote",
+      "site": "views/users/data.ts",
+      "why": "Promote a peer to enabled admin",
+      "method": "PUT",
+      "path": "/api/users/7",
+      "body": {
+        "role": "admin",
+        "enabled": true
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "admin",
+          "enabled": true,
+          "row": {
+            "id": 7
+          }
+        }
+      }
+    },
+    {
+      "id": "qj-demote-with-peer",
+      "site": "views/users/data.ts",
+      "why": "Allow demotion while the promoted peer remains enabled admin",
+      "method": "PUT",
+      "path": "/api/users/1",
+      "body": {
+        "role": "viewer",
+        "enabled": true
+      },
+      "reads": [
+        "/api/users"
+      ],
+      "builder": {
+        "fn": "userBody",
+        "form": {
+          "username": "read-only-name",
+          "password": "",
+          "role": "viewer",
+          "enabled": true,
+          "row": {
+            "id": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "qj-last-delete-peer",
+      "site": "views/users/data.ts",
+      "why": "Reject deleting the last enabled admin with an id other than one",
+      "method": "DELETE",
+      "path": "/api/users/7",
+      "body": null,
+      "reads": [
+        "/api/users"
+      ]
+    }
+  ]
+}

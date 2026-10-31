@@ -115,7 +115,7 @@ func (r *scheduledActionRepo) MarkExecuting(ctx context.Context, id int) error {
 		return fmt.Errorf("mark executing %d: %w", id, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("scheduled_action %d no longer pending", id)
+		return fmt.Errorf("scheduled_action %d: %w", id, store.ErrNotPending)
 	}
 	return nil
 }

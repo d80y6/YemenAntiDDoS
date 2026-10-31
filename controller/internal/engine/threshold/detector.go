@@ -9,14 +9,83 @@ import (
 	"github.com/littlewolf9527/xsight/shared/decoder"
 )
 
+const ringFreshnessWindow = 5 * time.Second
+const defaultSustainWindow = 10
+
 // Detector performs per-second threshold checking against ring buffer data.
 type Detector struct {
-	tree  *Tree
-	rings *ring.RingStore
+	tree          *Tree
+	rings         *ring.RingStore
+	sustainWindow int
 }
 
 func NewDetector(tree *Tree, rings *ring.RingStore) *Detector {
 	return &Detector{tree: tree, rings: rings}
+}
+
+// SetSustainWindow sets the history window before detection starts.
+func (d *Detector) SetSustainWindow(n int) {
+	if n > 0 {
+		d.sustainWindow = n
+	}
+}
+
+func (d *Detector) window() int {
+	if d.sustainWindow > 0 {
+		return d.sustainWindow
+	}
+	return defaultSustainWindow
+}
+
+// SustainWindow allows room for timestamp anomalies while bounding history by capacity.
+// Compare before doubling to avoid integer overflow, even for invalid configuration.
+func SustainWindow(hard, dynamic, capacity int) int {
+	n := max(1, hard, dynamic)
+	if capacity < 1 {
+		return 1
+	}
+	if n > capacity/2 {
+		return capacity
+	}
+	return 2 * n
+}
+
+// SustainedRun counts distinct breaching seconds in newest-first arrival order.
+// A low point, reversed timestamp, or gap exceeding two seconds ends the run.
+// Duplicate timestamps do not count; a single missing second is tolerated.
+func SustainedRun(pts []ring.DataPoint, breached func(ring.DataPoint) bool) int {
+	n := 0
+	var prev time.Time
+	for _, p := range pts {
+		if !breached(p) {
+			break
+		}
+		if n > 0 {
+			gap := prev.Sub(p.Time)
+			if gap == 0 {
+				continue
+			}
+			if gap < 0 || gap > 2*time.Second {
+				break
+			}
+		}
+		n++
+		prev = p.Time
+	}
+	return n
+}
+
+func sustained(r engine.ResolvedThreshold, pts []ring.DataPoint) int {
+	n := SustainedRun(pts, func(p ring.DataPoint) bool {
+		_, breached := evaluateRule(r, p)
+		return breached
+	})
+	// The history read can race with replacement or eviction after the latest-point
+	// read. Never turn that empty run into an unknown (zero) event that bypasses confirmation.
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 // Tick checks all active data against thresholds for each connected node.
@@ -31,13 +100,17 @@ func (d *Detector) Tick(connectedNodes []string) []engine.ThresholdExceeded {
 
 			// --- Inbound (receives) subnet rules → inbound prefix ring ---
 			if len(subnetRecv) > 0 {
-				pr := d.rings.GetPrefixRing(nodeID, prefix)
-				if pr != nil {
-					if dp, ok := pr.LatestOne(5 * time.Second); ok {
-						for _, r := range subnetRecv {
-							if breach := checkRule(r, dp, prefix, nil, nodeID); breach != nil {
-								exceeded = append(exceeded, *breach)
+				if dp, ok := d.rings.LatestPrefix(nodeID, prefix, ringFreshnessWindow); ok {
+					var pts []ring.DataPoint
+					loaded := false
+					for _, r := range subnetRecv {
+						if breach := checkRule(r, dp, prefix, nil, nodeID); breach != nil {
+							if !loaded {
+								pts = d.rings.LatestNPrefix(nodeID, prefix, d.window())
+								loaded = true
 							}
+							breach.Sustained = sustained(r, pts)
+							exceeded = append(exceeded, *breach)
 						}
 					}
 				}
@@ -45,13 +118,17 @@ func (d *Detector) Tick(connectedNodes []string) []engine.ThresholdExceeded {
 
 			// --- Outbound (sends) subnet rules → outbound prefix ring ---
 			if len(subnetSend) > 0 {
-				pr := d.rings.GetSrcPrefixRing(nodeID, prefix)
-				if pr != nil {
-					if dp, ok := pr.LatestOne(5 * time.Second); ok {
-						for _, r := range subnetSend {
-							if breach := checkRule(r, dp, prefix, nil, nodeID); breach != nil {
-								exceeded = append(exceeded, *breach)
+				if dp, ok := d.rings.LatestSrcPrefix(nodeID, prefix, ringFreshnessWindow); ok {
+					var pts []ring.DataPoint
+					loaded := false
+					for _, r := range subnetSend {
+						if breach := checkRule(r, dp, prefix, nil, nodeID); breach != nil {
+							if !loaded {
+								pts = d.rings.LatestNSrcPrefix(nodeID, prefix, d.window())
+								loaded = true
 							}
+							breach.Sustained = sustained(r, pts)
+							exceeded = append(exceeded, *breach)
 						}
 					}
 				}
@@ -63,16 +140,19 @@ func (d *Detector) Tick(connectedNodes []string) []engine.ThresholdExceeded {
 			// causing self-deadlock when callback re-enters RLock and a writer is pending.
 			if len(ipRecv) > 0 {
 				for _, ipStr := range d.rings.IPKeysForPrefix(nodeID, prefix) {
-					ir := d.rings.GetIPRingByKey(nodeID, prefix, ipStr)
-					if ir == nil {
-						continue
-					}
-					dp, ok := ir.LatestOne(5 * time.Second)
+					dp, ok := d.rings.LatestIPByKey(nodeID, prefix, ipStr, ringFreshnessWindow)
 					if !ok {
 						continue
 					}
+					var pts []ring.DataPoint
+					loaded := false
 					for _, r := range ipRecv {
 						if breach := checkRuleStr(r, dp, prefix, ipStr, nodeID); breach != nil {
+							if !loaded {
+								pts = d.rings.LatestNIPByKey(nodeID, prefix, ipStr, d.window())
+								loaded = true
+							}
+							breach.Sustained = sustained(r, pts)
 							exceeded = append(exceeded, *breach)
 						}
 					}
@@ -82,16 +162,19 @@ func (d *Detector) Tick(connectedNodes []string) []engine.ThresholdExceeded {
 			// --- Outbound (sends) per-IP rules → outbound IP rings ---
 			if len(ipSend) > 0 {
 				for _, ipStr := range d.rings.SrcIPKeysForPrefix(nodeID, prefix) {
-					ir := d.rings.GetSrcIPRingByKey(nodeID, prefix, ipStr)
-					if ir == nil {
-						continue
-					}
-					dp, ok := ir.LatestOne(5 * time.Second)
+					dp, ok := d.rings.LatestSrcIPByKey(nodeID, prefix, ipStr, ringFreshnessWindow)
 					if !ok {
 						continue
 					}
+					var pts []ring.DataPoint
+					loaded := false
 					for _, r := range ipSend {
 						if breach := checkRuleStr(r, dp, prefix, ipStr, nodeID); breach != nil {
+							if !loaded {
+								pts = d.rings.LatestNSrcIPByKey(nodeID, prefix, ipStr, d.window())
+								loaded = true
+							}
+							breach.Sustained = sustained(r, pts)
 							exceeded = append(exceeded, *breach)
 						}
 					}

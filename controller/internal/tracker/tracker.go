@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +17,10 @@ import (
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
 )
+
+const trackerDBOperationTimeout = 5 * time.Second
+
+const pendingEndRetryInterval = 5 * time.Second
 
 // Attack states
 const (
@@ -26,13 +32,14 @@ const (
 
 // Config holds tracker parameters.
 type Config struct {
-	HardConfirmSeconds     int     // default 3
-	DynamicConfirmSeconds  int     // default 5
-	ExpiryIntervalSeconds  int     // default 300
-	ExpiryFunction         string  // "static" | "dynamic", default "static"
-	ExpiryScaleBaseSeconds int     // attack duration for 1x scale (default 300)
-	ExpiryMaxScale         float64 // max multiplier (default 4.0)
-	MaxActiveAttacks       int     // default 10000, 0 = no limit
+	HardConfirmSeconds      int     // default 3
+	DynamicConfirmSeconds   int     // default 5
+	ExpiryIntervalSeconds   int     // default 300
+	ExpiryFunction          string  // "static" | "dynamic", default "static"
+	ExpiryScaleBaseSeconds  int     // attack duration for 1x scale (default 300)
+	ExpiryMaxScale          float64 // max multiplier (default 4.0)
+	MaxActiveAttacks        int     // default 10000, 0 = no limit
+	ManualExpireHoldSeconds int     // seconds a manually expired key stays held; 0 = remove immediately
 }
 
 // attackKey uniquely identifies an attack.
@@ -45,10 +52,10 @@ type attackKey struct {
 
 // trackedAttack is the in-memory state of a single attack.
 type trackedAttack struct {
-	Key       attackKey
-	State     string
-	DBID      int    // attacks table ID (0 until INSERT)
-	Prefix    string // owning prefix CIDR
+	Key    attackKey
+	State  string
+	DBID   int    // attacks table ID (0 until INSERT)
+	Prefix string // owning prefix CIDR
 
 	// Confirmation
 	ConsecutiveExceeded int
@@ -71,16 +78,37 @@ type trackedAttack struct {
 	// Attack classification
 	AttackType  string
 	Severity    string
+	Confidence  float32
 	ReasonCodes []string
 	NodeSources []string
 
 	// Timing
 	FirstSeen time.Time
 	LastSeen  time.Time
-	ExpiresAt time.Time // only set in expiring state
+	ExpiresAt time.Time // expiring: expiry deadline; expired (manual hold): hold deadline
 
 	// Flags
-	SeenThisTick bool // reset each tick, set when threshold exceeded
+	SeenThisTick  bool // reset each tick, set when threshold exceeded
+	tickSustained int
+}
+
+// eventAttack supplies the lifecycle event field contract from tracker memory.
+func (a *trackedAttack) eventAttack() *store.Attack {
+	attack := &store.Attack{
+		ID: a.DBID, DstIP: a.Key.DstIP, Direction: a.Key.Direction, DecoderFamily: a.Key.DecoderFamily,
+		AttackType: a.AttackType, Severity: a.Severity, Confidence: a.Confidence,
+		PeakPPS: a.PeakPPS, PeakBPS: a.PeakBPS, ReasonCodes: a.ReasonCodes, NodeSources: a.NodeSources,
+		ResponseID: a.ResponseID, StartedAt: a.FirstSeen,
+	}
+	if a.PrefixID > 0 {
+		value := a.PrefixID
+		attack.PrefixID = &value
+	}
+	if a.ThresholdID > 0 {
+		value := a.ThresholdID
+		attack.ThresholdRuleID = &value
+	}
+	return attack
 }
 
 // ActionCallback is called when an attack state changes.
@@ -94,19 +122,32 @@ type AttackEvent struct {
 	DBID   int
 }
 
+// pendingEndWrite retains an ended attack whose two immediate database writes failed.
+// Its lastTry controls eligibility and retry ordering under the tracker lock.
+type pendingEndWrite struct {
+	attack  *store.Attack
+	op      string
+	lastTry time.Time
+}
+
 // Tracker manages the lifecycle of all tracked attacks.
 type Tracker struct {
-	mu       sync.RWMutex
-	attacks  map[attackKey]*trackedAttack
-	cfg      Config
-	store    store.Store
-	rings    *ring.RingStore
-	dedup    *dedup.Dedup
+	mu         sync.RWMutex
+	attacks    map[attackKey]*trackedAttack
+	cfg        Config
+	store      store.Store
+	rings      *ring.RingStore
+	dedup      *dedup.Dedup
 	onAction   ActionCallback
 	onRebreach func(attackDBID int) // called when attack transitions Expiring→Active
 
 	// Periodic update tracking
 	lastPeriodicUpdate time.Time
+	pendingEnd         map[int]*pendingEndWrite
+	pendingEndNextTry  time.Time
+
+	// Set before Feed starts; metrics owns the counter to avoid an import cycle.
+	StateWriteFailure func(string)
 
 	// Metrics (read concurrently by API handlers)
 	CreatedTotal    atomic.Int64
@@ -120,9 +161,9 @@ func New(cfg Config, s store.Store, rings *ring.RingStore, d *dedup.Dedup, onAct
 		cfg:                cfg,
 		rings:              rings,
 		lastPeriodicUpdate: time.Now(),
-		store:    s,
-		dedup:    d,
-		onAction: onAction,
+		store:              s,
+		dedup:              d,
+		onAction:           onAction,
 	}
 }
 
@@ -130,6 +171,19 @@ func New(cfg Config, s store.Store, rings *ring.RingStore, d *dedup.Dedup, onAct
 // Used by the action engine to cancel pending delayed unblocks/withdrawals.
 func (t *Tracker) SetRebreachCallback(fn func(attackDBID int)) {
 	t.onRebreach = fn
+}
+
+// canonicalHostKey gives host-length prefixes the same identity as individual IPs.
+// Broader prefixes and non-CIDR text retain their original identity.
+func canonicalHostKey(s string) string {
+	ip, network, err := net.ParseCIDR(s)
+	if err == nil {
+		ones, bits := network.Mask.Size()
+		if ones == bits {
+			return ip.String()
+		}
+	}
+	return s
 }
 
 // Feed processes threshold exceeded events from the detection engine.
@@ -143,6 +197,7 @@ func (t *Tracker) Feed(exceeded []engine.ThresholdExceeded) {
 	// Reset per-tick flags
 	for _, a := range t.attacks {
 		a.SeenThisTick = false
+		a.tickSustained = 0
 	}
 
 	// Process exceeded events
@@ -151,7 +206,7 @@ func (t *Tracker) Feed(exceeded []engine.ThresholdExceeded) {
 		if evt.DstIP != nil {
 			dstIP = evt.DstIP.String()
 		} else if evt.Domain == "subnet" {
-			dstIP = evt.Prefix // carpet bombing uses prefix as key
+			dstIP = canonicalHostKey(evt.Prefix)
 		}
 
 		key := attackKey{
@@ -184,9 +239,17 @@ func (t *Tracker) Feed(exceeded []engine.ThresholdExceeded) {
 			// Set initial attack type from decoder
 			a.AttackType = decoderToAttackType(evt.Decoder)
 			t.attacks[key] = a
+			t.markRing(a, evt.NodeID)
 		}
 
 		a.SeenThisTick = true
+		sus := evt.Sustained
+		if sus == 0 {
+			sus = math.MaxInt
+		}
+		if sus > a.tickSustained {
+			a.tickSustained = sus
+		}
 		a.LastSeen = now
 		// NOTE: ownership fields (PrefixID, ThresholdID, ResponseID) are intentionally NOT refreshed
 		// on subsequent threshold hits. This is first-writer-wins: the earliest matching rule determines
@@ -211,8 +274,8 @@ func (t *Tracker) Feed(exceeded []engine.ThresholdExceeded) {
 			}
 			if !found {
 				a.NodeSources = append(a.NodeSources, evt.NodeID)
-				// Protect new node's IP ring from LRU eviction
-				if a.State == StateActive {
+				// Protect the new node's IP ring during confirmation and active detection
+				if a.State == StateActive || a.State == StateConfirming {
 					if ip := net.ParseIP(a.Key.DstIP); ip != nil && t.rings != nil {
 						if a.Key.Direction == "sends" {
 							t.rings.MarkSrcActive(evt.NodeID, a.Prefix, ip)
@@ -232,18 +295,21 @@ func (t *Tracker) Feed(exceeded []engine.ThresholdExceeded) {
 // tick advances all attack state machines.
 func (t *Tracker) tick(now time.Time) {
 	var toDelete []attackKey
+	var discarded []*trackedAttack
 
 	for key, a := range t.attacks {
 		switch a.State {
 		case StateConfirming:
 			if a.SeenThisTick {
 				a.ConsecutiveExceeded++
-				if a.ConsecutiveExceeded >= a.ConfirmThreshold {
+				// Confirmation requires both consecutive detection ticks and breaching data points.
+				if a.ConsecutiveExceeded >= a.ConfirmThreshold && a.tickSustained >= a.ConfirmThreshold {
 					t.transitionToActive(a, now)
 				}
 			} else {
-				// Reset — not consecutive
+				// Reset after a missed tick; release unshared ring protection after all deletions.
 				toDelete = append(toDelete, key)
+				discarded = append(discarded, a)
 			}
 
 		case StateActive:
@@ -286,6 +352,14 @@ func (t *Tracker) tick(now time.Time) {
 				t.transitionToExpired(a, now)
 				toDelete = append(toDelete, key)
 			}
+
+		case StateExpired:
+			// Manual expiry holds retain dedup registration until the first unseen
+			// tick or the tick after the hold deadline. Ring protection is already cleared.
+			if !a.SeenThisTick || now.After(a.ExpiresAt) {
+				t.dedup.ClearActive(a.Key.DstIP, a.Key.Direction, a.Key.DecoderFamily)
+				toDelete = append(toDelete, key)
+			}
 		}
 	}
 
@@ -293,6 +367,7 @@ func (t *Tracker) tick(now time.Time) {
 	for _, key := range toDelete {
 		delete(t.attacks, key)
 	}
+	t.releaseDiscarded(discarded)
 
 	// Periodic updates: every 5 minutes, emit attack_update for all active attacks
 	if now.Sub(t.lastPeriodicUpdate) >= 5*time.Minute {
@@ -300,18 +375,8 @@ func (t *Tracker) tick(now time.Time) {
 		for _, a := range t.attacks {
 			if a.State == StateActive && a.DBID > 0 {
 				// Update DB with latest peaks
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				attack := &store.Attack{
-					ID:          a.DBID,
-					AttackType:  a.AttackType,
-					Severity:    a.Severity,
-					Confidence:  0.9,
-					PeakPPS:     a.PeakPPS,
-					PeakBPS:     a.PeakBPS,
-					ReasonCodes: a.ReasonCodes,
-					NodeSources: a.NodeSources,
-					ResponseID:  a.ResponseID,
-				}
+				ctx, cancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
+				attack := a.eventAttack()
 				if err := t.store.Attacks().Update(ctx, attack); err != nil {
 					log.Printf("tracker: periodic update attack %d: %v", a.DBID, err)
 				}
@@ -319,39 +384,82 @@ func (t *Tracker) tick(now time.Time) {
 
 				// Notify action engine with "updated" event
 				if t.onAction != nil {
-					t.onAction(AttackEvent{Type: "updated", Attack: attack, DBID: a.DBID})
+					t.notifyAction(AttackEvent{Type: "updated", Attack: attack, DBID: a.DBID})
 				}
 			}
 		}
 	}
+	t.retryPendingEnd(now)
 }
 
 func (t *Tracker) transitionToActive(a *trackedAttack, now time.Time) {
 	a.Severity = classifySeverity(a.PeakPPS, a.PeakBPS)
+	a.Confidence = 0.9
 	a.ReasonCodes = []string{a.Decoder + "_exceeded"}
 
+	var evict *trackedAttack
 	// Check active cap before creating
 	if t.cfg.MaxActiveAttacks > 0 {
 		activeCount := t.countActive()
 		if activeCount >= t.cfg.MaxActiveAttacks {
-			// Find lowest priority active attack
+			// Find the lowest priority active or expiring attack
 			lowest := t.findLowestActive()
-			if lowest != nil && attackPriorityLess(lowest, a) {
+			if lowest != nil && evictionLess(lowest, a) {
 				// Evict lowest, make room for new higher-priority attack
-				t.evictAttack(lowest, now)
-				log.Printf("tracker: attack evicted: %s/%s severity=%s pps=%d (replaced by %s severity=%s pps=%d)",
-					lowest.Key.DstIP, lowest.Key.DecoderFamily, lowest.Severity, lowest.PeakPPS,
-					a.Key.DstIP, a.Severity, a.PeakPPS)
+				evict = lowest
 			} else {
 				// New attack is lower priority — suppress
 				t.SuppressedTotal.Add(1)
 				log.Printf("tracker: attack suppressed: %s/%s pps=%d (cap %d reached, min active pps=%d)",
 					a.Key.DstIP, a.Key.DecoderFamily, a.PeakPPS,
 					t.cfg.MaxActiveAttacks, t.lowestActivePPS())
-				a.State = StateConfirming // keep in confirming, will be discarded next tick
+				// Stay confirming: retry, count, and log suppression on each tick where
+				// both confirmation gates hold. A consecutive-point run below N pauses
+				// retries; the first tick without a breach discards the entry.
+				a.State = StateConfirming
 				return
 			}
 		}
+	}
+
+	// INSERT into DB
+	ctx, cancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
+	defer cancel()
+
+	attack := a.eventAttack()
+
+	// Snapshot template name + rule summary for historical display
+	if a.ThresholdID > 0 {
+		if rule, err := t.store.Thresholds().Get(ctx, a.ThresholdID); err == nil {
+			summary := rule.Decoder + " " + rule.Comparison + " " + fmt.Sprintf("%d", rule.Value) + " " + rule.Unit
+			attack.RuleSummary = &summary
+			if rule.TemplateID != nil {
+				if tmpl, err := t.store.ThresholdTemplates().Get(ctx, *rule.TemplateID); err == nil {
+					attack.TemplateName = &tmpl.Name
+				}
+			}
+		}
+	}
+
+	createCtx, createCancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
+	defer createCancel()
+	id, err := t.store.Attacks().Create(createCtx, attack)
+	if err != nil {
+		log.Printf("ERROR tracker: DB insert attack: %v", err)
+		if t.StateWriteFailure != nil {
+			t.StateWriteFailure("attack_create")
+		}
+		return
+	} else {
+		a.DBID = id
+		attack.ID = id
+	}
+
+	if lowest := evict; lowest != nil {
+		t.evictAttack(lowest, now)
+		log.Printf("tracker: attack evicted: %s/%s severity=%s pps=%d (replaced by %s severity=%s pps=%d)",
+			lowest.Key.DstIP, lowest.Key.DecoderFamily, lowest.Severity, lowest.PeakPPS,
+			a.Key.DstIP, a.Severity, a.PeakPPS)
 	}
 
 	a.State = StateActive
@@ -372,67 +480,26 @@ func (t *Tracker) transitionToActive(a *trackedAttack, now time.Time) {
 		}
 	}
 
-	// INSERT into DB
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	dstIP := a.Key.DstIP
-	var prefixID *int
-	if a.PrefixID > 0 {
-		prefixID = &a.PrefixID
-	}
-	attack := &store.Attack{
-		DstIP:         dstIP,
-		PrefixID:      prefixID,
-		Direction:     a.Key.Direction,
-		DecoderFamily: a.Key.DecoderFamily,
-		AttackType:    a.AttackType,
-		Severity:      a.Severity,
-		Confidence:    0.9,
-		PeakPPS:       a.PeakPPS,
-		PeakBPS:       a.PeakBPS,
-		ReasonCodes:   a.ReasonCodes,
-		NodeSources:   a.NodeSources,
-		ResponseID:      a.ResponseID,
-		ThresholdRuleID: func() *int { if a.ThresholdID > 0 { v := a.ThresholdID; return &v }; return nil }(),
-		StartedAt:       a.FirstSeen,
-	}
-
-	// Snapshot template name + rule summary for historical display
-	if a.ThresholdID > 0 {
-		if rule, err := t.store.Thresholds().Get(ctx, a.ThresholdID); err == nil {
-			summary := rule.Decoder + " " + rule.Comparison + " " + fmt.Sprintf("%d", rule.Value) + " " + rule.Unit
-			attack.RuleSummary = &summary
-			if rule.TemplateID != nil {
-				if tmpl, err := t.store.ThresholdTemplates().Get(ctx, *rule.TemplateID); err == nil {
-					attack.TemplateName = &tmpl.Name
-				}
-			}
-		}
-	}
-
-	id, err := t.store.Attacks().Create(ctx, attack)
-	if err != nil {
-		log.Printf("tracker: DB insert attack: %v", err)
-	} else {
-		a.DBID = id
-		attack.ID = id
-	}
-
 	// Notify action engine
 	if t.onAction != nil {
-		t.onAction(AttackEvent{Type: "confirmed", Attack: attack, DBID: id})
+		t.notifyAction(AttackEvent{Type: "confirmed", Attack: attack, DBID: id})
 	}
 }
 
 func (t *Tracker) transitionToExpired(a *trackedAttack, now time.Time) {
+	t.endAttack(a, now, true)
+}
+
+func (t *Tracker) endAttack(a *trackedAttack, now time.Time, clearDedup bool) {
 	a.State = StateExpired
 
 	log.Printf("tracker: ATTACK EXPIRED %s decoder=%s duration=%v peak_pps=%d",
 		a.Key.DstIP, a.Key.DecoderFamily, now.Sub(a.FirstSeen).Round(time.Second), a.PeakPPS)
 
 	// Clear from dedup + ring eviction protection (all nodes)
-	t.dedup.ClearActive(a.Key.DstIP, a.Key.Direction, a.Key.DecoderFamily)
+	if clearDedup {
+		t.dedup.ClearActive(a.Key.DstIP, a.Key.Direction, a.Key.DecoderFamily)
+	}
 	if ip := net.ParseIP(a.Key.DstIP); ip != nil && t.rings != nil {
 		for _, nodeID := range a.NodeSources {
 			if a.Key.Direction == "sends" {
@@ -445,23 +512,32 @@ func (t *Tracker) transitionToExpired(a *trackedAttack, now time.Time) {
 
 	// UPDATE DB with ended_at
 	if a.DBID > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
 		defer cancel()
 
 		attack := &store.Attack{
-			ID:            a.DBID,
-			AttackType:    a.AttackType,
-			Severity:      a.Severity,
-			Confidence:    0.9,
-			PeakPPS:       a.PeakPPS,
-			PeakBPS:       a.PeakBPS,
-			ReasonCodes:   a.ReasonCodes,
-			NodeSources:   a.NodeSources,
-			ResponseID:    a.ResponseID,
-			EndedAt:       &now,
+			ID:          a.DBID,
+			AttackType:  a.AttackType,
+			Severity:    a.Severity,
+			Confidence:  a.Confidence,
+			PeakPPS:     a.PeakPPS,
+			PeakBPS:     a.PeakBPS,
+			ReasonCodes: a.ReasonCodes,
+			NodeSources: a.NodeSources,
+			ResponseID:  a.ResponseID,
+			EndedAt:     &now,
 		}
 		if err := t.store.Attacks().Update(ctx, attack); err != nil {
-			log.Printf("tracker: DB update expired attack %d: %v", a.DBID, err)
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
+			err = t.store.Attacks().Update(retryCtx, attack)
+			retryCancel()
+			if err != nil {
+				log.Printf("ERROR tracker: DB update expired attack %d: %v", a.DBID, err)
+				if t.StateWriteFailure != nil {
+					t.StateWriteFailure("attack_update_expired")
+				}
+				t.queuePendingEnd(attack, "attack_update_expired")
+			}
 		}
 
 		// Notify action engine — reload full attack from DB so all fields
@@ -470,15 +546,25 @@ func (t *Tracker) transitionToExpired(a *trackedAttack, now time.Time) {
 			fullAttack, err := t.store.Attacks().Get(ctx, a.DBID)
 			if err != nil {
 				log.Printf("tracker: DB reload expired attack %d: %v", a.DBID, err)
-				fullAttack = attack // fallback to partial
+				fullAttack = a.eventAttack()
+				fullAttack.EndedAt = &now
+			} else if fullAttack.EndedAt == nil {
+				fullAttack.EndedAt = &now
 			}
-			t.onAction(AttackEvent{Type: "expired", Attack: fullAttack, DBID: a.DBID})
+			t.notifyAction(AttackEvent{Type: "expired", Attack: fullAttack, DBID: a.DBID})
 		}
 	}
 }
 
-// ForceExpire manually expires an attack by DB ID. Returns true if found and expired.
+// ForceExpire manually expires an attack using the configured in-memory hold.
+// It also returns true for an ended attack still awaiting database persistence.
 func (t *Tracker) ForceExpire(dbID int) bool {
+	return t.ForceExpireHold(dbID, time.Duration(t.cfg.ManualExpireHoldSeconds)*time.Second)
+}
+
+// ForceExpireHold ends an attack and holds its key until traffic drops or hold elapses.
+// A nonpositive hold removes it immediately. Pending writes never emit a second end event.
+func (t *Tracker) ForceExpireHold(dbID int, hold time.Duration) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -486,27 +572,123 @@ func (t *Tracker) ForceExpire(dbID int) bool {
 		if a.DBID == dbID {
 			now := time.Now()
 			log.Printf("tracker: force-expire attack %s/%s (id=%d) by user", key.DstIP, key.DecoderFamily, dbID)
-			t.transitionToExpired(a, now)
-			delete(t.attacks, key)
+			t.endAttack(a, now, hold <= 0)
+			if hold > 0 {
+				a.DBID = 0
+				a.ExpiresAt = now.Add(hold)
+				log.Printf("tracker: holding %s/%s for up to %v after manual expire", key.DstIP, key.DecoderFamily, hold)
+			} else {
+				delete(t.attacks, key)
+			}
 			return true
 		}
 	}
+	if _, ok := t.pendingEnd[dbID]; ok {
+		log.Printf("tracker: attack %d already ended; awaiting database persistence", dbID)
+		return true
+	}
 	return false
+}
+
+// queuePendingEnd snapshots the failed payload under t.mu. Enqueueing does not
+// postpone the table-wide retry clock, so new failures cannot starve older ones.
+func (t *Tracker) queuePendingEnd(attack *store.Attack, op string) {
+	copy := *attack
+	copy.ReasonCodes = slices.Clone(attack.ReasonCodes)
+	copy.NodeSources = slices.Clone(attack.NodeSources)
+	if attack.ResponseID != nil {
+		v := *attack.ResponseID
+		copy.ResponseID = &v
+	}
+	if attack.PrefixID != nil {
+		v := *attack.PrefixID
+		copy.PrefixID = &v
+	}
+	if attack.ThresholdRuleID != nil {
+		v := *attack.ThresholdRuleID
+		copy.ThresholdRuleID = &v
+	}
+	if attack.EndedAt != nil {
+		v := *attack.EndedAt
+		copy.EndedAt = &v
+	}
+	if attack.TemplateName != nil {
+		v := *attack.TemplateName
+		copy.TemplateName = &v
+	}
+	if attack.RuleSummary != nil {
+		v := *attack.RuleSummary
+		copy.RuleSummary = &v
+	}
+	if t.pendingEnd == nil {
+		t.pendingEnd = make(map[int]*pendingEndWrite)
+	}
+	t.pendingEnd[attack.ID] = &pendingEndWrite{attack: &copy, op: op, lastTry: time.Now()}
+}
+
+// retryPendingEnd runs under t.mu and retries at most one eligible write per tick.
+// Eligibility uses the tick's start, excluding entries queued in the same slow tick.
+// The O(K) scan selects the oldest attempt; retries are spaced from completion.
+func (t *Tracker) retryPendingEnd(tickStart time.Time) {
+	if len(t.pendingEnd) == 0 || tickStart.Before(t.pendingEndNextTry) {
+		return
+	}
+	var pick *pendingEndWrite
+	pickID := 0
+	for id, p := range t.pendingEnd {
+		if tickStart.Before(p.lastTry.Add(pendingEndRetryInterval)) {
+			continue
+		}
+		if pick == nil || p.lastTry.Before(pick.lastTry) || (p.lastTry.Equal(pick.lastTry) && id < pickID) {
+			pick, pickID = p, id
+		}
+	}
+	if pick == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
+	err := t.store.Attacks().Update(ctx, pick.attack)
+	cancel()
+	done := time.Now()
+	t.pendingEndNextTry = done.Add(pendingEndRetryInterval)
+	if err != nil {
+		pick.lastTry = done
+	} else {
+		delete(t.pendingEnd, pickID)
+		log.Printf("tracker: %s ended_at for attack %d persisted on retry", pick.op, pickID)
+	}
 }
 
 // NotifyExpired sends an on_expired event to the action engine for a DB-only expire.
 // Used by manual expire API when the attack is not in tracker memory (degraded recovery / stale row).
 func (t *Tracker) NotifyExpired(attack *store.Attack) {
 	if t.onAction != nil {
-		t.onAction(AttackEvent{Type: "expired", Attack: attack, DBID: attack.ID})
+		t.notifyAction(AttackEvent{Type: "expired", Attack: attack, DBID: attack.ID})
 	}
+}
+
+// notifyAction hands off a snapshot without sharing mutable tracker fields.
+// It runs at the original callback site, preserving lock and enqueue ordering.
+func (t *Tracker) notifyAction(event AttackEvent) {
+	attack := *event.Attack
+	attack.NodeSources = slices.Clone(attack.NodeSources)
+	attack.ReasonCodes = slices.Clone(attack.ReasonCodes)
+	if attack.ResponseID != nil {
+		responseID := *attack.ResponseID
+		attack.ResponseID = &responseID
+	}
+	event.Attack = &attack
+	t.onAction(event)
 }
 
 // ActiveTimers returns expiry timer info for all tracked attacks, keyed by DB ID.
 // Used by the API to show countdown timers on active attacks.
 type AttackTimer struct {
-	State     string  `json:"state"`      // "active" | "expiring"
-	ExpiresIn float64 `json:"expires_in"` // seconds until expiry (0 if active/not expiring)
+	Prefix         string  `json:"-"`
+	ThresholdValue *int64  `json:"threshold_value,omitempty"`
+	ThresholdUnit  string  `json:"threshold_unit,omitempty"`
+	State          string  `json:"state"`      // "active" | "expiring"
+	ExpiresIn      float64 `json:"expires_in"` // seconds until expiry (0 if active/not expiring)
 }
 
 func (t *Tracker) ActiveTimers() map[int]AttackTimer {
@@ -519,7 +701,12 @@ func (t *Tracker) ActiveTimers() map[int]AttackTimer {
 		if a.DBID <= 0 {
 			continue
 		}
-		timer := AttackTimer{State: a.State}
+		timer := AttackTimer{State: a.State, Prefix: a.Prefix}
+		if a.Unit != "" {
+			value := a.ThreshValue
+			timer.ThresholdValue = &value
+			timer.ThresholdUnit = a.Unit
+		}
 		if a.State == StateExpiring && a.ExpiresAt.After(now) {
 			timer.ExpiresIn = a.ExpiresAt.Sub(now).Seconds()
 		}
@@ -536,7 +723,7 @@ func (t *Tracker) UpgradeType(dstIP net.IP, newType string, confidence float32, 
 
 	ipStr := dstIP.String()
 	for _, a := range t.attacks {
-		if a.Key.DstIP == ipStr && a.State == StateActive {
+		if a.Key.DstIP == ipStr && a.State == StateActive && a.Key.Direction != "sends" {
 			// Only upgrade UDP attacks with classifier results
 			// (classifier only analyzes UDP src_port distribution)
 			if a.Key.DecoderFamily != "udp" {
@@ -547,6 +734,7 @@ func (t *Tracker) UpgradeType(dstIP net.IP, newType string, confidence float32, 
 			}
 			oldType := a.AttackType
 			a.AttackType = newType
+			a.Confidence = confidence
 			a.ReasonCodes = append(a.ReasonCodes, reasons...)
 
 			log.Printf("tracker: type upgrade %s: %s → %s (confidence=%.2f)",
@@ -554,25 +742,16 @@ func (t *Tracker) UpgradeType(dstIP net.IP, newType string, confidence float32, 
 
 			// Update DB
 			if a.DBID > 0 {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
 				defer cancel()
-				attack := &store.Attack{
-					ID:          a.DBID,
-					AttackType:  newType,
-					Severity:    a.Severity, // preserve existing severity
-					Confidence:  confidence,
-					PeakPPS:     a.PeakPPS,
-					PeakBPS:     a.PeakBPS,
-					ReasonCodes: a.ReasonCodes,
-					NodeSources: a.NodeSources,
-				}
+				attack := a.eventAttack()
 				if err := t.store.Attacks().Update(ctx, attack); err != nil {
 					log.Printf("tracker: DB update type upgrade %d: %v", a.DBID, err)
 				}
 
 				// Notify action engine — immediate re-evaluation
 				if t.onAction != nil {
-					t.onAction(AttackEvent{Type: "type_upgrade", Attack: attack, DBID: a.DBID})
+					t.notifyAction(AttackEvent{Type: "type_upgrade", Attack: attack, DBID: a.DBID})
 				}
 			}
 		}
@@ -582,7 +761,7 @@ func (t *Tracker) UpgradeType(dstIP net.IP, newType string, confidence float32, 
 // RecoverFromDB rebuilds in-memory state from active attacks in DB.
 // Called on Controller startup for crash recovery.
 func (t *Tracker) RecoverFromDB(ctx context.Context) error {
-	attacks, err := t.store.Attacks().ListActive(ctx, 1000) // limit recovery to 1000
+	attacks, err := t.store.Attacks().ListAllActive(ctx)
 	if err != nil {
 		return err
 	}
@@ -590,9 +769,11 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	kept := make(map[attackKey]*trackedAttack)
+	var duplicates []*trackedAttack
 	for _, a := range attacks {
 		key := attackKey{
-			DstIP:         a.DstIP,
+			DstIP:         canonicalHostKey(a.DstIP),
 			Direction:     a.Direction,
 			DecoderFamily: a.DecoderFamily,
 		}
@@ -610,22 +791,43 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 			FirstSeen:   a.StartedAt,
 			LastSeen:    time.Now(),
 		}
+		ta.Confidence = a.Confidence
+		if a.PrefixID != nil {
+			ta.PrefixID = *a.PrefixID
+		}
+		if a.ThresholdRuleID != nil {
+			ta.ThresholdID = *a.ThresholdRuleID
+		}
 		if a.ResponseID != nil {
 			ta.ResponseID = a.ResponseID
 		}
+		if current, ok := kept[key]; ok {
+			if ta.FirstSeen.After(current.FirstSeen) || (ta.FirstSeen.Equal(current.FirstSeen) && ta.DBID > current.DBID) {
+				duplicates = append(duplicates, current)
+				kept[key] = ta
+			} else {
+				duplicates = append(duplicates, ta)
+			}
+		} else {
+			kept[key] = ta
+		}
+	}
+
+	for key, ta := range kept {
 		t.attacks[key] = ta
 		t.dedup.MarkActive(key.DstIP, key.Direction, key.DecoderFamily)
 	}
 
-	if len(attacks) > 0 {
-		// Check if recovery was truncated
-		totalActive, _ := t.store.Attacks().CountActive(ctx)
-		if totalActive > len(attacks) {
-			log.Printf("tracker: DEGRADED RECOVERY — restored %d/%d active attacks (truncated, %d not loaded)",
-				len(attacks), totalActive, totalActive-len(attacks))
-		} else {
-			log.Printf("tracker: recovered %d active attacks from DB", len(attacks))
-		}
+	now := time.Now()
+	for _, dup := range duplicates {
+		t.endAttack(dup, now, false)
+	}
+
+	if len(kept) > 0 {
+		log.Printf("tracker: recovered %d active attacks from DB", len(kept))
+	}
+	if len(duplicates) > 0 {
+		log.Printf("tracker: recovery ended %d duplicate-key active attacks", len(duplicates))
 	}
 	return nil
 }
@@ -633,8 +835,8 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 // ActiveDstIPs returns the dst IP strings of all active/expiring attacks.
 // Used by the classifier to attempt type upgrades on active attacks.
 func (t *Tracker) ActiveDstIPs() []string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	seen := make(map[string]bool)
 	var ips []string
 	for _, a := range t.attacks {
@@ -648,8 +850,8 @@ func (t *Tracker) ActiveDstIPs() []string {
 
 // ActiveCount returns the number of currently tracked attacks.
 func (t *Tracker) ActiveCount() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	count := 0
 	for _, a := range t.attacks {
 		if a.State == StateActive || a.State == StateExpiring {
@@ -658,7 +860,6 @@ func (t *Tracker) ActiveCount() int {
 	}
 	return count
 }
-
 
 // decoderToAttackType maps a decoder_family value to the human-readable
 // attack_type string stored on the attack record and surfaced in the UI /
@@ -716,14 +917,23 @@ func decoderToAttackType(decoder string) string {
 	}
 }
 
+const (
+	severityCriticalPPS = 1_000_000
+	severityCriticalBPS = 10_000_000_000
+	severityHighPPS     = 100_000
+	severityHighBPS     = 1_000_000_000
+	severityMediumPPS   = 10_000
+	severityMediumBPS   = 100_000_000
+)
+
 func classifySeverity(peakPPS, peakBPS int64) string {
-	if peakPPS > 1_000_000 || peakBPS > 10_000_000_000 {
+	if peakPPS > severityCriticalPPS || peakBPS > severityCriticalBPS {
 		return "critical"
 	}
-	if peakPPS > 100_000 || peakBPS > 1_000_000_000 {
+	if peakPPS > severityHighPPS || peakBPS > severityHighBPS {
 		return "high"
 	}
-	if peakPPS > 10_000 || peakBPS > 100_000_000 {
+	if peakPPS > severityMediumPPS || peakBPS > severityMediumBPS {
 		return "medium"
 	}
 	return "low"
@@ -765,7 +975,21 @@ func attackPriorityLess(a, b *trackedAttack) bool {
 	return a.PeakPPS < b.PeakPPS
 }
 
-// countActive returns the number of active/expiring attacks.
+// evictionLess orders cap candidates by severity, then pending expiry, then PeakPPS.
+// An expiring attack seen this tick is treated as active even before tick restores it.
+func evictionLess(a, b *trackedAttack) bool {
+	sa, sb := severityScore(a.Severity), severityScore(b.Severity)
+	if sa != sb {
+		return sa < sb
+	}
+	ae, be := a.State == StateExpiring && !a.SeenThisTick, b.State == StateExpiring && !b.SeenThisTick
+	if ae != be {
+		return ae
+	}
+	return a.PeakPPS < b.PeakPPS
+}
+
+// countActive counts active/expiring attacks, the same set as findLowestActive.
 func (t *Tracker) countActive() int {
 	count := 0
 	for _, a := range t.attacks {
@@ -776,12 +1000,12 @@ func (t *Tracker) countActive() int {
 	return count
 }
 
-// findLowestActive returns the active attack with the lowest priority (severity then PeakPPS).
+// findLowestActive selects the lowest eviction priority among active/expiring attacks.
 func (t *Tracker) findLowestActive() *trackedAttack {
 	var lowest *trackedAttack
 	for _, a := range t.attacks {
-		if a.State == StateActive {
-			if lowest == nil || attackPriorityLess(a, lowest) {
+		if a.State == StateActive || a.State == StateExpiring {
+			if lowest == nil || evictionLess(a, lowest) {
 				lowest = a
 			}
 		}
@@ -817,27 +1041,81 @@ func (t *Tracker) evictAttack(a *trackedAttack, now time.Time) {
 
 	// Update DB — mark as ended with evicted reason
 	if a.DBID > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
 		defer cancel()
-		attack := &store.Attack{
-			ID:          a.DBID,
-			AttackType:  a.AttackType,
-			Severity:    a.Severity,
-			Confidence:  0.9,
-			PeakPPS:     a.PeakPPS,
-			PeakBPS:     a.PeakBPS,
-			ReasonCodes: append(a.ReasonCodes, "evicted_by_cap"),
-			NodeSources: a.NodeSources,
-			EndedAt:     &now,
+		attack := a.eventAttack()
+		attack.EndedAt = &now
+		attack.ReasonCodes = append(a.ReasonCodes, "evicted_by_cap")
+		if err := t.store.Attacks().Update(ctx, attack); err != nil {
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), trackerDBOperationTimeout)
+			err = t.store.Attacks().Update(retryCtx, attack)
+			retryCancel()
+			if err != nil {
+				log.Printf("ERROR tracker: DB update evicted attack %d: %v", a.DBID, err)
+				if t.StateWriteFailure != nil {
+					t.StateWriteFailure("attack_update_evicted")
+				}
+				t.queuePendingEnd(attack, "attack_update_evicted")
+			}
 		}
-		_ = t.store.Attacks().Update(ctx, attack)
 
 		// Notify action engine — evicted, not naturally expired
 		if t.onAction != nil {
-			t.onAction(AttackEvent{Type: "evicted", Attack: attack, DBID: a.DBID})
+			t.notifyAction(AttackEvent{Type: "evicted", Attack: attack, DBID: a.DBID})
 		}
 	}
 
 	// Remove from tracker
 	delete(t.attacks, a.Key)
+}
+
+// markRing protects a confirming attack's source using the existing ring protection bit.
+func (t *Tracker) markRing(a *trackedAttack, nodeID string) {
+	if ip := net.ParseIP(a.Key.DstIP); ip != nil && t.rings != nil && nodeID != "" {
+		if a.Key.Direction == "sends" {
+			t.rings.MarkSrcActive(nodeID, a.Prefix, ip)
+		} else {
+			t.rings.MarkActive(nodeID, a.Prefix, ip)
+		}
+	}
+}
+
+// releaseDiscarded runs after the tick's deletions. Shared slots retain protection
+// while another confirming, active, or expiring attack still occupies them.
+func (t *Tracker) releaseDiscarded(discarded []*trackedAttack) {
+	if len(discarded) == 0 || t.rings == nil {
+		return
+	}
+	type ringSlot struct{ node, prefix, ip, direction string }
+	ringDir := func(direction string) string {
+		if direction == "sends" {
+			return "sends"
+		}
+		return "receives"
+	}
+	held := make(map[ringSlot]bool)
+	for _, a := range t.attacks {
+		if a.State == StateExpired {
+			continue
+		}
+		for _, n := range a.NodeSources {
+			held[ringSlot{n, a.Prefix, a.Key.DstIP, ringDir(a.Key.Direction)}] = true
+		}
+	}
+	for _, a := range discarded {
+		ip := net.ParseIP(a.Key.DstIP)
+		if ip == nil {
+			continue
+		}
+		for _, n := range a.NodeSources {
+			if held[ringSlot{n, a.Prefix, a.Key.DstIP, ringDir(a.Key.Direction)}] {
+				continue
+			}
+			if a.Key.Direction == "sends" {
+				t.rings.ClearSrcActive(n, a.Prefix, ip)
+			} else {
+				t.rings.ClearActive(n, a.Prefix, ip)
+			}
+		}
+	}
 }

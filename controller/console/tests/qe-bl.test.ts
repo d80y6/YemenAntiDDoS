@@ -1,0 +1,98 @@
+import { it, expect } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { mountQE, clock, calls, tick, body, clickText, input } from './qe-harness'
+import { deferred, response } from './helpers'
+import { notifications } from '../src/notifications'
+it('G-bl explanation starts expanded each visit config seven fields and summary four values', async () => {
+  const { w, router } = await mountQE('/baseline')
+  expect(w.get('[aria-expanded]').attributes('aria-expanded')).toBe('true')
+  expect(w.findAll('.config input').map(i => (i.element as HTMLInputElement).value))
+    .toEqual(['150', '50', '6', '2000', '16000', '0.25'])
+  expect(w.get('.config [role=switch]').attributes('aria-checked')).toBe('true')
+  expect(w.get('.profiles .meta').text()).toContain('周二 02:00 UTC（最近有数据）')
+  expect(w.get('.profiles .meta').text()).toContain('(#26)')
+  expect(w.get('.profiles .meta').text()).toContain('前缀总数: 3')
+  expect(w.get('.profiles .meta').text()).toContain('已激活: 2')
+  expect(w.get('.profiles .meta').text()).toContain('学习中: 1')
+  await clickText(w, '收起')
+  expect(w.get('[aria-expanded]').attributes('aria-expanded')).toBe('false')
+  await router.push('/thresholds'); await router.push('/baseline'); await flushPromises()
+  expect(w.get('[aria-expanded]').attributes('aria-expanded')).toBe('true')
+})
+it('G-bl W27 config unavailable disabled save defaults tooltip raw retry', async () => {
+  const { w, intercept } = await mountQE('/baseline', p => p.startsWith('/api/dynamic-detection/config')
+    ? response(503, { error: 'config failed' }) : undefined)
+  const save = w.findAll('.config button').find(b => b.text() === '保存')!
+  expect(save.attributes('disabled')).toBeDefined()
+  expect(save.attributes('title')).toBe('配置未加载成功，暂不能保存')
+  expect(w.get('.config [role=alert]').text()).toContain('config failed')
+  expect(w.findAll('.config input').map(i => (i.element as HTMLInputElement).value))
+    .toEqual(['200', '100', '4', '100000', '1000000000', '0.3'])
+  intercept()
+  await clickText(w.get('.config'), '重试')
+  expect(save.attributes('disabled')).toBeUndefined()
+})
+it.each([true, false])('G-bl W25 save snapshot seven keys notify after leaving success=%s', async ok => {
+  const pending = deferred<Response>()
+  const { w, router, intercept } = await mountQE('/baseline')
+  intercept((_p, i) => i.method === 'PUT' ? pending.promise : undefined)
+  await input('最低 PPS', '4321')
+  await clickText(w.get('.config'), '保存')
+  expect(body()).toEqual({ enabled: true, deviation_min: 50, deviation_max: 150, stable_weeks: 6,
+    min_pps: 4321, min_bps: 16000, ewma_alpha: 0.25 })
+  expect(w.get('.config .primary').attributes('disabled')).toBeDefined()
+  expect(w.get('.config .primary').text()).toBe('保存中…')
+  await input('最低 PPS', '9999')
+  await router.push('/thresholds'); await flushPromises()
+  pending.resolve(response(ok ? 200 : 400, ok ? { enabled: true, deviation_min: 50, deviation_max: 150,
+    stable_weeks: 6, min_pps: 4321, min_bps: 16000, ewma_alpha: 0.25 }
+    : { error: 'deviation_min must be <= deviation_max' }))
+  await flushPromises()
+  expect(notifications.at(-1)).toMatchObject({ message: ok ? '已保存' : 'deviation_min must be <= deviation_max',
+    tone: ok ? 'ok' : 'crit' })
+  expect(w.text()).toContain(ok ? '已保存' : 'deviation_min must be <= deviation_max')
+})
+it('G-bl 400 beside button and config uses server echo on success', async () => {
+  const { w, intercept } = await mountQE('/baseline', (_p, i) => i.method === 'PUT'
+    ? response(400, { error: 'deviation_min must be <= deviation_max' }) : undefined)
+  await clickText(w.get('.config'), '保存')
+  expect(w.get('.config [role=alert]').text()).toBe('deviation_min must be <= deviation_max')
+  expect(notifications.at(-1)?.tone).toBe('crit')
+  intercept((_p, i) => i.method === 'PUT' ? response(200, { enabled: false, deviation_min: 60, deviation_max: 160,
+    stable_weeks: 7, min_pps: 6000, min_bps: 18000, ewma_alpha: 0.4 }) : undefined)
+  await clickText(w.get('.config'), '保存')
+  expect((w.get('input[aria-label="最低 PPS"]').element as HTMLInputElement).value).toBe('6000')
+})
+it('G-bl W28 W29 W30 status 30s refresh failure retention sorted states bps unload', async () => {
+  clock()
+  const { w, intercept } = await mountQE('/baseline')
+  expect(w.findAll('.profiles tbody tr').map(r => r.get('td').text()))
+    .toEqual(['10.1.0.0/16', '10.2.0.0/16', '2001:db8::/48'])
+  expect(w.findAll('.profiles .pill').map(p => p.text())).toEqual(['正常', '超限', '学习中'])
+  expect(w.findAll('.profiles tbody tr').map(r => r.findAll('td')[3]!.text())).toEqual(['150', '400', '0'])
+  expect(w.get('.exceeded').text()).toContain('当前 100 pps / 20K bps；阈值 400 pps / 4K bps')
+  expect(calls('/api/dynamic-detection/status')).toHaveLength(1)
+  await tick(5000)
+  expect(calls('/api/dynamic-detection/status')).toHaveLength(1)
+  await tick(24999)
+  expect(calls('/api/dynamic-detection/status')).toHaveLength(1)
+  await tick(1)
+  expect(calls('/api/dynamic-detection/status')).toHaveLength(2)
+  intercept(p => p.startsWith('/api/dynamic-detection/status') ? response(503, { error: 'status failed' }) : undefined)
+  await clickText(w, '↻ 刷新')
+  expect(calls('/api/dynamic-detection/status')).toHaveLength(3)
+  expect(w.get('.profiles [role=alert]').text()).toBe('status failed')
+  expect(w.findAll('.profiles tbody tr')).toHaveLength(3)
+  w.unmount()
+  await tick(60000)
+  expect(calls('/api/dynamic-detection/status')).toHaveLength(3)
+})
+it('G-bl null prefixes empty and first status failure offers retry', async () => {
+  const { w } = await mountQE('/baseline', p => p.startsWith('/api/dynamic-detection/status')
+    ? response(200, { prefixes: null }) : undefined)
+  expect(w.get('.profiles').text()).toContain('暂无数据')
+  w.unmount()
+  const failed = await mountQE('/baseline', p => p.startsWith('/api/dynamic-detection/status')
+    ? response(503, { error: 'status failed' }) : undefined)
+  expect(failed.w.get('.profiles [role=alert]').text()).toContain('重试')
+})

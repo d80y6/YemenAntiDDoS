@@ -85,9 +85,9 @@ func TestManualOverrideRepo_Exists_Isolation(t *testing.T) {
 	})
 
 	cases := []struct {
-		name                                       string
+		name                      string
 		attack, action, connector int
-		rule                                       string
+		rule                      string
 	}{
 		{"different attack", 99, 2, 3, "r1"},
 		{"different action", 1, 99, 3, "r1"},
@@ -138,7 +138,6 @@ func TestManualOverrideRepo_ListByAttack_ScopedCorrectly(t *testing.T) {
 
 func TestHasManualOverride_UsesIndexTable(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 	ctx := context.Background()
 
 	// Seed ONLY the index table — not the log. If HasManualOverride still
@@ -147,7 +146,7 @@ func TestHasManualOverride_UsesIndexTable(t *testing.T) {
 		AttackID: 1, ActionID: 2, ConnectorID: 3, ExternalRuleID: "r1",
 	})
 
-	if !eng.HasManualOverride(ctx, 1, 2, 3, "r1") {
+	if !dao4LookupOverride(t, ms, ctx, 1, 2, 3, "r1") {
 		t.Error("HasManualOverride should read from index table, not execution_log")
 	}
 }
@@ -157,7 +156,6 @@ func TestHasManualOverride_UsesIndexTable(t *testing.T) {
 // of scanning the log is gone).
 func TestHasManualOverride_IgnoresLogWithoutIndex(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 	ctx := context.Background()
 
 	cid := 3
@@ -166,7 +164,7 @@ func TestHasManualOverride_IgnoresLogWithoutIndex(t *testing.T) {
 		ExternalRuleID: "r1", ConnectorID: &cid, ExecutedAt: time.Now(),
 	})
 
-	if eng.HasManualOverride(ctx, 1, 2, 3, "r1") {
+	if dao4LookupOverride(t, ms, ctx, 1, 2, 3, "r1") {
 		t.Error("HasManualOverride must only trust the index table; log-only rows should NOT count")
 	}
 }
@@ -177,6 +175,7 @@ func TestHasManualOverride_IgnoresLogWithoutIndex(t *testing.T) {
 
 func TestForceRemove_WritesIndexOnSuccess(t *testing.T) {
 	ms := NewMockStore()
+	eng := action.NewEngine(ms, "auto")
 	now := time.Now()
 
 	ms.attacks.attacks = append(ms.attacks.attacks, store.Attack{
@@ -191,7 +190,6 @@ func TestForceRemove_WritesIndexOnSuccess(t *testing.T) {
 		BGPASN: 65001, AddressFamily: "ipv4 unicast", Enabled: true,
 	})
 
-	eng := action.NewEngine(ms, "auto")
 	r := setupRouterWithEngine(ms, eng)
 
 	payload := map[string]any{
@@ -250,7 +248,6 @@ func TestForceRemove_WritesIndexOnSuccess(t *testing.T) {
 // would have erroneously suppressed both actions.
 func TestManualOverride_ActionScoped_NoCrossActionLeak(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 	ctx := context.Background()
 
 	// Same attack 1, two actions 10 and 20, both targeting connector 3, rule "r1".
@@ -262,10 +259,10 @@ func TestManualOverride_ActionScoped_NoCrossActionLeak(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if !eng.HasManualOverride(ctx, 1, 10, 3, "r1") {
+	if !dao4LookupOverride(t, ms, ctx, 1, 10, 3, "r1") {
 		t.Error("overridden action (10) must be suppressed")
 	}
-	if eng.HasManualOverride(ctx, 1, 20, 3, "r1") {
+	if dao4LookupOverride(t, ms, ctx, 1, 20, 3, "r1") {
 		t.Error("non-overridden action (20) must NOT be suppressed even though it shares connector+rule with action 10")
 	}
 }
@@ -289,7 +286,7 @@ func TestManualOverride_BatchSetConstruction_IsActionScoped(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Replicate bgp.go / xdrop.go batch set construction — MUST match exactly.
+	// Local batch-set copy, shaped like xdrop.go / ended_sweep.go.
 	overrides, _ := ms.ManualOverrides().ListByAttack(ctx, 1)
 	overrideSet := make(map[string]struct{}, len(overrides))
 	for _, o := range overrides {
@@ -312,7 +309,6 @@ func TestManualOverride_BatchSetConstruction_IsActionScoped(t *testing.T) {
 // Inverse: two actions, BOTH overridden — both must be suppressed.
 func TestManualOverride_ActionScoped_BothOverriddenSuppressed(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 	ctx := context.Background()
 
 	for _, actID := range []int{10, 20} {
@@ -321,10 +317,10 @@ func TestManualOverride_ActionScoped_BothOverriddenSuppressed(t *testing.T) {
 		})
 	}
 
-	if !eng.HasManualOverride(ctx, 1, 10, 3, "r1") {
+	if !dao4LookupOverride(t, ms, ctx, 1, 10, 3, "r1") {
 		t.Error("action 10 should be suppressed")
 	}
-	if !eng.HasManualOverride(ctx, 1, 20, 3, "r1") {
+	if !dao4LookupOverride(t, ms, ctx, 1, 20, 3, "r1") {
 		t.Error("action 20 should be suppressed")
 	}
 }
@@ -341,7 +337,6 @@ func TestManualOverride_ActionScoped_BothOverriddenSuppressed(t *testing.T) {
 // now uses (via pre-fetched set).
 func TestBGPWithdraw_SuppressionLookupUsesIndex(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 	ctx := context.Background()
 
 	// Seed 100 override records for the attack (simulating a large attack's
@@ -356,10 +351,10 @@ func TestBGPWithdraw_SuppressionLookupUsesIndex(t *testing.T) {
 	}
 
 	// 1 positive + 1 negative check
-	if !eng.HasManualOverride(ctx, 1, 2, 3, "192.0.2.50/32|RTBH") {
+	if !dao4LookupOverride(t, ms, ctx, 1, 2, 3, "192.0.2.50/32|RTBH") {
 		t.Error("should find override in the middle of the set")
 	}
-	if eng.HasManualOverride(ctx, 1, 2, 3, "192.0.2.999/32|RTBH") {
+	if dao4LookupOverride(t, ms, ctx, 1, 2, 3, "192.0.2.999/32|RTBH") {
 		t.Error("should NOT find override that was never created")
 	}
 }

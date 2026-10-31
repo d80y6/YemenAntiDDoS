@@ -1,0 +1,44 @@
+.fl-page { min-width: 0; }
+.fl-page .crumb { display: flex; gap: 6px; color: var(--muted); font-size: 12px; }
+.fl-title, .fl-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.fl-title h1 { margin: 0; }
+.fl-title { justify-content: flex-start; }
+.fl-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.fl-status .v { font: 600 14px/28px var(--font-ui); }
+.fl-status .v::before {
+  content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px;
+  background: currentColor;
+}
+.fl-muted .v { color: var(--muted); }
+.fl-stale { margin: 8px 0 16px; }
+.fl-panel { margin-top: 0; }
+.fl-table, .fl-source-table { width: 100%; table-layout: fixed; }
+.fl-table th, .fl-table td, .fl-source-table th, .fl-source-table td { white-space: normal; overflow-wrap: anywhere; }
+.fl-table th:first-child { width: 5%; }
+.fl-table th:nth-child(2) { width: 16%; }
+.fl-table th:nth-child(3) { width: 12%; }
+.fl-table th:nth-child(5) { width: 13%; }
+.fl-table th:nth-child(6) { width: 10%; }
+.fl-table th:last-child { width: 23%; }
+.fl-source-table th:nth-child(2) { width: 20%; }
+.fl-row, .fl-source-row { cursor: pointer; }
+.fl-disabled > td { color: var(--muted); }
+.fl-disabled .pill { opacity: .65; }
+.fl-link { color: var(--accent); }
+.fl-row:hover .fl-link, .fl-source-row:hover .fl-link { text-decoration: underline; }
+.fl-bar { margin-bottom: 12px; }
+.fl-form small { line-height: 1.6; }
+.fl-form .seg { width: max-content; max-width: 100%; }
+.fl-form .seg button { min-width: 0; }
+.fl-footer { width: 100%; display: grid; gap: 12px; overflow-wrap: anywhere; }
+.fl-footer p { margin: 0; }
+.fl-footer .toolbar { justify-content: flex-end; }
+.fl-back { margin-bottom: 16px; }
+.fl-source-status { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .fl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fl-table { min-width: 760px; }
+  .fl-source-table { min-width: 700px; }
+  .fl-table .empty, .fl-source-table .empty { text-align: left; }
+  .fl-page .page-head { align-items: flex-start; gap: 16px; }
+}

@@ -3,6 +3,7 @@ package ingestion
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 // to reduce write volume. The flush interval controls the time granularity
 // of ts_stats (default 5s = 5-second resolution in historical data).
 // Detection is NOT affected — it uses the in-memory ring buffer (1s granularity).
-//
 type DBWriter struct {
 	rings    *ring.RingStore
 	stats    store.StatsRepo
@@ -163,10 +163,49 @@ func (w *DBWriter) flush(ctx context.Context) {
 
 	if err := w.stats.BulkInsert(ctx, batch); err != nil {
 		log.Printf("db_writer: bulk insert %d points failed: %v", len(batch), err)
+		groups := make(map[string][]store.StatPoint)
+		for _, sp := range batch {
+			groups[sp.NodeID] = append(groups[sp.NodeID], sp)
+		}
+		failed := make(map[string]bool)
+		requeued, flushed := 0, 0
+		firstErr := err
+		if len(groups) == 1 {
+			for nodeID, group := range groups {
+				failed[nodeID] = true
+				requeued += len(group)
+			}
+		} else {
+			nodeIDs := make([]string, 0, len(groups))
+			for nodeID := range groups {
+				nodeIDs = append(nodeIDs, nodeID)
+			}
+			sort.Strings(nodeIDs)
+			firstErr = nil
+			for _, nodeID := range nodeIDs {
+				group := groups[nodeID]
+				if retryErr := w.stats.BulkInsert(ctx, group); retryErr != nil {
+					failed[nodeID] = true
+					requeued += len(group)
+					if firstErr == nil {
+						firstErr = retryErr
+					}
+				} else {
+					flushed += len(group)
+				}
+			}
+		}
+		log.Printf("db_writer: per-node retry: %d/%d nodes failed, %d points re-queued (first error: %v)", len(failed), len(groups), requeued, firstErr)
+		if flushed > 0 {
+			log.Printf("db_writer: flushed %d points to ts_stats (per-node retry)", flushed)
+		}
 		// Re-enqueue original accumulators (not averaged batch) to preserve tick weights.
 		// This avoids distorting averages when merged with new incoming data.
 		w.mu.Lock()
 		for key, failedAcc := range agg {
+			if !failed[key.NodeID] {
+				continue
+			}
 			if len(w.pending) >= 100_000 {
 				log.Printf("db_writer: dropping points (retry buffer full)")
 				break
@@ -195,11 +234,4 @@ func (w *DBWriter) flush(ctx context.Context) {
 	}
 
 	log.Printf("db_writer: flushed %d points to ts_stats", len(batch))
-}
-
-// PendingCount returns the number of unique keys in the aggregation buffer.
-func (w *DBWriter) PendingCount() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return len(w.pending)
 }

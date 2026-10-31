@@ -1,0 +1,7 @@
+[
+  "https://xdrop.example.com:8000/api/v1",
+  "https://hooks.example.net/notify",
+  "https://example.com.attacker.test/x",
+  "https://notexample.com/x",
+  "https://example.com@evil.test/x"
+]

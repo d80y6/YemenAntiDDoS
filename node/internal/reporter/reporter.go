@@ -1,6 +1,5 @@
 // Package reporter manages gRPC connection to Controller with handshake,
 // three reporting streams, and a bidirectional control channel.
-//
 package reporter
 
 import (
@@ -44,15 +43,17 @@ type Reporter struct {
 	// Data sources (XDP mode uses reports, flow mode uses flowReports)
 	reports     <-chan *collector.Report
 	flowReports <-chan *pb.StatsReport // v3.0: direct protobuf input from FlowAggregator
+	heartbeat   func() *pb.StatsReport
 	batches     chan []sampler.PacketSample
 
 	// Callback for applying config (HotSwap + snapshot)
-	applyConfig       ApplyConfigFunc
-	deliveryVersion   uint64
+	applyConfig     ApplyConfigFunc
+	deliveryVersion uint64
 
 	// Metrics source for SamplingMetrics (set via SetBatcher)
-	batcher           *sampler.Batcher
-	localRate         atomic.Uint32 // current sample rate, updated from StatsStream
+	batcher            *sampler.Batcher
+	localRate          atomic.Uint32 // current sample rate, updated from StatsStream
+	upstreamRate       atomic.Uint32 // follows the latest processed Stats report
 	batchSendLatencyUs atomic.Int64  // last SampleStream.Send() latency in microseconds
 
 	// State
@@ -66,23 +67,27 @@ type Reporter struct {
 // New creates a Reporter for XDP mode.
 // applyConfig is called when Controller delivers a new watch config.
 func New(cfg Config, reports <-chan *collector.Report, applyConfig ApplyConfigFunc) *Reporter {
-	return &Reporter{
+	r := &Reporter{
 		cfg:         cfg,
 		reports:     reports,
 		batches:     make(chan []sampler.PacketSample, 16),
 		applyConfig: applyConfig,
 	}
+	r.upstreamRate.Store(cfg.UpstreamRate)
+	return r
 }
 
 // NewFlow creates a Reporter for flow mode.
 // flowReports receives pre-built StatsReport protobufs from FlowAggregator.
 func NewFlow(cfg Config, flowReports <-chan *pb.StatsReport, applyConfig ApplyConfigFunc) *Reporter {
-	return &Reporter{
+	r := &Reporter{
 		cfg:         cfg,
 		flowReports: flowReports,
 		batches:     make(chan []sampler.PacketSample, 16),
 		applyConfig: applyConfig,
 	}
+	r.upstreamRate.Store(cfg.UpstreamRate)
+	return r
 }
 
 // SetDeliveryVersion sets the current delivery version from a loaded snapshot.
@@ -96,6 +101,12 @@ func (r *Reporter) SetDeliveryVersion(v uint64) {
 // Must be called before Run().
 func (r *Reporter) SetBatcher(b *sampler.Batcher) {
 	r.batcher = b
+}
+
+// SetHeartbeat sets the constructor used after a second without a successful send.
+// Must be called before Run().
+func (r *Reporter) SetHeartbeat(fn func() *pb.StatsReport) {
+	r.heartbeat = fn
 }
 
 // BatchSendLatencyMs returns the last SampleStream.Send() latency in milliseconds.
@@ -131,7 +142,11 @@ func (r *Reporter) Run(ctx context.Context) {
 		default:
 		}
 
-		if err := r.connectAndServe(ctx); err != nil {
+		start := time.Now()
+		err := r.connectAndServe(ctx)
+		elapsed := time.Since(start)
+		backoff = nextBackoff(backoff, elapsed)
+		if err != nil {
 			log.Printf("reporter: %v (reconnecting in %v)", err, backoff)
 		}
 
@@ -149,6 +164,13 @@ func (r *Reporter) Run(ctx context.Context) {
 			backoff = 30 * time.Second
 		}
 	}
+}
+
+func nextBackoff(cur, attempt time.Duration) time.Duration {
+	if attempt >= 30*time.Second {
+		return time.Second
+	}
+	return cur
 }
 
 // connectAndServe dials, handshakes, and runs all streams until error or ctx cancel.
@@ -179,15 +201,7 @@ func (r *Reporter) connectAndServe(ctx context.Context) error {
 		len(resp.GetWatchConfig().GetPrefixes()))
 
 	// Apply watch_config from handshake (P6: reconciliation)
-	if wc := resp.GetWatchConfig(); wc != nil && r.applyConfig != nil {
-		if err := r.applyConfig(wc, resp.DeliveryVersionCurrent); err != nil {
-			log.Printf("reporter: apply handshake config: %v", err)
-		} else {
-			r.mu.Lock()
-			r.deliveryVersion = resp.DeliveryVersionCurrent
-			r.mu.Unlock()
-		}
-	}
+	initialAck := r.applyHandshakeConfig(resp)
 
 	r.mu.Lock()
 	r.connected = true
@@ -234,7 +248,7 @@ func (r *Reporter) connectAndServe(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		errCh <- r.runControlStream(streamCtx)
+		errCh <- r.runControlStream(streamCtx, initialAck)
 	}()
 
 	// Wait for first error
@@ -254,6 +268,26 @@ func (r *Reporter) connectAndServe(ctx context.Context) error {
 	}
 }
 
+func (r *Reporter) applyHandshakeConfig(resp *pb.HandshakeResponse) *pb.ConfigAck {
+	if wc := resp.GetWatchConfig(); wc != nil && r.applyConfig != nil {
+		if err := r.applyConfig(wc, resp.DeliveryVersionCurrent); err != nil {
+			log.Printf("reporter: apply handshake config: %v", err)
+			return &pb.ConfigAck{DeliveryVersionApplied: resp.DeliveryVersionCurrent, Success: false, ErrorMessage: err.Error()}
+		} else {
+			r.mu.Lock()
+			r.deliveryVersion = resp.DeliveryVersionCurrent
+			r.mu.Unlock()
+		}
+	}
+	r.mu.Lock()
+	dv := r.deliveryVersion
+	r.mu.Unlock()
+	if dv > 0 {
+		return &pb.ConfigAck{DeliveryVersionApplied: dv, Success: true}
+	}
+	return nil
+}
+
 func (r *Reporter) handshake(ctx context.Context) (*pb.HandshakeResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -263,12 +297,12 @@ func (r *Reporter) handshake(ctx context.Context) (*pb.HandshakeResponse, error)
 	r.mu.Unlock()
 
 	req := &pb.NodeHandshake{
-		NodeId:                  r.cfg.NodeID,
-		ApiKey:                  r.cfg.APIKey,
-		Interfaces:              []string{r.cfg.InterfaceName},
-		AgentVersion:            r.cfg.AgentVersion,
-		DeliveryVersionApplied:  dv,
-		Mode:                    r.cfg.Mode,
+		NodeId:                 r.cfg.NodeID,
+		ApiKey:                 r.cfg.APIKey,
+		Interfaces:             []string{r.cfg.InterfaceName},
+		AgentVersion:           r.cfg.AgentVersion,
+		DeliveryVersionApplied: dv,
+		Mode:                   r.cfg.Mode,
 	}
 
 	resp, err := r.client.Handshake(ctx, req)
@@ -303,6 +337,8 @@ func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error 
 
 	// Flow mode: receive pre-built StatsReport directly
 	if r.flowReports != nil {
+		idle := time.NewTimer(time.Second)
+		defer idle.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -313,11 +349,20 @@ func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error 
 					stream.CloseAndRecv()
 					return nil
 				}
-				msg.GapSeconds = gapSeconds
-				if err := sendWithTimeout(ctx, stream, msg); err != nil {
+				if err := sendFlow(ctx, stream, msg, &gapSeconds); err != nil {
 					return err
 				}
-				gapSeconds = 0
+				idle.Reset(time.Second)
+			case <-idle.C:
+				closed, err := r.flowIdle(ctx, stream, &gapSeconds)
+				if err != nil {
+					return err
+				}
+				if closed {
+					stream.CloseAndRecv()
+					return nil
+				}
+				idle.Reset(time.Second)
 			}
 		}
 	}
@@ -334,13 +379,45 @@ func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error 
 				return nil
 			}
 			r.localRate.Store(report.SampleRate)
-			msg := reportToProto(report, r.cfg.NodeID, r.cfg.InterfaceName, r.cfg.UpstreamRate, gapSeconds, r.batcher, r.BatchSendLatencyMs())
+			rate := report.UpstreamRate
+			if rate == 0 {
+				rate = r.cfg.UpstreamRate
+			}
+			r.upstreamRate.Store(rate)
+			msg := reportToProto(report, r.cfg.NodeID, r.cfg.InterfaceName, rate, gapSeconds, r.batcher, r.BatchSendLatencyMs())
 			if err := sendWithTimeout(ctx, stream, msg); err != nil {
 				return err
 			}
 			gapSeconds = 0
 		}
 	}
+}
+
+func sendFlow(ctx context.Context, stream grpc.ClientStream, msg *pb.StatsReport, gap *uint32) error {
+	msg.GapSeconds = *gap
+	if err := sendWithTimeout(ctx, stream, msg); err != nil {
+		return err
+	}
+	*gap = 0
+	return nil
+}
+
+func (r *Reporter) flowIdle(ctx context.Context, stream grpc.ClientStream, gap *uint32) (closed bool, err error) {
+	if ctx.Err() != nil {
+		return true, nil
+	}
+	select {
+	case msg, ok := <-r.flowReports:
+		if !ok {
+			return true, nil
+		}
+		return false, sendFlow(ctx, stream, msg, gap)
+	default:
+	}
+	if r.heartbeat == nil {
+		return false, nil
+	}
+	return false, sendFlow(ctx, stream, r.heartbeat(), gap)
 }
 
 func (r *Reporter) runSampleStream(ctx context.Context) error {
@@ -359,7 +436,7 @@ func (r *Reporter) runSampleStream(ctx context.Context) error {
 				stream.CloseAndRecv()
 				return nil
 			}
-			msg := batchToProto(batch, r.cfg.NodeID, r.cfg.InterfaceName, r.cfg.UpstreamRate, r.localRate.Load())
+			msg := batchToProto(batch, r.cfg.NodeID, r.cfg.InterfaceName, r.upstreamRate.Load(), r.localRate.Load())
 			t0 := time.Now()
 			if err := sendWithTimeout(ctx, stream, msg); err != nil {
 				return err
@@ -369,30 +446,23 @@ func (r *Reporter) runSampleStream(ctx context.Context) error {
 	}
 }
 
-func (r *Reporter) runControlStream(ctx context.Context) error {
+func (r *Reporter) runControlStream(ctx context.Context, initial *pb.ConfigAck) error {
 	stream, err := r.client.ControlStream(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Send ACK for config applied during handshake (before ControlStream existed).
-	// Without this, controller never learns that handshake-applied config succeeded.
-	r.mu.Lock()
-	dv := r.deliveryVersion
-	r.mu.Unlock()
-	if dv > 0 {
+	// Report the handshake result before processing subsequent config pushes.
+	if initial != nil {
 		ack := &pb.ControlMessage{
 			Payload: &pb.ControlMessage_ConfigAck{
-				ConfigAck: &pb.ConfigAck{
-					DeliveryVersionApplied: dv,
-					Success:                true,
-				},
+				ConfigAck: initial,
 			},
 		}
 		if err := sendWithTimeout(ctx, stream, ack); err != nil {
 			return err
 		}
-		log.Printf("reporter: sent handshake config ACK version=%d", dv)
+		log.Printf("reporter: sent handshake config ACK version=%d success=%t", initial.DeliveryVersionApplied, initial.Success)
 	}
 
 	for {

@@ -4,13 +4,21 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
 
 type xdropActiveRuleRepo struct{ pool *pgxpool.Pool }
+
+func (r *xdropActiveRuleRepo) ClaimActive(ctx context.Context, attackID, actionID, connectorID int, externalRuleID string) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `UPDATE xdrop_active_rules SET status='withdrawing'
+		WHERE attack_id=$1 AND action_id=$2 AND connector_id=$3 AND external_rule_id=$4 AND status='active'`, attackID, actionID, connectorID, externalRuleID)
+	return tag.RowsAffected() > 0, err
+}
 
 func (r *xdropActiveRuleRepo) Upsert(ctx context.Context, rule *store.XDropActiveRule) (int, error) {
 	var id int
@@ -23,25 +31,29 @@ func (r *xdropActiveRuleRepo) Upsert(ctx context.Context, rule *store.XDropActiv
 		               delay_minutes = EXCLUDED.delay_minutes,
 		               delay_started_at = EXCLUDED.delay_started_at,
 		               error_message = EXCLUDED.error_message
+		 WHERE xdrop_active_rules.status <> 'withdrawn'
 		 RETURNING id`,
 		rule.AttackID, rule.ActionID, rule.ConnectorID, rule.ExternalRuleID,
 		rule.Status, rule.DelayMinutes, rule.DelayStartedAt, rule.ErrorMessage,
 	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = r.pool.QueryRow(ctx, `SELECT id FROM xdrop_active_rules WHERE attack_id=$1 AND action_id=$2 AND connector_id=$3 AND external_rule_id=$4`,
+			rule.AttackID, rule.ActionID, rule.ConnectorID, rule.ExternalRuleID).Scan(&id)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("upsert xdrop_active_rule: %w", err)
 	}
 	return id, nil
 }
 
-// MarkWithdrawing transitions active/delayed → withdrawing. Only succeeds
-// on those two states — if a concurrent goroutine has already moved the row
-// to withdrawing/withdrawn/failed, returns (false, nil) so the caller bails.
+// MarkWithdrawing claims active/delayed/failed rows; an unclaimed row returns false, nil.
+// MarkDelayed and MarkFailed also return nil when their status guards match no rows.
 func (r *xdropActiveRuleRepo) MarkWithdrawing(ctx context.Context, attackID, actionID, connectorID int, externalRuleID string) (bool, error) {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE xdrop_active_rules
 		 SET status = 'withdrawing'
 		 WHERE attack_id=$1 AND action_id=$2 AND connector_id=$3 AND external_rule_id=$4
-		   AND status IN ('active','delayed')`,
+		   AND status IN ('active','delayed','failed')`,
 		attackID, actionID, connectorID, externalRuleID)
 	if err != nil {
 		return false, fmt.Errorf("mark withdrawing: %w", err)
@@ -52,7 +64,7 @@ func (r *xdropActiveRuleRepo) MarkWithdrawing(ctx context.Context, attackID, act
 func (r *xdropActiveRuleRepo) MarkWithdrawn(ctx context.Context, attackID, actionID, connectorID int, externalRuleID string) error {
 	_, err := r.pool.Exec(ctx,
 		`UPDATE xdrop_active_rules
-		 SET status='withdrawn', withdrawn_at=now()
+		 SET status='withdrawn', withdrawn_at=now(), error_message=''
 		 WHERE attack_id=$1 AND action_id=$2 AND connector_id=$3 AND external_rule_id=$4`,
 		attackID, actionID, connectorID, externalRuleID)
 	if err != nil {
@@ -65,7 +77,7 @@ func (r *xdropActiveRuleRepo) MarkFailed(ctx context.Context, attackID, actionID
 	_, err := r.pool.Exec(ctx,
 		`UPDATE xdrop_active_rules
 		 SET status='failed', error_message=$5
-		 WHERE attack_id=$1 AND action_id=$2 AND connector_id=$3 AND external_rule_id=$4`,
+		 WHERE attack_id=$1 AND action_id=$2 AND connector_id=$3 AND external_rule_id=$4 AND status <> 'withdrawn'`,
 		attackID, actionID, connectorID, externalRuleID, errMsg)
 	if err != nil {
 		return fmt.Errorf("mark failed: %w", err)
@@ -77,7 +89,7 @@ func (r *xdropActiveRuleRepo) MarkDelayed(ctx context.Context, attackID, actionI
 	_, err := r.pool.Exec(ctx,
 		`UPDATE xdrop_active_rules
 		 SET status='delayed', delay_started_at=now(), delay_minutes=$5
-		 WHERE attack_id=$1 AND action_id=$2 AND connector_id=$3 AND external_rule_id=$4`,
+		 WHERE attack_id=$1 AND action_id=$2 AND connector_id=$3 AND external_rule_id=$4 AND status IN ('active','failed')`,
 		attackID, actionID, connectorID, externalRuleID, delayMinutes)
 	if err != nil {
 		return fmt.Errorf("mark delayed: %w", err)
@@ -155,4 +167,11 @@ func scanXDropActiveRules(rows rowScanner) ([]store.XDropActiveRule, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (r *xdropActiveRuleRepo) CountLiveByConnector(ctx context.Context, connectorID int) (int, error) {
+	var n int
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM xdrop_active_rules
+ WHERE connector_id=$1 AND status IN ('active','delayed','withdrawing','failed')`, connectorID).Scan(&n)
+	return n, err
 }

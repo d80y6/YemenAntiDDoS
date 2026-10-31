@@ -4,8 +4,9 @@
 //   - RingStore holds two directionStore instances (inbound + outbound)
 //   - Each directionStore has per-prefix and per-IP ring buffers
 //   - Each ring is a fixed-capacity circular buffer of DataPoints (1 per second)
-//   - LRU eviction when limits are reached
-//   - Active-attack IPs are protected from eviction
+//   - At capacity, stale unprotected keys go first; otherwise only heavier newcomers displace the lightest key
+//   - Active and confirming attacks protect IP keys, subject to the all-protected global fallback
+//   - Consecutive arrivals with the same timestamp overwrite the latest slot
 //
 // v2.11 Phase 2: refactored to directionStore to share all logic between
 // inbound (dst_ip) and outbound (src_ip) without code duplication.
@@ -18,6 +19,9 @@ import (
 
 	"github.com/littlewolf9527/xsight/shared/decoder"
 )
+
+// StaleAfter must equal threshold.ringFreshnessWindow.
+const StaleAfter = 5 * time.Second
 
 // DataPoint holds one second of aggregated traffic statistics.
 type DataPoint struct {
@@ -37,6 +41,7 @@ type Limits struct {
 	MaxGlobalKeys   int // default 100,000
 }
 
+// DefaultLimits is a test fixture; production uses config.Ring (defaults in config/config.go).
 func DefaultLimits() Limits {
 	return Limits{
 		MaxIPsPerPrefix: 10_000,
@@ -73,18 +78,22 @@ func (d *directionStore) pushPrefix(key, prefix string, capacity int, dp DataPoi
 		pr = newPrefixRing(prefix, capacity)
 		d.prefixes[key] = pr
 	}
-	pr.Push(dp)
+	pr.put(dp)
 }
 
 func (d *directionStore) pushIP(pKey, iKey, ipStr, prefix string, limits Limits, dp DataPoint) {
 	ir, ok := d.ips[iKey]
 	if !ok {
-		if len(d.ips) >= limits.MaxGlobalKeys {
-			d.evictOne()
-		}
 		pr := d.prefixes[pKey]
 		if pr != nil && len(pr.ipKeys) >= limits.MaxIPsPerPrefix {
-			d.evictFromPrefix(pKey)
+			if !d.admitNewcomer(pr.ipKeys, dp.PPS, false) {
+				return
+			}
+		}
+		if len(d.ips) >= limits.MaxGlobalKeys {
+			if !d.admitNewcomer(nil, dp.PPS, true) {
+				return
+			}
 		}
 		ir = newIPRing(ipStr, prefix, limits.MaxPointsPerIP)
 		d.ips[iKey] = ir
@@ -94,7 +103,7 @@ func (d *directionStore) pushIP(pKey, iKey, ipStr, prefix string, limits Limits,
 		}
 		pr.ipKeys[iKey] = struct{}{}
 	}
-	ir.Push(dp)
+	ir.put(dp)
 	d.ipAccess[iKey] = dp.Time
 }
 
@@ -154,27 +163,59 @@ func (d *directionStore) evictOne() {
 	}
 }
 
-// evictFromPrefix removes the LRU non-attack IP from a specific prefix.
-func (d *directionStore) evictFromPrefix(prefix string) {
-	pr := d.prefixes[prefix]
-	if pr == nil {
-		return
-	}
-	var oldest string
-	var oldestTime time.Time
-	for key := range pr.ipKeys {
+// admitNewcomer first removes the oldest stale unprotected key in scope.
+// Otherwise it admits only a strictly heavier newcomer than the lightest key.
+// A nil scope selects all keys. If every key is protected, preserve the global
+// LRU fallback or the per-prefix soft overflow. The caller holds the store lock.
+func (d *directionStore) admitNewcomer(scope map[string]struct{}, newPPS int64, global bool) bool {
+	var stale, light string
+	var staleTime time.Time
+	var lightPPS int64
+	unprotected := 0
+	inspect := func(key string) {
 		if d.activeIPs[key] {
-			continue
+			return
 		}
-		t := d.ipAccess[key]
-		if oldest == "" || t.Before(oldestTime) {
-			oldest = key
-			oldestTime = t
+		unprotected++
+		at := d.ipAccess[key]
+		if time.Since(at) > StaleAfter {
+			if stale == "" || at.Before(staleTime) {
+				stale, staleTime = key, at
+			}
+			return
+		}
+		var pps int64
+		ir := d.ips[key]
+		if ir.count > 0 {
+			pps = ir.buf[(ir.head-1+ir.cap)%ir.cap].PPS
+		}
+		if light == "" || pps < lightPPS {
+			light, lightPPS = key, pps
 		}
 	}
-	if oldest != "" {
-		d.removeIP(oldest)
+	if scope != nil {
+		for key := range scope {
+			inspect(key)
+		}
+	} else {
+		for key := range d.ips {
+			inspect(key)
+		}
 	}
+	switch {
+	case stale != "":
+		d.removeIP(stale)
+		return true
+	case light != "" && lightPPS < newPPS:
+		d.removeIP(light)
+		return true
+	case unprotected > 0:
+		return false
+	}
+	if global {
+		d.evictOne()
+	}
+	return true
 }
 
 // removeIP deletes an IP ring and all its tracking data.
@@ -221,6 +262,19 @@ func (r *PrefixRing) Push(dp DataPoint) {
 	if r.count < r.cap {
 		r.count++
 	}
+}
+
+// put keeps the last arrival when its timestamp matches the latest slot.
+// A timestamp matching an older slot still appends in arrival order.
+func (r *PrefixRing) put(dp DataPoint) {
+	if r.count > 0 {
+		idx := (r.head - 1 + r.cap) % r.cap
+		if r.buf[idx].Time.Equal(dp.Time) {
+			r.buf[idx] = dp
+			return
+		}
+	}
+	r.Push(dp)
 }
 
 func (r *PrefixRing) Latest(n int) []DataPoint {
@@ -273,6 +327,19 @@ func (r *IPRing) Push(dp DataPoint) {
 	if r.count < r.cap {
 		r.count++
 	}
+}
+
+// put keeps the last arrival when its timestamp matches the latest slot.
+// A timestamp matching an older slot still appends in arrival order.
+func (r *IPRing) put(dp DataPoint) {
+	if r.count > 0 {
+		idx := (r.head - 1 + r.cap) % r.cap
+		if r.buf[idx].Time.Equal(dp.Time) {
+			r.buf[idx] = dp
+			return
+		}
+	}
+	r.Push(dp)
 }
 
 func (r *IPRing) Latest(n int) []DataPoint {
@@ -342,22 +409,49 @@ func (s *RingStore) PushIP(nodeID, prefix string, dstIP net.IP, dp DataPoint) {
 	s.inbound.pushIP(prefixKey(nodeID, prefix), ipKey(nodeID, prefix, dstIP.String()), dstIP.String(), prefix, s.limits, dp)
 }
 
+// The returned ring is not safe to read concurrently with Push; production readers use the Latest* methods.
 func (s *RingStore) GetPrefixRing(nodeID, prefix string) *PrefixRing {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.inbound.getPrefixRing(prefixKey(nodeID, prefix))
 }
 
+// LatestPrefix returns the newest inbound prefix data point no older than maxAge.
+// The ring is read under the store lock, so the point is never torn by a concurrent Push.
+func (s *RingStore) LatestPrefix(nodeID, prefix string, maxAge time.Duration) (DataPoint, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	pr := s.inbound.getPrefixRing(prefixKey(nodeID, prefix))
+	if pr == nil {
+		return DataPoint{}, false
+	}
+	return pr.LatestOne(maxAge)
+}
+
+// The returned ring is not safe to read concurrently with Push; production readers use the Latest* methods.
 func (s *RingStore) GetIPRing(nodeID, prefix string, dstIP net.IP) *IPRing {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.inbound.getIPRing(ipKey(nodeID, prefix, dstIP.String()))
 }
 
+// The returned ring is not safe to read concurrently with Push; production readers use the Latest* methods.
 func (s *RingStore) GetIPRingByKey(nodeID, prefix, ipStr string) *IPRing {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.inbound.getIPRing(ipKey(nodeID, prefix, ipStr))
+}
+
+// LatestIPByKey returns the newest inbound ip data point no older than maxAge.
+// The ring is read under the store lock, so the point is never torn by a concurrent Push.
+func (s *RingStore) LatestIPByKey(nodeID, prefix, ipStr string, maxAge time.Duration) (DataPoint, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ir := s.inbound.getIPRing(ipKey(nodeID, prefix, ipStr))
+	if ir == nil {
+		return DataPoint{}, false
+	}
+	return ir.LatestOne(maxAge)
 }
 
 func (s *RingStore) MarkActive(nodeID, prefix string, dstIP net.IP) {
@@ -392,16 +486,42 @@ func (s *RingStore) PushSrcIP(nodeID, prefix string, srcIP net.IP, dp DataPoint)
 	s.outbound.pushIP(prefixKey(nodeID, prefix), ipKey(nodeID, prefix, srcIP.String()), srcIP.String(), prefix, s.limits, dp)
 }
 
+// The returned ring is not safe to read concurrently with Push; production readers use the Latest* methods.
 func (s *RingStore) GetSrcPrefixRing(nodeID, prefix string) *PrefixRing {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.outbound.getPrefixRing(prefixKey(nodeID, prefix))
 }
 
+// LatestSrcPrefix returns the newest outbound prefix data point no older than maxAge.
+// The ring is read under the store lock, so the point is never torn by a concurrent Push.
+func (s *RingStore) LatestSrcPrefix(nodeID, prefix string, maxAge time.Duration) (DataPoint, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	pr := s.outbound.getPrefixRing(prefixKey(nodeID, prefix))
+	if pr == nil {
+		return DataPoint{}, false
+	}
+	return pr.LatestOne(maxAge)
+}
+
+// The returned ring is not safe to read concurrently with Push; production readers use the Latest* methods.
 func (s *RingStore) GetSrcIPRingByKey(nodeID, prefix, ipStr string) *IPRing {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.outbound.getIPRing(ipKey(nodeID, prefix, ipStr))
+}
+
+// LatestSrcIPByKey returns the newest outbound ip data point no older than maxAge.
+// The ring is read under the store lock, so the point is never torn by a concurrent Push.
+func (s *RingStore) LatestSrcIPByKey(nodeID, prefix, ipStr string, maxAge time.Duration) (DataPoint, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ir := s.outbound.getIPRing(ipKey(nodeID, prefix, ipStr))
+	if ir == nil {
+		return DataPoint{}, false
+	}
+	return ir.LatestOne(maxAge)
 }
 
 func (s *RingStore) SrcIPKeysForPrefix(nodeID, prefix string) []string {
@@ -409,8 +529,6 @@ func (s *RingStore) SrcIPKeysForPrefix(nodeID, prefix string) []string {
 	defer s.mu.RUnlock()
 	return s.outbound.ipKeysForPrefix(prefixKey(nodeID, prefix))
 }
-
-
 
 func (s *RingStore) MarkSrcActive(nodeID, prefix string, srcIP net.IP) {
 	s.mu.Lock()
@@ -462,4 +580,48 @@ func (s *RingStore) Stats() (prefixCount, ipCount, activeCount int) {
 	ip, iip, ia := s.inbound.stats()
 	op, oip, oa := s.outbound.stats()
 	return ip + op, iip + oip, ia + oa
+}
+
+// LatestNPrefix copies up to n points in newest-first arrival order under the store lock.
+func (s *RingStore) LatestNPrefix(nodeID, prefix string, n int) []DataPoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r := s.inbound.getPrefixRing(prefixKey(nodeID, prefix))
+	if r == nil || n < 1 {
+		return nil
+	}
+	return r.Latest(n)
+}
+
+// LatestNSrcPrefix copies up to n points in newest-first arrival order under the store lock.
+func (s *RingStore) LatestNSrcPrefix(nodeID, prefix string, n int) []DataPoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r := s.outbound.getPrefixRing(prefixKey(nodeID, prefix))
+	if r == nil || n < 1 {
+		return nil
+	}
+	return r.Latest(n)
+}
+
+// LatestNIPByKey copies up to n points in newest-first arrival order under the store lock.
+func (s *RingStore) LatestNIPByKey(nodeID, prefix, ipStr string, n int) []DataPoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r := s.inbound.getIPRing(ipKey(nodeID, prefix, ipStr))
+	if r == nil || n < 1 {
+		return nil
+	}
+	return r.Latest(n)
+}
+
+// LatestNSrcIPByKey copies up to n points in newest-first arrival order under the store lock.
+func (s *RingStore) LatestNSrcIPByKey(nodeID, prefix, ipStr string, n int) []DataPoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r := s.outbound.getIPRing(ipKey(nodeID, prefix, ipStr))
+	if r == nil || n < 1 {
+		return nil
+	}
+	return r.Latest(n)
 }

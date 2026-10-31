@@ -14,10 +14,10 @@ import (
 // the actual xdropRuleRequest JSON marshal path as used in executeXDrop's
 // default-payload branch, verifying that:
 //
-//  1. A subnet attack (dst_ip="10.0.0.0/24") produces a body with "dst_cidr"
+//  1. A subnet attack (dst_ip="198.51.100.0/24") produces a body with "dst_cidr"
 //     set and "dst_ip" absent (the v1.3 fix — pre-v1.3 this would have put
 //     the CIDR into dst_ip and xDrop would HTTP 400).
-//  2. An exact IP attack (dst_ip="10.0.0.1") routes to "dst_ip" with
+//  2. An exact IP attack (dst_ip="198.51.100.1") routes to "dst_ip" with
 //     "dst_cidr" absent (regression check — we didn't break the common case).
 //  3. A /32 exact-IP attack still routes to "dst_ip" (not dst_cidr).
 //
@@ -25,35 +25,35 @@ import (
 // call or flips the field assignment in the payload struct.
 func TestXDrop_DefaultPayload_SubnetAttackRoutesToDstCIDR(t *testing.T) {
 	cases := []struct {
-		name       string
-		attack     store.Attack
+		name        string
+		attack      store.Attack
 		wantHasCIDR bool
 		wantHasIP   bool
 		wantCIDR    string
 		wantIP      string
 	}{
 		{
-			name:       "subnet /24 routes to dst_cidr",
-			attack:     store.Attack{DstIP: "10.0.0.0/24", AttackType: "udp_flood", ID: 1},
+			name:        "subnet /24 routes to dst_cidr",
+			attack:      store.Attack{DstIP: "198.51.100.0/24", AttackType: "udp_flood", ID: 1},
 			wantHasCIDR: true,
 			wantHasIP:   false,
-			wantCIDR:    "10.0.0.0/24",
+			wantCIDR:    "198.51.100.0/24",
 		},
 		{
 			name:      "exact bare IP routes to dst_ip",
-			attack:    store.Attack{DstIP: "10.0.0.1", AttackType: "udp_flood", ID: 2},
+			attack:    store.Attack{DstIP: "198.51.100.1", AttackType: "udp_flood", ID: 2},
 			wantHasIP: true,
-			wantIP:    "10.0.0.1",
+			wantIP:    "198.51.100.1",
 		},
 		{
 			name:      "/32 routes to dst_ip (not dst_cidr)",
-			attack:    store.Attack{DstIP: "10.0.0.1/32", AttackType: "udp_flood", ID: 3},
+			attack:    store.Attack{DstIP: "198.51.100.1/32", AttackType: "udp_flood", ID: 3},
 			wantHasIP: true,
-			wantIP:    "10.0.0.1",
+			wantIP:    "198.51.100.1",
 		},
 		{
-			name:       "IPv6 /64 routes to dst_cidr",
-			attack:     store.Attack{DstIP: "2001:db8::/64", AttackType: "udp_flood", ID: 4},
+			name:        "IPv6 /64 routes to dst_cidr",
+			attack:      store.Attack{DstIP: "2001:db8::/64", AttackType: "udp_flood", ID: 4},
 			wantHasCIDR: true,
 			wantCIDR:    "2001:db8::/64",
 		},
@@ -67,7 +67,6 @@ func TestXDrop_DefaultPayload_SubnetAttackRoutesToDstCIDR(t *testing.T) {
 				DstIP:   dstIP,
 				DstCIDR: dstCIDR,
 				Action:  "drop",
-				Source:  "xsight",
 				Comment: "test",
 			}
 			body, err := json.Marshal(payload)

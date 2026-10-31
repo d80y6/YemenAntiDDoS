@@ -217,38 +217,38 @@ func allTestFixtures() []testFixture {
 
 	f = append(f,
 		testFixture{
-			Name: "udp_basic",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 17, payload: append(udpHdrBytes(12345, 53, 32), make([]byte, 32)...)})),
+			Name:      "udp_basic",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 17, payload: append(udpHdrBytes(12345, 53, 32), make([]byte, 32)...)})),
 			FrameType: "ip", ExpectedDecoders: []string{"udp"}, Notes: "UDP 32B payload",
 		},
 		testFixture{
-			Name: "icmp_echo",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 1, payload: []byte{8, 0, 0, 0, 0, 0, 0, 0}})),
+			Name:      "icmp_echo",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 1, payload: []byte{8, 0, 0, 0, 0, 0, 0, 0}})),
 			FrameType: "ip", ExpectedDecoders: []string{"icmp"}, Notes: "IPv4 ICMP Echo",
 		},
 		testFixture{
-			Name: "icmpv6_echo",
-			Hex: hx(buildIPv6(ipv6Spec{nextHdr: 58, payload: []byte{128, 0, 0, 0, 0, 0, 0, 0}})),
+			Name:      "icmpv6_echo",
+			Hex:       hx(buildIPv6(ipv6Spec{nextHdr: 58, payload: []byte{128, 0, 0, 0, 0, 0, 0, 0}})),
 			FrameType: "ip", ExpectedDecoders: []string{"icmp"}, Notes: "IPv6 ICMPv6 Echo → merged icmp decoder",
 		},
 		testFixture{
 			Name: "gre_basic",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 47, payload: make([]byte, 8)})), FrameType: "ip",
+			Hex:  hx(buildIPv4(ipv4Spec{proto: 47, payload: make([]byte, 8)})), FrameType: "ip",
 			ExpectedDecoders: []string{"gre"}, Notes: "IPv4 GRE proto=47",
 		},
 		testFixture{
 			Name: "esp_basic",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 50, payload: make([]byte, 16)})), FrameType: "ip",
+			Hex:  hx(buildIPv4(ipv4Spec{proto: 50, payload: make([]byte, 16)})), FrameType: "ip",
 			ExpectedDecoders: []string{"esp"}, Notes: "IPv4 ESP proto=50",
 		},
 		testFixture{
 			Name: "igmp_basic",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 2, payload: make([]byte, 8)})), FrameType: "ip",
+			Hex:  hx(buildIPv4(ipv4Spec{proto: 2, payload: make([]byte, 8)})), FrameType: "ip",
 			ExpectedDecoders: []string{"igmp"}, Notes: "IPv4 IGMP proto=2",
 		},
 		testFixture{
 			Name: "ip_other_sctp",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 132, payload: make([]byte, 16)})), FrameType: "ip",
+			Hex:  hx(buildIPv4(ipv4Spec{proto: 132, payload: make([]byte, 16)})), FrameType: "ip",
 			ExpectedDecoders: []string{"ip_other"}, Notes: "IPv4 SCTP proto=132 catch-all bucket",
 		},
 	)
@@ -256,57 +256,57 @@ func allTestFixtures() []testFixture {
 	// bad_fragment
 	f = append(f,
 		testFixture{
-			Name: "pod_frag_end_65535",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 17, mf: false, offset8: 8191, payload: make([]byte, 7)})),
+			Name:      "pod_frag_end_65535",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 17, mf: false, offset8: 8191, payload: make([]byte, 7)})),
 			FrameType: "ip", ExpectedDecoders: []string{"udp", "fragment"},
 			ExpectedBadFrag: false,
 			Notes:           "frag_end=65535 legal boundary",
 		},
 		testFixture{
-			Name: "pod_frag_end_65536",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 17, mf: false, offset8: 8191, payload: make([]byte, 8)})),
+			Name:      "pod_frag_end_65536",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 17, mf: false, offset8: 8191, payload: make([]byte, 8)})),
 			FrameType: "ip", ExpectedDecoders: []string{"udp", "fragment"},
 			ExpectedBadFrag: true,
 			Notes:           "frag_end=65536 PoD",
 		},
 		testFixture{
-			Name: "tiny_first_frag_tcp_19",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 6, mf: true, offset8: 0, payload: tcpPayloadN(19)})),
+			Name:      "tiny_first_frag_tcp_19",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 6, mf: true, offset8: 0, payload: tcpPayloadN(19)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "fragment"},
 			ExpectedBadFrag: true,
 			Notes:           "first TCP frag 19B < 20",
 		},
 		testFixture{
-			Name: "tiny_first_frag_tcp_20",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 6, mf: true, offset8: 0, payload: tcpPayloadN(20)})),
+			Name:      "tiny_first_frag_tcp_20",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 6, mf: true, offset8: 0, payload: tcpPayloadN(20)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "fragment"},
 			ExpectedBadFrag: false,
 			Notes:           "first TCP frag 20B legal",
 		},
 		testFixture{
-			Name: "tiny_first_frag_udp_7",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 17, mf: true, offset8: 0, payload: udpPayloadN(7)})),
+			Name:      "tiny_first_frag_udp_7",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 17, mf: true, offset8: 0, payload: udpPayloadN(7)})),
 			FrameType: "ip", ExpectedDecoders: []string{"udp", "fragment"},
 			ExpectedBadFrag: true,
 			Notes:           "first UDP frag 7B < 8",
 		},
 		testFixture{
-			Name: "tiny_first_frag_udp_8",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 17, mf: true, offset8: 0, payload: udpPayloadN(8)})),
+			Name:      "tiny_first_frag_udp_8",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 17, mf: true, offset8: 0, payload: udpPayloadN(8)})),
 			FrameType: "ip", ExpectedDecoders: []string{"udp", "fragment"},
 			ExpectedBadFrag: false,
 			Notes:           "first UDP frag 8B legal",
 		},
 		testFixture{
-			Name: "tiny_frag_middle",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 6, mf: true, offset8: 185, payload: make([]byte, 10)})),
+			Name:      "tiny_frag_middle",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 6, mf: true, offset8: 185, payload: make([]byte, 10)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "fragment"},
 			ExpectedBadFrag: false,
 			Notes:           "middle frag — tiny check is first-frag only (MF && offset==0)",
 		},
 		testFixture{
-			Name: "tiny_frag_last",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 6, mf: false, offset8: 185, payload: make([]byte, 10)})),
+			Name:      "tiny_frag_last",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 6, mf: false, offset8: 185, payload: make([]byte, 10)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "fragment"},
 			ExpectedBadFrag: false,
 			Notes:           "last frag — MF=0 gate excludes tiny check",
@@ -316,38 +316,38 @@ func allTestFixtures() []testFixture {
 	// invalid
 	f = append(f,
 		testFixture{
-			Name: "invalid_ihl_4",
-			Hex: hx(buildIPv4(ipv4Spec{ihl: 4, proto: 6, totalLen: 20, payload: make([]byte, 0)})),
+			Name:      "invalid_ihl_4",
+			Hex:       hx(buildIPv4(ipv4Spec{ihl: 4, proto: 6, totalLen: 20, payload: make([]byte, 0)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp"}, ExpectedInvalid: true,
 			Notes: "IHL=4 invalid + early-return; proto was set pre-return so tcp decoder still fires (no sub-flags, l4 hdr offset undefined)",
 		},
 		testFixture{
-			Name: "invalid_ihl_5",
-			Hex: hx(buildIPv4(ipv4Spec{ihl: 5, proto: 6, payload: tcpPayloadN(20)})),
+			Name:      "invalid_ihl_5",
+			Hex:       hx(buildIPv4(ipv4Spec{ihl: 5, proto: 6, payload: tcpPayloadN(20)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "tcp_syn"}, ExpectedInvalid: false,
 			Notes: "IHL=5 legal boundary",
 		},
 		testFixture{
-			Name: "invalid_tot_len_short",
-			Hex: hx(buildIPv4(ipv4Spec{ihl: 5, proto: 6, totalLen: 19, payload: make([]byte, 0)})),
+			Name:      "invalid_tot_len_short",
+			Hex:       hx(buildIPv4(ipv4Spec{ihl: 5, proto: 6, totalLen: 19, payload: make([]byte, 0)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp"}, ExpectedInvalid: true,
 			Notes: "tot_len=19 < hdr 20 → invalid, continues; packet too short for TCP sub-flag parse so only tcp decoder",
 		},
 		testFixture{
-			Name: "invalid_tot_len_equal",
-			Hex: hx(buildIPv4(ipv4Spec{ihl: 5, proto: 6, totalLen: 20, payload: make([]byte, 0)})),
+			Name:      "invalid_tot_len_equal",
+			Hex:       hx(buildIPv4(ipv4Spec{ihl: 5, proto: 6, totalLen: 20, payload: make([]byte, 0)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp"}, ExpectedInvalid: false,
 			Notes: "tot_len=20 == hdr legal boundary; packet too short for TCP sub-flag parse",
 		},
 		testFixture{
-			Name: "invalid_tcp_doff_4",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 6, payload: tcpHdrBytes(12345, 80, syn, 4)})),
+			Name:      "invalid_tcp_doff_4",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 6, payload: tcpHdrBytes(12345, 80, syn, 4)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "tcp_syn"}, ExpectedInvalid: true,
 			Notes: "TCP doff=4 invalid; SYN flag still fires sub-decoder",
 		},
 		testFixture{
-			Name: "invalid_tcp_doff_5",
-			Hex: hx(buildIPv4(ipv4Spec{proto: 6, payload: tcpHdrBytes(12345, 80, syn, 5)})),
+			Name:      "invalid_tcp_doff_5",
+			Hex:       hx(buildIPv4(ipv4Spec{proto: 6, payload: tcpHdrBytes(12345, 80, syn, 5)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "tcp_syn"}, ExpectedInvalid: false,
 			Notes: "TCP doff=5 legal",
 		},
@@ -356,14 +356,14 @@ func allTestFixtures() []testFixture {
 	// IPv6
 	f = append(f,
 		testFixture{
-			Name: "ipv6_tcp_doff_4",
-			Hex: hx(buildIPv6(ipv6Spec{nextHdr: 6, payload: tcpHdrBytes(12345, 80, syn, 4)})),
+			Name:      "ipv6_tcp_doff_4",
+			Hex:       hx(buildIPv6(ipv6Spec{nextHdr: 6, payload: tcpHdrBytes(12345, 80, syn, 4)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "tcp_syn"}, ExpectedInvalid: true,
 			Notes: "IPv6 nexthdr=TCP direct, doff=4",
 		},
 		testFixture{
-			Name: "ipv6_tcp_doff_5",
-			Hex: hx(buildIPv6(ipv6Spec{nextHdr: 6, payload: tcpHdrBytes(12345, 80, syn, 5)})),
+			Name:      "ipv6_tcp_doff_5",
+			Hex:       hx(buildIPv6(ipv6Spec{nextHdr: 6, payload: tcpHdrBytes(12345, 80, syn, 5)})),
 			FrameType: "ip", ExpectedDecoders: []string{"tcp", "tcp_syn"}, ExpectedInvalid: false,
 			Notes: "IPv6 nexthdr=TCP direct, doff=5 legal",
 		},
@@ -520,7 +520,7 @@ func parseIPv6(pkt []byte, r *parseResult) {
 	// HBH / Routing / Fragment / Destination / AH → silent skip (contract).
 }
 
-// dispatchDecoder mirrors xsight.c DECODER_SWITCH macro (lines 24-90).
+// dispatchDecoder mirrors the DECODER_SWITCH macro in xsight.c.
 func dispatchDecoder(r *parseResult, proto uint8, tcpFlags uint8, isFrag bool) {
 	switch proto {
 	case 6:

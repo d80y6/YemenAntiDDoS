@@ -25,15 +25,15 @@ type Node struct {
 
 // WatchPrefix represents a monitored CIDR prefix.
 type WatchPrefix struct {
-	ID                  int        `json:"id"`
-	Prefix              string     `json:"prefix"` // CIDR notation, e.g. "103.21.244.0/24"
-	ParentID            *int       `json:"parent_id"`
-	ThresholdTemplateID *int       `json:"threshold_template_id"`
-	Name                string     `json:"name"`
-	IPGroup   string     `json:"ip_group"`
-	Enabled   bool       `json:"enabled"`
-	CreatedAt time.Time  `json:"created_at"`
-	Children  []WatchPrefix `json:"children,omitempty"` // populated by tree queries, not stored
+	ID                  int           `json:"id"`
+	Prefix              string        `json:"prefix"` // CIDR notation, e.g. "103.21.244.0/24"
+	ParentID            *int          `json:"parent_id"`
+	ThresholdTemplateID *int          `json:"threshold_template_id"`
+	Name                string        `json:"name"`
+	IPGroup             string        `json:"ip_group"`
+	Enabled             bool          `json:"enabled"`
+	CreatedAt           time.Time     `json:"created_at"`
+	Children            []WatchPrefix `json:"children,omitempty"` // populated by tree queries, not stored
 }
 
 // ThresholdTemplate is a named collection of threshold rules.
@@ -53,12 +53,12 @@ type Threshold struct {
 	ID          int       `json:"id"`
 	TemplateID  *int      `json:"template_id"`
 	PrefixID    *int      `json:"prefix_id"`
-	Domain      string    `json:"domain"`      // internal_ip | subnet
-	Direction   string    `json:"direction"`    // receives | sends
-	Decoder     string    `json:"decoder"`      // tcp_syn | udp | icmp | ip | tcp | fragment
-	Unit        string    `json:"unit"`         // pps | bps
-	Comparison  string    `json:"comparison"`   // over | under
-	Value       int64     `json:"value"`        // 0 = cancel inheritance
+	Domain      string    `json:"domain"`     // internal_ip | subnet
+	Direction   string    `json:"direction"`  // receives | sends
+	Decoder     string    `json:"decoder"`    // registered non-empty name in decoder.Names, or ip
+	Unit        string    `json:"unit"`       // pps | bps
+	Comparison  string    `json:"comparison"` // over | under
+	Value       int64     `json:"value"`      // 0 = cancel inheritance
 	Inheritable bool      `json:"inheritable"`
 	ResponseID  *int      `json:"response_id"`
 	Enabled     bool      `json:"enabled"`
@@ -78,34 +78,53 @@ type Response struct {
 
 // ResponseAction is a single action within a Response.
 type ResponseAction struct {
-	ID              int              `json:"id"`
-	ResponseID      int              `json:"response_id"`
-	ActionType      string           `json:"action_type"`      // webhook | xdrop | shell
-	ExecutionPolicy string           `json:"execution_policy"` // once_on_enter | periodic | retry_until_success | once_on_exit
-	Priority        int              `json:"priority"`
-	Config          json.RawMessage  `json:"config"`
-	Preconditions   json.RawMessage  `json:"preconditions"`
-	Enabled         bool             `json:"enabled"`
+	ID              int             `json:"id"`
+	ResponseID      int             `json:"response_id"`
+	ActionType      string          `json:"action_type"`      // xdrop | bgp | webhook | shell (xdrop_api legacy)
+	ExecutionPolicy string          `json:"execution_policy"` // once_on_enter | periodic | retry_until_success | once_on_exit
+	Priority        int             `json:"priority"`
+	Config          json.RawMessage `json:"config"`
+	Preconditions   json.RawMessage `json:"preconditions"`
+	Enabled         bool            `json:"enabled"`
 
 	// Response System v2 fields
-	TriggerPhase       string           `json:"trigger_phase"`        // on_detect | on_end
-	RunMode            string           `json:"run_mode"`             // once | periodic | retry
-	PeriodSeconds      int              `json:"period_seconds"`
-	Execution          string           `json:"execution"`            // automatic | manual
-	WebhookConnectorID *int             `json:"webhook_connector_id"`
-	ShellConnectorID   *int             `json:"shell_connector_id"`
-	XDropAction         string           `json:"xdrop_action"`           // filter_l4 | rate_limit | unblock
-	XDropCustomPayload  json.RawMessage  `json:"xdrop_custom_payload"`
-	ShellExtraArgs      string           `json:"shell_extra_args"`
-	UnblockDelayMinutes int              `json:"unblock_delay_minutes"`  // extra delay before unblock (xdrop), 0 = immediate
-	BGPConnectorID           *int             `json:"bgp_connector_id"`
-	BGPRouteMap              string           `json:"bgp_route_map"`
-	BGPWithdrawDelayMinutes  int              `json:"bgp_withdraw_delay_minutes"` // extra delay before withdraw (bgp), 0 = immediate
+	TriggerPhase            string          `json:"trigger_phase"` // on_detected | on_expired
+	RunMode                 string          `json:"run_mode"`      // "" | once | periodic | retry_until_success
+	PeriodSeconds           int             `json:"period_seconds"`
+	Execution               string          `json:"execution"` // automatic | manual
+	WebhookConnectorID      *int            `json:"webhook_connector_id"`
+	ShellConnectorID        *int            `json:"shell_connector_id"`
+	XDropAction             string          `json:"xdrop_action"` // filter_l4 | rate_limit | unblock
+	XDropCustomPayload      json.RawMessage `json:"xdrop_custom_payload"`
+	ShellExtraArgs          string          `json:"shell_extra_args"`
+	UnblockDelayMinutes     int             `json:"unblock_delay_minutes"` // extra delay before unblock (xdrop), 0 = immediate
+	BGPConnectorID          *int            `json:"bgp_connector_id"`
+	BGPRouteMap             string          `json:"bgp_route_map"`
+	BGPWithdrawDelayMinutes int             `json:"bgp_withdraw_delay_minutes"` // extra delay before withdraw (bgp), 0 = immediate
 
 	// v1.1: Auto-paired action support
-	PairedWith      *int `json:"paired_with,omitempty"`      // on_detected → on_expired child ID (single-direction)
-	AutoGenerated   bool `json:"auto_generated,omitempty"`   // true for system-created on_expired actions
+	PairedWith    *int `json:"paired_with,omitempty"`    // on_detected → on_expired child ID (single-direction)
+	AutoGenerated bool `json:"auto_generated,omitempty"` // true for system-created on_expired actions
 }
+
+// ResponseAction vocabulary is persisted in response_actions.
+const (
+	ActionTypeXDrop    = "xdrop"
+	ActionTypeBGP      = "bgp"
+	ActionTypeWebhook  = "webhook"
+	ActionTypeShell    = "shell"
+	ActionTypeXDropAPI = "xdrop_api" // Legacy: the engine records skipped; the API rejects create/update.
+
+	TriggerPhaseOnDetected = "on_detected"
+	TriggerPhaseOnExpired  = "on_expired"
+
+	RunModeOnce              = "once"
+	RunModePeriodic          = "periodic"
+	RunModeRetryUntilSuccess = "retry_until_success"
+
+	ExecutionAutomatic = "automatic"
+	ExecutionManual    = "manual"
+)
 
 // RuleWithAction pairs an external rule ID with the action and connector that created it.
 // Used by unblock to delete rules only on the correct connector (prevents cross-connector deletion).
@@ -126,18 +145,18 @@ type Webhook struct {
 
 // Attack represents a detected attack instance.
 type Attack struct {
-	ID            int        `json:"id"`
-	DstIP         string     `json:"dst_ip"`
-	PrefixID      *int       `json:"prefix_id"`
-	Direction     string     `json:"direction"`
-	DecoderFamily string     `json:"decoder_family"`
-	AttackType    string     `json:"attack_type"`
-	Severity      string     `json:"severity"`
-	Confidence    float32    `json:"confidence"`
-	PeakPPS       int64      `json:"peak_pps"`
-	PeakBPS       int64      `json:"peak_bps"`
-	ReasonCodes   []string   `json:"reason_codes"`
-	NodeSources   []string   `json:"node_sources"`
+	ID              int        `json:"id"`
+	DstIP           string     `json:"dst_ip"`
+	PrefixID        *int       `json:"prefix_id"`
+	Direction       string     `json:"direction"`
+	DecoderFamily   string     `json:"decoder_family"`
+	AttackType      string     `json:"attack_type"`
+	Severity        string     `json:"severity"`
+	Confidence      float32    `json:"confidence"`
+	PeakPPS         int64      `json:"peak_pps"`
+	PeakBPS         int64      `json:"peak_bps"`
+	ReasonCodes     []string   `json:"reason_codes"`
+	NodeSources     []string   `json:"node_sources"`
 	ResponseID      *int       `json:"response_id"`
 	ThresholdRuleID *int       `json:"threshold_rule_id"`
 	StartedAt       time.Time  `json:"started_at"`
@@ -206,15 +225,15 @@ type ShellConnector struct {
 
 // BGPConnector stores a local FRR BGP instance configuration.
 type BGPConnector struct {
-	ID             int       `json:"id"`
-	Name           string    `json:"name"`
-	VtyshPath      string    `json:"vtysh_path"`
-	BGPASN         int       `json:"bgp_asn"`
-	AddressFamily  string    `json:"address_family"`
-	Enabled        bool      `json:"enabled"`
-	Description    string    `json:"description"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID            int       `json:"id"`
+	Name          string    `json:"name"`
+	VtyshPath     string    `json:"vtysh_path"`
+	BGPASN        int       `json:"bgp_asn"`
+	AddressFamily string    `json:"address_family"`
+	Enabled       bool      `json:"enabled"`
+	Description   string    `json:"description"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // ActionExecutionLog records the execution of a response action.
@@ -232,7 +251,7 @@ type ActionExecutionLog struct {
 	RequestBody    string     `json:"request_body"`
 	ResponseBody   string     `json:"response_body"`
 	ExternalRuleID string     `json:"external_rule_id"`
-	ConnectorID    *int       `json:"connector_id"`     // xDrop connector that created this rule
+	ConnectorID    *int       `json:"connector_id"` // xDrop connector that created this rule
 	DurationMs     int        `json:"duration_ms"`
 	ExecutedAt     time.Time  `json:"executed_at"`
 	ScheduledFor   *time.Time `json:"scheduled_for,omitempty"` // v1.1: when delayed action will fire
@@ -245,6 +264,7 @@ type ActionExecutionLog struct {
 // withdraw with shared announcement: multiple attacks can attach to the same
 // announcement, and only the last attack detaching triggers vtysh withdraw.
 type BGPAnnouncement struct {
+	Gen            int        `json:"gen"`
 	ID             int        `json:"id"`
 	Prefix         string     `json:"prefix"`
 	RouteMap       string     `json:"route_map"`
@@ -285,29 +305,30 @@ type BGPAnnouncementEvent struct {
 
 // v1.2 PR-5: Event type constants.
 const (
-	BGPEventAnnounced       = "announced"
-	BGPEventAttackAttached  = "attack_attached"
-	BGPEventAttackDetached  = "attack_detached"
-	BGPEventDelayStarted    = "delay_started"
-	BGPEventDelayCancelled  = "delay_cancelled"
-	BGPEventWithdrawn       = "withdrawn"
-	BGPEventWithdrawFailed  = "withdraw_failed"
-	BGPEventAnnounceFailed  = "announce_failed"
-	BGPEventOrphanDetected  = "orphan_detected"
-	BGPEventDismissed       = "dismissed"
-	BGPEventUndismissed     = "undismissed"
+	BGPEventAnnounced      = "announced"
+	BGPEventAttackAttached = "attack_attached"
+	BGPEventAttackDetached = "attack_detached"
+	BGPEventDelayStarted   = "delay_started"
+	BGPEventDelayCancelled = "delay_cancelled"
+	BGPEventWithdrawn      = "withdrawn"
+	BGPEventWithdrawFailed = "withdraw_failed"
+	BGPEventAnnounceFailed = "announce_failed"
+	BGPEventOrphanDetected = "orphan_detected"
+	BGPEventDismissed      = "dismissed"
+	BGPEventUndismissed    = "undismissed"
 )
 
 // v1.2 PR-4: XDropActiveRule is the authoritative state for a single xDrop
 // filter rule. Replaces the v1.1 log-derivation in buildActiveActions.
 //
 // Status transitions:
-//   active      — rule created successfully, in effect on the xDrop node
-//   delayed     — on_expired queued with unblock_delay_minutes
-//   withdrawing — DELETE in flight (crash recovery landmark: on startup,
-//                 controller re-issues DELETE; 404 treated as idempotent success)
-//   withdrawn   — unblock completed; kept for audit, filtered from Mitigations
-//   failed      — create or unblock failed; surfaced in Mitigations
+//
+//	active      — rule created successfully, in effect on the xDrop node
+//	delayed     — on_expired queued with unblock_delay_minutes
+//	withdrawing — DELETE in flight (crash recovery landmark: on startup,
+//	              controller re-issues DELETE; 404 treated as idempotent success)
+//	withdrawn   — unblock completed; kept for audit, filtered from Mitigations
+//	failed      — create or unblock failed; surfaced in Mitigations
 //
 // Business key (attack_id, action_id, connector_id, external_rule_id)
 // matches the other v1.2 tables (manual_overrides, scheduled_actions).
@@ -330,11 +351,12 @@ type XDropActiveRule struct {
 // in-memory pendingDelay map, which silently lost tasks on crash/restart.
 //
 // Status lifecycle:
-//   pending  — timer armed (in memory + DB row)
-//   executing — timer fired, action is running (DB set before side effect)
-//   completed — action finished successfully
-//   failed    — action finished with error (ErrorMessage populated)
-//   cancelled — re-breach or manual cancellation (CancelReason populated)
+//
+//	pending  — timer armed (in memory + DB row)
+//	executing — timer fired, action is running (DB set before side effect)
+//	completed — action finished successfully
+//	failed    — action finished with error (ErrorMessage populated)
+//	cancelled — re-breach or manual cancellation (CancelReason populated)
 //
 // announcement_id is reserved for v1.2 PR-5 (BGP Announcement Manager).
 // PR-3 always leaves it NULL and identifies tasks by the per-artifact key
@@ -375,9 +397,9 @@ type ActionManualOverride struct {
 type ActionPrecondition struct {
 	ID        int       `json:"id"`
 	ActionID  int       `json:"action_id"`
-	Attribute string    `json:"attribute"`  // cidr, decoder, severity, pps, bps, node, domain, attack_type, tcp_syn_pct
-	Operator  string    `json:"operator"`   // eq, neq, gt, lt, gte, lte, in
-	Value     string    `json:"value"`      // "24", "tcp", "critical,high", "1000000"
+	Attribute string    `json:"attribute"` // cidr, decoder, severity, pps, bps, node, domain, attack_type, tcp_syn_pct
+	Operator  string    `json:"operator"`  // eq, neq, gt, lt, gte, lte, in
+	Value     string    `json:"value"`     // "24", "tcp", "critical,high", "1000000"
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -385,8 +407,8 @@ type ActionPrecondition struct {
 type User struct {
 	ID        int       `json:"id"`
 	Username  string    `json:"username"`
-	Password  string    `json:"-"` // bcrypt hash, never expose
-	Role      string    `json:"role"` // admin | operator | viewer
+	Password  string    `json:"-"`    // bcrypt hash, never expose
+	Role      string    `json:"role"` // admin | viewer; operator is a legacy read-only value
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -426,7 +448,7 @@ type StatPoint struct {
 	NodeID     string
 	DstIP      *string // nil = prefix aggregate
 	Prefix     *string
-	Direction  string  // "receives" | "sends" (v2.11 Phase 3)
+	Direction  string // "receives" | "sends" (v2.11 Phase 3)
 	PPS        int64
 	BPS        int64
 	DecoderPPS [decoder.MaxDecoders]int32 // indexed by decoder.TCP=0, decoder.TCPSyn=1, etc.
@@ -474,6 +496,10 @@ type FlowSource struct {
 
 // FlowLogFilter for querying flow_logs.
 type FlowLogFilter struct {
+	Protocols    []int
+	TCPFlagsAll  uint8
+	TCPFlagsNone uint8
+
 	DstIP string
 	From  time.Time
 	To    time.Time
@@ -482,13 +508,16 @@ type FlowLogFilter struct {
 
 // AttackFilter for querying attacks.
 type AttackFilter struct {
-	Status    string // "active" | "expired" | "" (all)
-	Direction string // "receives" | "sends" | "" (all)
-	PrefixID  *int
-	TimeFrom  *time.Time
-	TimeTo    *time.Time
-	Limit     int
-	Offset    int
+	Sort       string // "peak_pps" | "started_at" | "" (default)
+	DstIP      string
+	EndedAfter *time.Time
+	Status     string // "active" | "expired" | "" (all)
+	Direction  string // "receives" | "sends" | "" (all)
+	PrefixID   *int
+	TimeFrom   *time.Time
+	TimeTo     *time.Time
+	Limit      int
+	Offset     int
 }
 
 // AuditFilter for querying audit logs.

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,19 +13,25 @@ func listNodes(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		nodes, err := deps.Store.Nodes().List(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		// Enrich with online status
 		type nodeWithStatus struct {
 			store.Node
-			Online bool `json:"online"`
+			Online      bool       `json:"online"`
+			LastStatsAt *time.Time `json:"last_stats_at,omitempty"`
 		}
 		var result []nodeWithStatus
 		for _, n := range nodes {
+			var lastStatsAt *time.Time
+			if stamp := deps.NodeState.LastStatsAt(n.ID); !stamp.IsZero() {
+				lastStatsAt = &stamp
+			}
 			result = append(result, nodeWithStatus{
-				Node:   n,
-				Online: deps.NodeState.IsOnline(n.ID),
+				Node:        n,
+				Online:      deps.NodeState.IsOnline(n.ID),
+				LastStatsAt: lastStatsAt,
 			})
 		}
 		ok(c, result)
@@ -50,12 +57,14 @@ func createNode(deps Dependencies) gin.HandlerFunc {
 			errResponse(c, http.StatusBadRequest, "mode must be 'xdp' or 'flow'")
 			return
 		}
-		if err := deps.Store.Nodes().Create(c, &store.Node{
+		node := &store.Node{
 			ID: req.ID, APIKey: req.APIKey, Description: req.Description, Mode: req.Mode, Enabled: true,
-		}); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+		}
+		if err := deps.Store.Nodes().Create(c, node); err != nil {
+			dbError(c, "", err)
 			return
 		}
+		auditDirect(c, deps, "node", req.ID, "create", makeDiff(nil, node))
 		created(c, gin.H{"id": req.ID})
 	}
 }
@@ -91,6 +100,7 @@ func updateNode(deps Dependencies) gin.HandlerFunc {
 			errResponse(c, http.StatusNotFound, "node not found")
 			return
 		}
+		old := *node
 		if req.Description != "" {
 			node.Description = req.Description
 		}
@@ -101,9 +111,10 @@ func updateNode(deps Dependencies) gin.HandlerFunc {
 			node.Enabled = *req.Enabled
 		}
 		if err := deps.Store.Nodes().Update(c, node); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
+		auditDirect(c, deps, "node", node.ID, "update", makeDiff(old, node))
 		ok(c, gin.H{"ok": true})
 	}
 }
@@ -111,22 +122,27 @@ func updateNode(deps Dependencies) gin.HandlerFunc {
 func deleteNode(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		nodeID := c.Param("id")
+		var old any = gin.H{"id": nodeID}
+		if node, err := deps.Store.Nodes().Get(c, nodeID); err == nil && node != nil {
+			old = *node
+		}
 		// Cascade: delete flow listeners (sources cascade via FK) before deleting node
 		listeners, err := deps.Store.FlowListeners().List(c, nodeID)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, "failed to list flow listeners: "+err.Error())
+			dbError(c, "failed to list flow listeners: ", err)
 			return
 		}
 		for _, l := range listeners {
 			if err := deps.Store.FlowListeners().Delete(c, l.ID); err != nil {
-				errResponse(c, http.StatusInternalServerError, "failed to delete flow listener: "+err.Error())
+				dbError(c, "failed to delete flow listener: ", err)
 				return
 			}
 		}
 		if err := deps.Store.Nodes().Delete(c, nodeID); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
+		auditDirect(c, deps, "node", nodeID, "delete", makeDiff(old, nil))
 		ok(c, gin.H{"ok": true})
 	}
 }
@@ -170,6 +186,21 @@ func getNodeStatus(deps Dependencies) gin.HandlerFunc {
 		}
 		if ls := deps.NodeState.GetListenerStatuses(node.ID); len(ls) > 0 {
 			status["listener_statuses"] = ls
+		}
+		if interfaces := deps.NodeState.GetInterfaces(node.ID); len(interfaces) > 0 {
+			status["interfaces"] = interfaces
+		}
+		if capture := deps.NodeState.GetCapture(node.ID); len(capture) > 0 {
+			type captureInfo struct {
+				Interface          string `json:"interface"`
+				UpstreamSampleRate uint32 `json:"upstream_sample_rate"`
+			}
+			items := make([]captureInfo, 0, len(capture))
+			for name, rate := range capture {
+				items = append(items, captureInfo{Interface: name, UpstreamSampleRate: rate})
+			}
+			sort.Slice(items, func(i, j int) bool { return items[i].Interface < items[j].Interface })
+			status["capture"] = items
 		}
 		ok(c, status)
 	}

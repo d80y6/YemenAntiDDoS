@@ -111,9 +111,9 @@ func TestListActiveBGPRoutes_ReturnsOnlyActive(t *testing.T) {
 	annID, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
 		AttackID: 1, ActionID: ip(10), Prefix: "10.0.0.1/32", RouteMap: "RTBH", ConnectorID: connID,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(context.Background(), annID.AnnouncementID)
+	ms.bgpAnnouncements.MarkAnnounced(context.Background(), annID.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, annID.AnnouncementID))
 	// Seed BGP connector so buildActiveBGPFromAnnouncements can resolve name.
-	ms.bgpConnectors.connectors = append(ms.bgpConnectors.connectors, store.BGPConnector{
+	ms.bgpConnectors.appendConnectors(store.BGPConnector{
 		ID: connID, Name: "bgp-main", Enabled: true,
 	})
 
@@ -362,12 +362,12 @@ func TestListActive_MultiConnector_NoCrossContamination(t *testing.T) {
 	a1, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
 		AttackID: 5, ActionID: ip(30), Prefix: "10.5.0.1/32", RouteMap: "RTBH", ConnectorID: conn3,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(context.Background(), a1.AnnouncementID)
+	ms.bgpAnnouncements.MarkAnnounced(context.Background(), a1.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, a1.AnnouncementID))
 	a2, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
 		AttackID: 5, ActionID: ip(31), Prefix: "10.5.0.1/32", RouteMap: "BLACKHOLE", ConnectorID: conn4,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(context.Background(), a2.AnnouncementID)
-	ms.bgpConnectors.connectors = append(ms.bgpConnectors.connectors,
+	ms.bgpAnnouncements.MarkAnnounced(context.Background(), a2.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, a2.AnnouncementID))
+	ms.bgpConnectors.appendConnectors(
 		store.BGPConnector{ID: conn3, Name: "bgp-connector-3", Enabled: true},
 		store.BGPConnector{ID: conn4, Name: "bgp-connector-4", Enabled: true},
 	)
@@ -465,20 +465,21 @@ func TestForceRemove_WritesExecutionLog(t *testing.T) {
 	}
 
 	// Primary assertion: a manual_override log must have been written
-	if len(ms.actionExecLog.logs) == 0 {
+	logs := ms.actionExecLog.snapshotLogs()
+	if len(logs) == 0 {
 		t.Fatalf("expected execution log from force-remove, got none")
 	}
 
 	var found *store.ActionExecutionLog
-	for i := range ms.actionExecLog.logs {
-		l := &ms.actionExecLog.logs[i]
+	for i := range logs {
+		l := &logs[i]
 		if l.TriggerPhase == "manual_override" {
 			found = l
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("no log with trigger_phase=manual_override; logs=%+v", ms.actionExecLog.logs)
+		t.Fatalf("no log with trigger_phase=manual_override; logs=%+v", logs)
 	}
 	if found.AttackID != 6 {
 		t.Errorf("expected attack_id=6, got %d", found.AttackID)
@@ -527,7 +528,7 @@ func TestForceRemove_PreventsSubsequentAutoPairedExecution(t *testing.T) {
 			ConnectorName:  "bgp-main",
 			ExecutedAt:     now.Add(-19 * time.Minute),
 		},
-		// manual_override success — buildActiveActions treats this as withdrawn
+		// Historical manual_override success log entry.
 		store.ActionExecutionLog{
 			ID:             2,
 			AttackID:       7,
@@ -587,8 +588,8 @@ func TestListActive_BGPAndXDropDoNotInterfere(t *testing.T) {
 	ar, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
 		AttackID: 8, ActionID: ip(60), Prefix: "10.8.0.1/32", RouteMap: "RTBH", ConnectorID: connID,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(context.Background(), ar.AnnouncementID)
-	ms.bgpConnectors.connectors = append(ms.bgpConnectors.connectors, store.BGPConnector{
+	ms.bgpAnnouncements.MarkAnnounced(context.Background(), ar.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, ar.AnnouncementID))
+	ms.bgpConnectors.appendConnectors(store.BGPConnector{
 		ID: connID, Name: "test-bgp", Enabled: true,
 	})
 	// xDrop rule was withdrawn — seed xdrop_active_rules as withdrawn so it
@@ -638,7 +639,7 @@ func TestListActiveBGPRoutes_AttachedAttacksShared(t *testing.T) {
 		AttackID: 11, ActionID: ip(114), ResponseName: "v1.2-test-B",
 		Prefix: "192.0.2.0/24", RouteMap: "RTBH", ConnectorID: 6, DelayMinutes: 1,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(ctx, r1.AnnouncementID)
+	ms.bgpAnnouncements.MarkAnnounced(ctx, r1.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, r1.AnnouncementID))
 	ms.bgpAnnouncements.Attach(ctx, store.BGPAttachParams{
 		AttackID: 12, ActionID: ip(121), ResponseName: "v1.2-test-C",
 		Prefix: "192.0.2.0/24", RouteMap: "RTBH", ConnectorID: 6, DelayMinutes: 5,
@@ -712,7 +713,7 @@ func TestListActiveBGPRoutes_AttachedAttacksDetachedCap(t *testing.T) {
 	// the cycle.
 	var firstAnnID int
 	for i := 1; i <= 45; i++ {
-		ms.attacks.attacks = append(ms.attacks.attacks, store.Attack{
+		ms.attacks.appendAttacks(store.Attack{
 			ID: i, DstIP: "192.0.2.0/24", DecoderFamily: "udp",
 			StartedAt: now.Add(-time.Duration(45-i) * time.Minute),
 		})
@@ -722,7 +723,7 @@ func TestListActiveBGPRoutes_AttachedAttacksDetachedCap(t *testing.T) {
 		})
 		if i == 1 {
 			firstAnnID = ar.AnnouncementID
-			ms.bgpAnnouncements.MarkAnnounced(ctx, firstAnnID)
+			ms.bgpAnnouncements.MarkAnnounced(ctx, firstAnnID, dao5bCurrentGen(t, ms.bgpAnnouncements, firstAnnID))
 		}
 	}
 	// Detach 1..43, leaving 44 and 45 currently attached.
@@ -779,18 +780,18 @@ func TestListActiveBGPRoutes_AttachedAttacksCycleFiltered(t *testing.T) {
 	ar1, _ := ms.bgpAnnouncements.Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, Prefix: "192.0.2.0/24", RouteMap: "RTBH", ConnectorID: 6,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(ctx, ar1.AnnouncementID)
+	ms.bgpAnnouncements.MarkAnnounced(ctx, ar1.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, ar1.AnnouncementID))
 	ms.bgpAnnouncements.Detach(ctx, 1, "192.0.2.0/24", "RTBH", 6)
-	ms.bgpAnnouncements.MarkWithdrawn(ctx, ar1.AnnouncementID)
+	ms.bgpAnnouncements.MarkWithdrawn(ctx, ar1.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, ar1.AnnouncementID))
 
 	// Cycle 2 (resurrect): attack 2 attached.
-	ms.attacks.attacks = append(ms.attacks.attacks, store.Attack{
+	ms.attacks.appendAttacks(store.Attack{
 		ID: 2, DstIP: "192.0.2.0/24", DecoderFamily: "udp",
 	})
 	ar2, _ := ms.bgpAnnouncements.Attach(ctx, store.BGPAttachParams{
 		AttackID: 2, Prefix: "192.0.2.0/24", RouteMap: "RTBH", ConnectorID: 6,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(ctx, ar2.AnnouncementID)
+	ms.bgpAnnouncements.MarkAnnounced(ctx, ar2.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, ar2.AnnouncementID))
 	if ar1.AnnouncementID != ar2.AnnouncementID {
 		t.Fatalf("expected resurrect (same id); got %d vs %d", ar1.AnnouncementID, ar2.AnnouncementID)
 	}

@@ -100,3 +100,11 @@ func (r *nodeRepo) UpdateACK(ctx context.Context, id string, versionApplied int6
 		versionApplied, now, id)
 	return err
 }
+
+func (r *nodeRepo) MarkConfigFailed(ctx context.Context, id string, version int64) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE nodes SET config_status='failed', updated_at=now()
+		 WHERE id=$1 AND delivery_version_current=$2 AND delivery_version_applied <> $2`,
+		id, version)
+	return err
+}

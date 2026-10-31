@@ -16,10 +16,10 @@ func buildEthIPv4TCP(srcIP, dstIP net.IP, srcPort, dstPort uint16, syn bool) []b
 
 	// IPv4 header
 	ip := buf[14:]
-	ip[0] = 0x45                                             // version=4, ihl=5
-	binary.BigEndian.PutUint16(ip[2:4], uint16(20+20))       // total length
-	ip[8] = 64                                               // TTL
-	ip[9] = 6                                                // protocol = TCP
+	ip[0] = 0x45                                       // version=4, ihl=5
+	binary.BigEndian.PutUint16(ip[2:4], uint16(20+20)) // total length
+	ip[8] = 64                                         // TTL
+	ip[9] = 6                                          // protocol = TCP
 	copy(ip[12:16], srcIP.To4())
 	copy(ip[16:20], dstIP.To4())
 

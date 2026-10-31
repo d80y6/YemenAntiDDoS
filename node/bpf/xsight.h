@@ -33,6 +33,10 @@
 
 // GRE header flags
 #define GRE_FLAG_SEQ         0x1000  // Sequence number present
+#define GRE_FLAG_CSUM        0x8000  // Checksum and reserved word present
+#define GRE_FLAG_ROUTING     0x4000  // Routing is unsupported
+#define GRE_FLAG_KEY         0x2000  // Key present
+#define GRE_VERSION_MASK    0x0007  // Only GRE version zero is supported
 
 // Ethernet types
 #define ETH_P_ARP            0x0806

@@ -7,7 +7,6 @@
 //   - MaxLatency since first sample in batch (default 100 ms)
 //
 // Also tracks unique source IPs and sampling metrics.
-//
 package sampler
 
 import (

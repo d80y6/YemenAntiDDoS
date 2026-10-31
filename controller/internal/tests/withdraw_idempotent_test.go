@@ -33,7 +33,7 @@ func TestBGPWithdraw_NotFound_IdempotentSuccess(t *testing.T) {
 	ms.attacks.attacks = append(ms.attacks.attacks, store.Attack{
 		ID: 1, DstIP: "10.0.0.0/24", StartedAt: now.Add(-10 * time.Minute), EndedAt: &ended,
 	})
-	ms.attacks.expiredAttacks = append(ms.attacks.expiredAttacks, ms.attacks.attacks[0])
+	ms.attacks.appendExpiredAttacks(ms.attacks.snapshotAttacks()[0])
 
 	// on_detected success — route was announced
 	ms.actionExecLog.logs = append(ms.actionExecLog.logs, store.ActionExecutionLog{
@@ -72,10 +72,10 @@ func TestMitigations_FailedWithKey_ShowsFailed(t *testing.T) {
 	annRes, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
 		AttackID: 1, ActionID: ip(10), Prefix: "10.0.0.1/32", RouteMap: "DIVERT", ConnectorID: connID,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(context.Background(), annRes.AnnouncementID)
+	ms.bgpAnnouncements.MarkAnnounced(context.Background(), annRes.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, annRes.AnnouncementID))
 	ms.bgpAnnouncements.Detach(context.Background(), 1, "10.0.0.1/32", "DIVERT", connID)
-	ms.bgpAnnouncements.MarkFailedWithdraw(context.Background(), annRes.AnnouncementID, "vtysh error")
-	ms.bgpConnectors.connectors = append(ms.bgpConnectors.connectors, store.BGPConnector{
+	ms.bgpAnnouncements.MarkFailedWithdraw(context.Background(), annRes.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, annRes.AnnouncementID), "vtysh error")
+	ms.bgpConnectors.appendConnectors(store.BGPConnector{
 		ID: connID, Name: "test-bgp", Enabled: true,
 	})
 

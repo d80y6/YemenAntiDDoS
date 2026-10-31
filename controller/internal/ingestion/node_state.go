@@ -28,7 +28,7 @@ type SourceStatus struct {
 type ListenerStatus struct {
 	ListenAddr      string `json:"listen_addr"`
 	ProtocolMode    string `json:"protocol_mode"`
-	RecordsDecoded     int64  `json:"records_decoded"`
+	RecordsDecoded  int64  `json:"records_decoded"`
 	DecodeErrors    int64  `json:"decode_errors"`
 	UnknownExporter int64  `json:"unknown_exporter"`
 	TemplateMisses  int64  `json:"template_misses"`
@@ -39,16 +39,20 @@ type ListenerStatus struct {
 // Online status is derived (not stored in DB) per brainstorm decision.
 type NodeState struct {
 	mu               sync.RWMutex
-	lastStatsAt      map[string]time.Time                                       // nodeID → last StatsReport time
-	connectedAt      map[string]time.Time                                       // nodeID → handshake time (for uptime)
-	controlStream    map[string]pb.XSightService_ControlStreamServer            // nodeID → bidi stream
-	flowMetrics      map[string]*FlowMetrics                                    // nodeID → last flow metrics
-	sourceStatuses   map[string][]SourceStatus                                  // nodeID → per-source statuses
-	listenerStatuses map[string][]ListenerStatus                                // nodeID → per-listener statuses
+	interfaces       map[string][]string
+	capture          map[string]map[string]uint32
+	lastStatsAt      map[string]time.Time                            // nodeID → last StatsReport time
+	connectedAt      map[string]time.Time                            // nodeID → handshake time (for uptime)
+	controlStream    map[string]pb.XSightService_ControlStreamServer // nodeID → bidi stream
+	flowMetrics      map[string]*FlowMetrics                         // nodeID → last flow metrics
+	sourceStatuses   map[string][]SourceStatus                       // nodeID → per-source statuses
+	listenerStatuses map[string][]ListenerStatus                     // nodeID → per-listener statuses
 }
 
 func NewNodeState() *NodeState {
 	return &NodeState{
+		interfaces:       make(map[string][]string),
+		capture:          make(map[string]map[string]uint32),
 		lastStatsAt:      make(map[string]time.Time),
 		connectedAt:      make(map[string]time.Time),
 		controlStream:    make(map[string]pb.XSightService_ControlStreamServer),
@@ -56,6 +60,45 @@ func NewNodeState() *NodeState {
 		sourceStatuses:   make(map[string][]SourceStatus),
 		listenerStatuses: make(map[string][]ListenerStatus),
 	}
+}
+
+// NoteHandshake replaces collection state after a handshake has been accepted.
+func (ns *NodeState) NoteHandshake(nodeID string, interfaces []string) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	ns.interfaces[nodeID] = append([]string(nil), interfaces...)
+	delete(ns.capture, nodeID)
+}
+
+// GetInterfaces returns an independent snapshot of the last accepted handshake.
+func (ns *NodeState) GetInterfaces(nodeID string) []string {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+	return append([]string(nil), ns.interfaces[nodeID]...)
+}
+
+// NoteCapture records the most recent sampling rate for an identified interface.
+func (ns *NodeState) NoteCapture(nodeID, name string, rate uint32) {
+	if name == "" {
+		return
+	}
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if ns.capture[nodeID] == nil {
+		ns.capture[nodeID] = make(map[string]uint32)
+	}
+	ns.capture[nodeID][name] = rate
+}
+
+// GetCapture copies the nested map while holding the lock: writers update it in place.
+func (ns *NodeState) GetCapture(nodeID string) map[string]uint32 {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+	result := make(map[string]uint32, len(ns.capture[nodeID]))
+	for name, rate := range ns.capture[nodeID] {
+		result[name] = rate
+	}
+	return result
 }
 
 // TouchStats records that a StatsReport was received from the node.
@@ -95,16 +138,21 @@ func (ns *NodeState) SetControlStream(nodeID string, stream pb.XSightService_Con
 	ns.mu.Unlock()
 }
 
-// ClearControlStream removes the ControlStream reference on disconnect.
-// Also clears all ephemeral state so stale data doesn't persist.
-func (ns *NodeState) ClearControlStream(nodeID string) {
+// ClearControlStream clears ephemeral state only for the currently registered stream.
+// It reports whether the stream was removed.
+func (ns *NodeState) ClearControlStream(nodeID string, stream pb.XSightService_ControlStreamServer) bool {
 	ns.mu.Lock()
+	if ns.controlStream[nodeID] != stream {
+		ns.mu.Unlock()
+		return false
+	}
 	delete(ns.controlStream, nodeID)
 	delete(ns.lastStatsAt, nodeID)
 	delete(ns.connectedAt, nodeID)
 	delete(ns.sourceStatuses, nodeID)
 	delete(ns.listenerStatuses, nodeID)
 	ns.mu.Unlock()
+	return true
 }
 
 // GetControlStream returns the ControlStream for a node (nil if not connected).

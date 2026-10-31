@@ -3,10 +3,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
@@ -39,11 +41,12 @@ type PGStore struct {
 	flowListeners     *flowListenerRepo
 	flowSources       *flowSourceRepo
 	bgpConnectors     *bgpConnectorRepo
-	manualOverrides   *manualOverrideRepo    // v1.2 PR-2
-	scheduledActions  *scheduledActionRepo   // v1.2 PR-3
-	xdropActiveRules  *xdropActiveRuleRepo   // v1.2 PR-4
-	bgpAnnouncements  *bgpAnnouncementRepo   // v1.2 PR-5
-	hasTimescale bool // true if TimescaleDB extension is available
+	manualOverrides   *manualOverrideRepo  // v1.2 PR-2
+	scheduledActions  *scheduledActionRepo // v1.2 PR-3
+	xdropActiveRules  *xdropActiveRuleRepo // v1.2 PR-4
+	bgpAnnouncements  *bgpAnnouncementRepo // v1.2 PR-5
+	hasTimescale      bool                 // true if TimescaleDB extension is available
+	hypertables       map[string]bool
 }
 
 func New(ctx context.Context, dsn string) (*PGStore, error) {
@@ -87,42 +90,44 @@ func New(ctx context.Context, dsn string) (*PGStore, error) {
 	return s, nil
 }
 
-func (s *PGStore) Nodes() store.NodeRepo           { return s.nodes }
-func (s *PGStore) Prefixes() store.PrefixRepo       { return s.prefixes }
+func (s *PGStore) Nodes() store.NodeRepo                           { return s.nodes }
+func (s *PGStore) Prefixes() store.PrefixRepo                      { return s.prefixes }
 func (s *PGStore) ThresholdTemplates() store.ThresholdTemplateRepo { return s.templates }
-func (s *PGStore) Thresholds() store.ThresholdRepo                { return s.thresholds }
-func (s *PGStore) Responses() store.ResponseRepo     { return s.responses }
-func (s *PGStore) Attacks() store.AttackRepo         { return s.attacks }
-func (s *PGStore) ActionsLog() store.ActionsLogRepo  { return s.actionsLog }
-func (s *PGStore) Users() store.UserRepo             { return s.users }
-func (s *PGStore) Webhooks() store.WebhookRepo       { return s.webhooks }
-func (s *PGStore) AuditLog() store.AuditLogRepo      { return s.auditLog }
-func (s *PGStore) Stats() store.StatsRepo            { return s.stats }
-func (s *PGStore) DynDetect() store.DynDetectRepo    { return s.dynDetect }
+func (s *PGStore) Thresholds() store.ThresholdRepo                 { return s.thresholds }
+func (s *PGStore) Responses() store.ResponseRepo                   { return s.responses }
+func (s *PGStore) Attacks() store.AttackRepo                       { return s.attacks }
+func (s *PGStore) ActionsLog() store.ActionsLogRepo                { return s.actionsLog }
+func (s *PGStore) Users() store.UserRepo                           { return s.users }
+func (s *PGStore) Webhooks() store.WebhookRepo                     { return s.webhooks }
+func (s *PGStore) AuditLog() store.AuditLogRepo                    { return s.auditLog }
+func (s *PGStore) Stats() store.StatsRepo                          { return s.stats }
+func (s *PGStore) DynDetect() store.DynDetectRepo                  { return s.dynDetect }
+
 // Response System v2 connectors
-func (s *PGStore) WebhookConnectors() store.WebhookConnectorRepo { return s.webhookConnectors }
-func (s *PGStore) XDropConnectors() store.XDropConnectorRepo     { return s.xdropConnectors }
-func (s *PGStore) ShellConnectors() store.ShellConnectorRepo     { return s.shellConnectors }
-func (s *PGStore) ActionExecLog() store.ActionExecLogRepo        { return s.actionExecLog }
-func (s *PGStore) XDropTargets() store.XDropTargetRepo           { return s.xdropTargets }
-func (s *PGStore) Preconditions() store.PreconditionRepo         { return s.preconditions }
-func (s *PGStore) FlowLogs() store.FlowLogRepo                  { return s.flowLogs }
-func (s *PGStore) FlowListeners() store.FlowListenerRepo        { return s.flowListeners }
-func (s *PGStore) FlowSources() store.FlowSourceRepo            { return s.flowSources }
-func (s *PGStore) BGPConnectors() store.BGPConnectorRepo         { return s.bgpConnectors }
-func (s *PGStore) ManualOverrides() store.ActionManualOverrideRepo { return s.manualOverrides } // v1.2 PR-2
-func (s *PGStore) ScheduledActions() store.ScheduledActionRepo     { return s.scheduledActions }  // v1.2 PR-3
-func (s *PGStore) XDropActiveRules() store.XDropActiveRuleRepo     { return s.xdropActiveRules }  // v1.2 PR-4
-func (s *PGStore) BGPAnnouncements() store.BGPAnnouncementRepo     { return s.bgpAnnouncements }  // v1.2 PR-5
-func (s *PGStore) Close()                                        { s.pool.Close() }
+func (s *PGStore) WebhookConnectors() store.WebhookConnectorRepo   { return s.webhookConnectors }
+func (s *PGStore) XDropConnectors() store.XDropConnectorRepo       { return s.xdropConnectors }
+func (s *PGStore) ShellConnectors() store.ShellConnectorRepo       { return s.shellConnectors }
+func (s *PGStore) ActionExecLog() store.ActionExecLogRepo          { return s.actionExecLog }
+func (s *PGStore) XDropTargets() store.XDropTargetRepo             { return s.xdropTargets }
+func (s *PGStore) Preconditions() store.PreconditionRepo           { return s.preconditions }
+func (s *PGStore) FlowLogs() store.FlowLogRepo                     { return s.flowLogs }
+func (s *PGStore) FlowListeners() store.FlowListenerRepo           { return s.flowListeners }
+func (s *PGStore) FlowSources() store.FlowSourceRepo               { return s.flowSources }
+func (s *PGStore) BGPConnectors() store.BGPConnectorRepo           { return s.bgpConnectors }
+func (s *PGStore) ManualOverrides() store.ActionManualOverrideRepo { return s.manualOverrides }  // v1.2 PR-2
+func (s *PGStore) ScheduledActions() store.ScheduledActionRepo     { return s.scheduledActions } // v1.2 PR-3
+func (s *PGStore) XDropActiveRules() store.XDropActiveRuleRepo     { return s.xdropActiveRules } // v1.2 PR-4
+func (s *PGStore) BGPAnnouncements() store.BGPAnnouncementRepo     { return s.bgpAnnouncements } // v1.2 PR-5
+func (s *PGStore) Close()                                          { s.pool.Close() }
 
 // Pool exposes the underlying pgxpool for advanced operations (e.g. CopyFrom).
 func (s *PGStore) Pool() *pgxpool.Pool { return s.pool }
 
 // HasTimescale returns true if the TimescaleDB extension was successfully loaded.
-// Used by the retention cleaner to skip row-level DELETEs on hypertables
-// (TimescaleDB manages their lifecycle via chunk retention/compression policies).
 func (s *PGStore) HasTimescale() bool { return s.hasTimescale }
+
+// IsHypertable reports whether this table is managed by TimescaleDB.
+func (s *PGStore) IsHypertable(table string) bool { return s.hypertables[table] }
 
 // RetentionConfig holds retention and compression intervals for TimescaleDB policies.
 type RetentionConfig struct {
@@ -146,9 +151,58 @@ func (s *PGStore) AutoMigrate(ctx context.Context, ret RetentionConfig) error {
 		s.hasTimescale = true
 	}
 
+	preexisting := make(map[string]bool)
+	for _, segment := range bootstrapSegments {
+		var exists bool
+		if err := s.pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1)", segment.table).Scan(&exists); err != nil {
+			return fmt.Errorf("bootstrap probe %s: %w", segment.table, err)
+		}
+		preexisting[segment.table] = exists
+	}
+	var tx pgx.Tx
+	var segment *bootstrapSegment
 	for i, ddl := range migrations {
-		if _, err := s.pool.Exec(ctx, ddl); err != nil {
-			return fmt.Errorf("migration %d: %w\n  SQL: %s", i, err, firstLine(ddl))
+		for j := range bootstrapSegments {
+			if ddl == bootstrapSegments[j].start {
+				segment = &bootstrapSegments[j]
+				if !preexisting[segment.table] {
+					tx, err = s.pool.Begin(ctx)
+					if err != nil {
+						return fmt.Errorf("migration %d: %w", i, err)
+					}
+				}
+			}
+		}
+		skip := false
+		if segment != nil && preexisting[segment.table] {
+			for _, gated := range segment.gated {
+				if ddl == gated {
+					log.Printf("migration %d: one-time bootstrap skipped (%s existed before this run)", i, segment.table)
+					skip = true
+				}
+			}
+		}
+		if !skip {
+			execDDL := s.pool.Exec
+			if tx != nil {
+				execDDL = tx.Exec
+			}
+			if _, err := execDDL(ctx, ddl); err != nil {
+				if tx != nil {
+					_ = tx.Rollback(ctx)
+				}
+				return fmt.Errorf("migration %d: %w\n  SQL: %s", i, err, firstLine(ddl))
+			}
+		}
+		if segment != nil && ddl == segment.end {
+			if tx != nil {
+				if err := tx.Commit(ctx); err != nil {
+					_ = tx.Rollback(ctx)
+					return fmt.Errorf("migration %d: %w", i, err)
+				}
+				tx = nil
+			}
+			segment = nil
 		}
 	}
 
@@ -159,6 +213,33 @@ func (s *PGStore) AutoMigrate(ctx context.Context, ret RetentionConfig) error {
 		}
 	}
 
+	s.hypertables = make(map[string]bool)
+	if s.hasTimescale {
+		rows, probeErr := s.pool.Query(ctx, "SELECT hypertable_name FROM timescaledb_information.hypertables WHERE hypertable_schema = current_schema() AND hypertable_name IN ('ts_stats','flow_logs')")
+		if probeErr == nil {
+			for rows.Next() {
+				var table string
+				if probeErr = rows.Scan(&table); probeErr != nil {
+					break
+				}
+				s.hypertables[table] = true
+			}
+			if probeErr == nil {
+				probeErr = rows.Err()
+			}
+			rows.Close()
+		}
+		if probeErr != nil {
+			s.hypertables = map[string]bool{"ts_stats": true, "flow_logs": true}
+			log.Printf("WARNING: hypertable probe failed: %v; preserving TimescaleDB cleanup ownership", probeErr)
+		}
+	}
+	for _, table := range []string{"ts_stats", "flow_logs"} {
+		if !s.IsHypertable(table) {
+			log.Printf("WARNING: %s is not a hypertable; falling back to row deletion", table)
+		}
+	}
+
 	// Continuous aggregate: ensure ts_stats_5min has all protocol columns.
 	// If old cagg exists but lacks protocol columns, drop and recreate.
 	s.ensureCagg(ctx)
@@ -166,15 +247,23 @@ func (s *PGStore) AutoMigrate(ctx context.Context, ret RetentionConfig) error {
 	// Apply retention + compression policies from config (update if already exists)
 	if ret.TSStatsDays > 0 {
 		s.applyRetentionPolicy(ctx, "ts_stats", ret.TSStatsDays)
+	} else if s.IsHypertable("ts_stats") {
+		s.removeRetentionPolicy(ctx, "ts_stats")
 	}
 	if ret.TSStatsCompressDays > 0 {
 		s.applyCompressionPolicy(ctx, "ts_stats", ret.TSStatsCompressDays)
+	} else if s.IsHypertable("ts_stats") {
+		s.removeCompressionPolicy(ctx, "ts_stats")
 	}
 	if ret.FlowLogsDays > 0 {
 		s.applyRetentionPolicy(ctx, "flow_logs", ret.FlowLogsDays)
+	} else if s.IsHypertable("flow_logs") {
+		s.removeRetentionPolicy(ctx, "flow_logs")
 	}
 	if ret.FlowLogsCompressDays > 0 {
 		s.applyCompressionPolicy(ctx, "flow_logs", ret.FlowLogsCompressDays)
+	} else if s.IsHypertable("flow_logs") {
+		s.removeCompressionPolicy(ctx, "flow_logs")
 	}
 
 	// Chunk sizing. The default chunk_time_interval is 7 days, which makes short
@@ -192,6 +281,9 @@ func (s *PGStore) AutoMigrate(ctx context.Context, ret RetentionConfig) error {
 	if ret.FlowLogsDays > 0 || ret.FlowLogsChunkDays > 0 {
 		s.applyChunkInterval(ctx, "flow_logs", resolveChunkDays(ret.FlowLogsChunkDays, ret.FlowLogsDays))
 	}
+	if ret.TSStatsCaggDays > 0 {
+		s.applyCaggChunkInterval(ctx, "ts_stats_5min", resolveChunkDays(0, ret.TSStatsCaggDays))
+	}
 
 	// Continuous aggregate refresh policy: keep last 12h materialized, refresh every 5min.
 	// Idempotent — skip recreate if the existing policy matches, otherwise the schedule
@@ -201,12 +293,27 @@ func (s *PGStore) AutoMigrate(ctx context.Context, ret RetentionConfig) error {
 	// Continuous aggregate retention policy (separate from raw ts_stats retention)
 	if ret.TSStatsCaggDays > 0 {
 		s.applyRetentionPolicy(ctx, "ts_stats_5min", ret.TSStatsCaggDays)
-	} else {
-		// 0 = keep forever: explicitly remove any existing policy
-		_, _ = s.pool.Exec(ctx, "SELECT remove_retention_policy('ts_stats_5min', if_exists => TRUE)")
+	} else if s.hasTimescale {
+		s.removeRetentionPolicy(ctx, "ts_stats_5min")
 	}
 
 	return nil
+}
+
+func (s *PGStore) removeRetentionPolicy(ctx context.Context, table string) {
+	if _, err := s.pool.Exec(ctx, fmt.Sprintf("SELECT remove_retention_policy('%s', if_exists => TRUE)", table)); err != nil {
+		log.Printf("WARNING: retention policy for %s not removed: %v (0 = keep forever NOT in effect)", table, err)
+		return
+	}
+	log.Printf("retention policy: %s none (0 = keep forever)", table)
+}
+
+func (s *PGStore) removeCompressionPolicy(ctx context.Context, table string) {
+	if _, err := s.pool.Exec(ctx, fmt.Sprintf("SELECT remove_compression_policy('%s', if_exists => TRUE)", table)); err != nil {
+		log.Printf("WARNING: compression policy for %s not removed: %v (0 = no compression NOT in effect)", table, err)
+		return
+	}
+	log.Printf("compression policy: %s none (0 = no compression)", table)
 }
 
 // applyRetentionPolicy creates or updates a TimescaleDB retention policy.
@@ -320,6 +427,33 @@ func (s *PGStore) applyChunkInterval(ctx context.Context, table string, days int
 	}
 }
 
+// applyCaggChunkInterval sizes the materialization hypertable, whose initial chunk
+// interval is ten times the source interval. Cagg retention only drops whole chunks.
+// Setting the same value is a no-op; changes affect only new chunks. Failures warn
+// without preventing startup, as with applyChunkInterval.
+func (s *PGStore) applyCaggChunkInterval(ctx context.Context, cagg string, days int) {
+	if !s.hasTimescale {
+		return
+	}
+	var mat string
+	err := s.pool.QueryRow(ctx, `SELECT format('%I.%I', materialization_hypertable_schema, materialization_hypertable_name)
+		FROM timescaledb_information.continuous_aggregates
+		WHERE view_schema = current_schema() AND view_name = $1`, cagg).Scan(&mat)
+	if errors.Is(err, pgx.ErrNoRows) {
+		log.Printf("WARNING: chunk interval for %s skipped: continuous aggregate not found", cagg)
+		return
+	}
+	if err != nil {
+		log.Printf("WARNING: chunk interval for %s: %v", cagg, err)
+		return
+	}
+	if _, err := s.pool.Exec(ctx, "SELECT set_chunk_time_interval($1::regclass, $2::interval)", mat, fmt.Sprintf("%d days", days)); err != nil {
+		log.Printf("WARNING: chunk interval for %s (%s): %v", cagg, mat, err)
+		return
+	}
+	log.Printf("chunk interval: %s (%s) = %d days (applies to new chunks)", cagg, mat, days)
+}
+
 // applyCaggRefreshPolicy creates or updates the refresh policy for a continuous aggregate.
 // Idempotent — skips recreate when start_offset / end_offset / schedule_interval all match.
 // Comparison uses PG interval equality to handle TimescaleDB normalization.
@@ -352,20 +486,34 @@ func (s *PGStore) applyCaggRefreshPolicy(ctx context.Context, cagg, startOffset,
 	}
 }
 
+// probeCaggCOALESCE reads the original cagg SQL; tests may replace only this catalog probe.
+var probeCaggCOALESCE = func(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var hasV7 bool
+	err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM timescaledb_information.continuous_aggregates
+			WHERE view_name = 'ts_stats_5min'
+			  AND view_definition LIKE '%COALESCE%'
+		)`).Scan(&hasV7)
+	return hasV7, err
+}
+
 // ensureCagg creates or upgrades the ts_stats_5min continuous aggregate.
 // Must run outside DO $$ blocks because TimescaleDB forbids CREATE MATERIALIZED VIEW inside functions.
 //
 // Version history:
-//   v1/v2: PPS only
-//   v3: PPS + BPS protocol columns
-//   v4: PPS + BPS + direction dimension (Phase 3)
-//   v5: v4 + avg_frag_pps + avg_frag_bps (v1.3 Phase 1a — fix frag missing from aggregates)
-//   v6: v5 + 18 extra decoder aggregates (v1.3.2 — tcp_ack/rst/fin, gre/esp/igmp/ip_other,
-//       bad_fragment/invalid) so chart queries beyond the raw retention window can still
-//       render new decoder lines. SUPERSEDED by v7 because v6 extracted JSONB without
-//       COALESCE, so avg() skipped NULL rows and inflated sparse decoders.
-//   v7: v6 + COALESCE(NULL, 0) around every JSONB extract (v1.3.2 audit fix). Missing keys
-//       now count as 0 in the per-bucket average, matching the semantics of the fixed columns.
+//
+//	v1/v2: PPS only
+//	v3: PPS + BPS protocol columns
+//	v4: PPS + BPS + direction dimension (Phase 3)
+//	v5: v4 + avg_frag_pps + avg_frag_bps (v1.3 Phase 1a — fix frag missing from aggregates)
+//	v6: v5 + 18 extra decoder aggregates (v1.3.2 — tcp_ack/rst/fin, gre/esp/igmp/ip_other,
+//	    bad_fragment/invalid) so chart queries beyond the raw retention window can still
+//	    render new decoder lines. SUPERSEDED by v7 because v6 extracted JSONB without
+//	    COALESCE, so avg() skipped NULL rows and inflated sparse decoders.
+//	v7: v6 + COALESCE(NULL, 0) around every JSONB extract (v1.3.2 audit fix). Missing keys
+//	    now count as 0 in the per-bucket average, matching the semantics of the fixed columns.
+//	v8: v7 + avg_tcp_syn_bps
 //
 // Extra decoders live in ts_stats.extra_decoder_pps/bps JSONB; v7 extracts each known
 // key as `avg(COALESCE((extra_decoder_pps->>'X')::int, 0))`. Rows where the JSONB is
@@ -380,23 +528,34 @@ func (s *PGStore) ensureCagg(ctx context.Context) {
 	// The only catalog that preserves the original CAGG SELECT is
 	// timescaledb_information.continuous_aggregates.view_definition — that's where
 	// the COALESCE sentinel lives.
-	var hasV7 bool
+	hasV7, probeErr := probeCaggCOALESCE(ctx, s.pool)
+	if probeErr != nil {
+		log.Printf("WARNING: cagg check failed: %v", probeErr)
+	}
+	var hasColumns bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM timescaledb_information.continuous_aggregates
-			WHERE view_name = 'ts_stats_5min'
-			  AND view_definition LIKE '%COALESCE%'
-		)`).Scan(&hasV7)
+		SELECT NOT EXISTS (
+			SELECT unnest($1::text[]) EXCEPT
+			SELECT column_name::text FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'ts_stats_5min'
+		)`, append(caggExtraColumnNames(extraDecoderNames()), "avg_tcp_syn_bps")).Scan(&hasColumns)
 	if err != nil {
-		log.Printf("WARNING: cagg check failed: %v", err)
+		log.Printf("WARNING: cagg column check failed: %v", err)
 		return
 	}
-	if hasV7 {
-		return // cagg already v7
+	// If the catalog is unreadable, only confirmed missing columns justify rebuilding.
+	// If both probes fail, the column-check return above leaves the cagg unchanged.
+	if hasColumns && (probeErr != nil || hasV7) {
+		return // v8, or all required columns exist with an unknown COALESCE marker
 	}
 
 	// Check prior version markers for logging clarity.
-	var hasExtras, hasFragBPS, hasDirection, hasBPS bool
+	var hasSynBPS, hasExtras, hasFragBPS, hasDirection, hasBPS bool
+	_ = s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'ts_stats_5min' AND column_name = 'avg_tcp_syn_bps'
+		)`).Scan(&hasSynBPS)
 	_ = s.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM information_schema.columns
@@ -419,16 +578,20 @@ func (s *PGStore) ensureCagg(ctx context.Context) {
 		)`).Scan(&hasBPS)
 
 	switch {
+	case hasV7 && !hasSynBPS:
+		log.Printf("cagg: upgrading ts_stats_5min from v7 to v8 (adding avg_tcp_syn_bps)")
+	case hasExtras && !hasColumns:
+		log.Printf("cagg: rebuilding ts_stats_5min (missing required aggregate columns)")
 	case hasExtras:
-		log.Printf("cagg: upgrading ts_stats_5min from v6 to v7 (COALESCE missing JSONB keys to 0)")
+		log.Printf("cagg: upgrading ts_stats_5min from v6 to v8 (COALESCE missing JSONB keys to 0 + avg_tcp_syn_bps)")
 	case hasFragBPS:
-		log.Printf("cagg: upgrading ts_stats_5min from v5 to v7 (adding extra decoder aggregates with COALESCE)")
+		log.Printf("cagg: upgrading ts_stats_5min from v5 to v8 (adding extra decoder aggregates with COALESCE + avg_tcp_syn_bps)")
 	case hasDirection:
-		log.Printf("cagg: upgrading ts_stats_5min from v4 to v7 (adding frag + extra decoder aggregates with COALESCE)")
+		log.Printf("cagg: upgrading ts_stats_5min from v4 to v8 (adding frag + extra decoder aggregates with COALESCE + avg_tcp_syn_bps)")
 	case hasBPS:
-		log.Printf("cagg: upgrading ts_stats_5min from v3 to v7 (adding direction + frag + extra decoder aggregates with COALESCE)")
+		log.Printf("cagg: upgrading ts_stats_5min from v3 to v8 (adding direction + frag + extra decoder aggregates with COALESCE + avg_tcp_syn_bps)")
 	default:
-		log.Printf("cagg: creating ts_stats_5min v7 (fresh)")
+		log.Printf("cagg: creating ts_stats_5min v8 (fresh)")
 	}
 
 	// Drop old cagg and recreate.
@@ -436,7 +599,7 @@ func (s *PGStore) ensureCagg(ctx context.Context) {
 	// Accepted tradeoff — backfill from raw below restores last 7 days with correct math.
 	_, _ = s.pool.Exec(ctx, `DROP MATERIALIZED VIEW IF EXISTS ts_stats_5min CASCADE`)
 
-	// Create v7 cagg. Critical change vs v6: every JSONB extract wrapped in COALESCE
+	// Create v8 cagg (v7 + SYN BPS). Every JSONB extract is wrapped in COALESCE
 	// so rows without the key count as 0 instead of NULL (NULL was being skipped by
 	// avg(), inflating sparse-decoder averages). See audit 2026-04-20.
 	_, err = s.pool.Exec(ctx, `
@@ -455,34 +618,19 @@ func (s *PGStore) ensureCagg(ctx context.Context) {
 			   avg(udp_bps)::BIGINT AS avg_udp_bps,
 			   avg(icmp_bps)::BIGINT AS avg_icmp_bps,
 			   avg(frag_bps)::BIGINT AS avg_frag_bps,
-			   avg(COALESCE((extra_decoder_pps->>'tcp_ack')::int, 0))::INT      AS avg_tcp_ack_pps,
-			   avg(COALESCE((extra_decoder_pps->>'tcp_rst')::int, 0))::INT      AS avg_tcp_rst_pps,
-			   avg(COALESCE((extra_decoder_pps->>'tcp_fin')::int, 0))::INT      AS avg_tcp_fin_pps,
-			   avg(COALESCE((extra_decoder_pps->>'gre')::int, 0))::INT          AS avg_gre_pps,
-			   avg(COALESCE((extra_decoder_pps->>'esp')::int, 0))::INT          AS avg_esp_pps,
-			   avg(COALESCE((extra_decoder_pps->>'igmp')::int, 0))::INT         AS avg_igmp_pps,
-			   avg(COALESCE((extra_decoder_pps->>'ip_other')::int, 0))::INT     AS avg_ip_other_pps,
-			   avg(COALESCE((extra_decoder_pps->>'bad_fragment')::int, 0))::INT AS avg_bad_fragment_pps,
-			   avg(COALESCE((extra_decoder_pps->>'invalid')::int, 0))::INT      AS avg_invalid_pps,
-			   avg(COALESCE((extra_decoder_bps->>'tcp_ack')::bigint, 0))::BIGINT      AS avg_tcp_ack_bps,
-			   avg(COALESCE((extra_decoder_bps->>'tcp_rst')::bigint, 0))::BIGINT      AS avg_tcp_rst_bps,
-			   avg(COALESCE((extra_decoder_bps->>'tcp_fin')::bigint, 0))::BIGINT      AS avg_tcp_fin_bps,
-			   avg(COALESCE((extra_decoder_bps->>'gre')::bigint, 0))::BIGINT          AS avg_gre_bps,
-			   avg(COALESCE((extra_decoder_bps->>'esp')::bigint, 0))::BIGINT          AS avg_esp_bps,
-			   avg(COALESCE((extra_decoder_bps->>'igmp')::bigint, 0))::BIGINT         AS avg_igmp_bps,
-			   avg(COALESCE((extra_decoder_bps->>'ip_other')::bigint, 0))::BIGINT     AS avg_ip_other_bps,
-			   avg(COALESCE((extra_decoder_bps->>'bad_fragment')::bigint, 0))::BIGINT AS avg_bad_fragment_bps,
-			   avg(COALESCE((extra_decoder_bps->>'invalid')::bigint, 0))::BIGINT      AS avg_invalid_bps
+			   avg(tcp_syn_bps)::BIGINT AS avg_tcp_syn_bps,
+			   `+caggExtraColumns(extraDecoderNames(), "pps")+`,
+			   `+caggExtraColumns(extraDecoderNames(), "bps")+`
 		FROM ts_stats
 		WHERE dst_ip IS NULL
 		GROUP BY bucket, node_id, prefix, direction
 		WITH NO DATA
 	`)
 	if err != nil {
-		log.Printf("WARNING: cagg v7 create failed: %v", err)
+		log.Printf("WARNING: cagg v8 create failed: %v", err)
 		return
 	}
-	log.Printf("cagg: created ts_stats_5min v7 (COALESCE-corrected extras)")
+	log.Printf("cagg: created ts_stats_5min v8 (COALESCE-corrected extras + avg_tcp_syn_bps)")
 
 	// Synchronous backfill last 7 days (= raw retention window).
 	_, err = s.pool.Exec(ctx, `CALL refresh_continuous_aggregate('ts_stats_5min', now() - INTERVAL '7 days', now() + INTERVAL '1 hour')`)
@@ -505,6 +653,120 @@ func firstLine(s string) string {
 }
 
 // Core table DDL — executed in order, idempotent (IF NOT EXISTS).
+const createWebhookConnectors = `CREATE TABLE IF NOT EXISTS webhook_connectors (
+		id          SERIAL PRIMARY KEY,
+		name        TEXT NOT NULL UNIQUE,
+		url         TEXT NOT NULL,
+		method      TEXT DEFAULT 'POST',
+		headers     JSONB DEFAULT '{}',
+		timeout_ms  INT DEFAULT 5000,
+		global      BOOLEAN DEFAULT false,
+		enabled     BOOLEAN DEFAULT true,
+		created_at  TIMESTAMPTZ DEFAULT now(),
+		updated_at  TIMESTAMPTZ DEFAULT now()
+	)`
+
+const copyLegacyWebhooks = `INSERT INTO webhook_connectors (name, url, headers, global, enabled)
+	 SELECT 'legacy-webhook-' || id, url, CASE WHEN jsonb_typeof(headers) = 'object' THEN headers ELSE '{}'::jsonb END, true, enabled FROM webhooks
+	 WHERE NOT EXISTS (SELECT 1 FROM webhook_connectors WHERE name = 'legacy-webhook-' || webhooks.id)
+	 ON CONFLICT DO NOTHING`
+
+const createBGPAnnouncements = `CREATE TABLE IF NOT EXISTS bgp_announcements (
+		id               SERIAL PRIMARY KEY,
+		prefix           TEXT NOT NULL,
+		route_map        TEXT NOT NULL,
+		connector_id     INT NOT NULL,
+		first_action_id  INT,
+		status           TEXT NOT NULL DEFAULT 'announcing',
+		refcount         INT NOT NULL DEFAULT 0,
+		announced_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+		delay_started_at TIMESTAMPTZ,
+		delay_minutes    INT NOT NULL DEFAULT 0,
+		withdrawn_at     TIMESTAMPTZ,
+		error_message    TEXT DEFAULT '',
+		created_at       TIMESTAMPTZ DEFAULT now(),
+		UNIQUE (prefix, route_map, connector_id),
+		CHECK (status IN ('announcing','active','delayed','withdrawing','withdrawn','failed','orphan','dismissed','dismissed_on_upgrade'))
+	)`
+
+const bootstrapBGPAnnouncements = `INSERT INTO bgp_announcements (prefix, route_map, connector_id, status, refcount, announced_at)
+	 SELECT
+	     split_part(l.external_rule_id, '|', 1) AS prefix,
+	     split_part(l.external_rule_id, '|', 2) AS route_map,
+	     l.connector_id,
+	     'active' AS status,
+	     COUNT(DISTINCT l.attack_id) AS refcount,
+	     MIN(l.executed_at) AS announced_at
+	 FROM action_execution_log l
+	 WHERE l.action_type = 'bgp'
+	   AND l.trigger_phase IN ('on_detected','confirmed','type_upgrade','updated')
+	   AND l.status = 'success'
+	   AND l.connector_id IS NOT NULL
+	   AND l.external_rule_id != ''
+	   AND position('|' in l.external_rule_id) > 0
+	   AND NOT EXISTS (
+	     SELECT 1 FROM action_execution_log o
+	     WHERE o.trigger_phase = 'manual_override' AND o.status = 'success'
+	       AND o.attack_id = l.attack_id AND o.connector_id = l.connector_id
+	       AND o.external_rule_id = l.external_rule_id
+	   )
+	   AND NOT EXISTS (
+	     SELECT 1 FROM action_execution_log l2
+	     WHERE l2.action_type = 'bgp'
+	       AND l2.trigger_phase IN ('on_expired','expired','evicted')
+	       AND l2.status = 'success'
+	       AND l2.attack_id = l.attack_id
+	       AND l2.external_rule_id = l.external_rule_id
+	       AND l2.connector_id = l.connector_id
+	   )
+	 GROUP BY l.external_rule_id, l.connector_id
+	 ON CONFLICT (prefix, route_map, connector_id) DO NOTHING`
+
+const bootstrapBGPAttachments = `INSERT INTO bgp_announcement_attacks (announcement_id, attack_id, action_id, attached_at)
+	 SELECT DISTINCT ON (a.id, l.attack_id)
+	     a.id AS announcement_id,
+	     l.attack_id,
+	     l.action_id,
+	     l.executed_at AS attached_at
+	 FROM action_execution_log l
+	 JOIN bgp_announcements a
+	   ON a.connector_id = l.connector_id
+	  AND a.status IN ('announcing','active','delayed')
+	  AND a.prefix = split_part(l.external_rule_id, '|', 1)
+	  AND a.route_map = split_part(l.external_rule_id, '|', 2)
+	 WHERE l.action_type = 'bgp'
+	   AND l.trigger_phase IN ('on_detected','confirmed','type_upgrade','updated')
+	   AND l.status = 'success'
+	   AND l.connector_id IS NOT NULL
+	   AND l.external_rule_id != ''
+	   AND NOT EXISTS (
+	     SELECT 1 FROM action_execution_log o
+	     WHERE o.trigger_phase = 'manual_override' AND o.status = 'success'
+	       AND o.attack_id = l.attack_id AND o.connector_id = l.connector_id
+	       AND o.external_rule_id = l.external_rule_id
+	   )
+	   AND NOT EXISTS (
+	     SELECT 1 FROM action_execution_log l2
+	     WHERE l2.action_type = 'bgp'
+	       AND l2.trigger_phase IN ('on_expired','expired','evicted')
+	       AND l2.status = 'success'
+	       AND l2.attack_id = l.attack_id
+	       AND l2.external_rule_id = l.external_rule_id
+	       AND l2.connector_id = l.connector_id
+	   )
+	 ORDER BY a.id, l.attack_id, l.executed_at DESC
+	 ON CONFLICT (announcement_id, attack_id) DO NOTHING`
+
+type bootstrapSegment struct {
+	table, start, end string
+	gated             []string
+}
+
+var bootstrapSegments = []bootstrapSegment{
+	{"webhook_connectors", createWebhookConnectors, copyLegacyWebhooks, []string{copyLegacyWebhooks}},
+	{"bgp_announcements", createBGPAnnouncements, bootstrapBGPAttachments, []string{bootstrapBGPAnnouncements, bootstrapBGPAttachments}},
+}
+
 var migrations = []string{
 	// Users
 	`CREATE TABLE IF NOT EXISTS users (
@@ -696,6 +958,9 @@ var migrations = []string{
 	`DO $$ BEGIN ALTER TABLE ts_stats ADD COLUMN extra_decoder_pps JSONB DEFAULT NULL; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 	`DO $$ BEGIN ALTER TABLE ts_stats ADD COLUMN extra_decoder_bps JSONB DEFAULT NULL; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 
+	// SYN BPS fixed column, matching the frag_bps migration.
+	`DO $$ BEGIN ALTER TABLE ts_stats ADD COLUMN tcp_syn_bps BIGINT DEFAULT 0; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+
 	// v1.3 Phase 1c.2/1c.3 REVERTED (2026-04-20): SYN cookie scope removed after
 	// architectural reassessment — xSight's scrub-and-return (ingress-only) xdrop
 	// topology cannot support stateless SYN cookie without synproxy-style state
@@ -703,7 +968,7 @@ var migrations = []string{
 	// rate_limit provide the correct layered defense instead.
 	// These DROP statements clean up objects left by the earlier (reverted) migration.
 	`DROP TABLE IF EXISTS xdrop_syn_cookie_secrets`,
-	`DO $$ BEGIN ALTER TABLE xdrop_connectors DROP COLUMN nat_declared; EXCEPTION WHEN undefined_column THEN NULL; END $$`,
+	`DO $$ BEGIN ALTER TABLE xdrop_connectors DROP COLUMN nat_declared; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$`,
 
 	// Config audit log
 	`CREATE TABLE IF NOT EXISTS config_audit_log (
@@ -752,18 +1017,7 @@ var migrations = []string{
 	// ──────────────── Response System v2 (connector tables) ────────────────
 
 	// Webhook Connectors (replaces old webhooks table for response-bound usage)
-	`CREATE TABLE IF NOT EXISTS webhook_connectors (
-		id          SERIAL PRIMARY KEY,
-		name        TEXT NOT NULL UNIQUE,
-		url         TEXT NOT NULL,
-		method      TEXT DEFAULT 'POST',
-		headers     JSONB DEFAULT '{}',
-		timeout_ms  INT DEFAULT 5000,
-		global      BOOLEAN DEFAULT false,
-		enabled     BOOLEAN DEFAULT true,
-		created_at  TIMESTAMPTZ DEFAULT now(),
-		updated_at  TIMESTAMPTZ DEFAULT now()
-	)`,
+	createWebhookConnectors,
 
 	// xDrop Connectors
 	`CREATE TABLE IF NOT EXISTS xdrop_connectors (
@@ -895,10 +1149,7 @@ var migrations = []string{
 	EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 
 	// Migrate old global webhooks to webhook_connectors
-	`INSERT INTO webhook_connectors (name, url, global, enabled)
-	 SELECT 'legacy-webhook-' || id, url, true, enabled FROM webhooks
-	 WHERE NOT EXISTS (SELECT 1 FROM webhook_connectors WHERE name = 'legacy-webhook-' || webhooks.id)
-	 ON CONFLICT DO NOTHING`,
+	copyLegacyWebhooks,
 
 	// Flow logs (top-N flow samples per tick, high volume)
 	`CREATE TABLE IF NOT EXISTS flow_logs (
@@ -1011,9 +1262,10 @@ var migrations = []string{
 
 	// v1.2 PR-1: structured audit fields on action_execution_log
 	// detail: human-readable annotation for success rows (e.g. BGP attach semantics)
-	// skip_reason: structured cause when status='skipped' (precondition_not_matched / first_match_suppressed / mode_observe / manual_override / already_executed)
+	// skip_reason: precondition_not_matched / first_match_suppressed / mode_observe / manual_override / already_executed / decoder_not_xdrop_compatible / xdrop_anomaly_requires_drop (historical) / global_no_target / deprecated_xdrop_api / unknown_action_type / no_connector / connector_disabled / unknown_trigger_phase / stale_generation / incomplete_config / connector_lookup_failed / no_rules_to_unblock
 	`DO $$ BEGIN ALTER TABLE action_execution_log ADD COLUMN detail TEXT DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 	`DO $$ BEGIN ALTER TABLE action_execution_log ADD COLUMN skip_reason TEXT DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+	`CREATE INDEX IF NOT EXISTS idx_action_exec_log_attack ON action_execution_log (attack_id, action_id, trigger_phase)`,
 
 	// v1.2 PR-2: action_manual_overrides — O(1) lookup replacing log linear scan.
 	// Business key (attack_id, action_id, connector_id, external_rule_id) matches
@@ -1033,10 +1285,11 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_manual_overrides_attack ON action_manual_overrides(attack_id)`,
 
 	// v1.2 PR-2 bootstrap: backfill from historical action_execution_log rows.
-	// Idempotent — ON CONFLICT DO NOTHING safe to re-run on every boot.
+	// Selects successful manual_override rows with nonempty external_rule_id; ON CONFLICT DO NOTHING preserves existing conflicting rows.
 	// Skips rows with NULL connector_id (they predate v2.10's connector_id column
 	// and cannot have a valid business key; the original log row is still
 	// retained for audit purposes).
+	// Intentionally repeated on every startup: state-write failure fallback (dao4 4-5).
 	`INSERT INTO action_manual_overrides (attack_id, action_id, connector_id, external_rule_id, created_at)
 	 SELECT attack_id, action_id, connector_id, external_rule_id, executed_at
 	 FROM action_execution_log
@@ -1156,23 +1409,7 @@ var migrations = []string{
 	//   dismissed              — operator dismissed an orphan (no action taken)
 	//   dismissed_on_upgrade   — first upgrade bootstrap found pre-existing FRR routes;
 	//                            hidden from Mitigations to avoid startle
-	`CREATE TABLE IF NOT EXISTS bgp_announcements (
-		id               SERIAL PRIMARY KEY,
-		prefix           TEXT NOT NULL,
-		route_map        TEXT NOT NULL,
-		connector_id     INT NOT NULL,
-		first_action_id  INT,
-		status           TEXT NOT NULL DEFAULT 'announcing',
-		refcount         INT NOT NULL DEFAULT 0,
-		announced_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-		delay_started_at TIMESTAMPTZ,
-		delay_minutes    INT NOT NULL DEFAULT 0,
-		withdrawn_at     TIMESTAMPTZ,
-		error_message    TEXT DEFAULT '',
-		created_at       TIMESTAMPTZ DEFAULT now(),
-		UNIQUE (prefix, route_map, connector_id),
-		CHECK (status IN ('announcing','active','delayed','withdrawing','withdrawn','failed','orphan','dismissed','dismissed_on_upgrade'))
-	)`,
+	createBGPAnnouncements,
 	`CREATE INDEX IF NOT EXISTS idx_bgp_announcements_status ON bgp_announcements(status)`,
 
 	// Join table: which attacks are attached to which announcement.
@@ -1204,81 +1441,34 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_bgp_announcement_events_aid ON bgp_announcement_events(announcement_id)`,
 
+	// Bootstrap runs only when bgp_announcements is first created, in the same transaction.
+	// Existing databases never derive BGP state from logs again (P1-10).
 	// v1.2 PR-5 bootstrap: backfill bgp_announcements from historical BGP
-	// on_detected success rows in action_execution_log. For each distinct
+	// on_detected / confirmed / type_upgrade / updated success rows in action_execution_log. For each distinct
 	// (prefix, route_map, connector_id) currently still "active" (has
-	// on_detected success but no matching on_expired success), create one
+	// no matching on_expired / expired / evicted success), create one
 	// announcement row with refcount equal to the number of still-active
 	// attacks sharing it.
 	//
-	// Idempotent — ON CONFLICT DO NOTHING safe for repeat startup. Skips
+	// Successful manual_override matches on attack_id / connector_id / external_rule_id, without action_id, are excluded.
+	// ON CONFLICT DO NOTHING preserves existing conflicting rows. Skips
 	// rows without connector_id (predate v2.10 schema) because they can't
 	// produce a valid business key.
 	//
 	// After upgrade, the first vtysh withdraw for any legacy attack will
 	// flow through Detach + performBGPWithdraw, which handles the "Can't
 	// find" idempotent case if FRR state doesn't match.
-	`INSERT INTO bgp_announcements (prefix, route_map, connector_id, status, refcount, announced_at)
-	 SELECT
-	     split_part(l.external_rule_id, '|', 1) AS prefix,
-	     split_part(l.external_rule_id, '|', 2) AS route_map,
-	     l.connector_id,
-	     'active' AS status,
-	     COUNT(DISTINCT l.attack_id) AS refcount,
-	     MIN(l.executed_at) AS announced_at
-	 FROM action_execution_log l
-	 WHERE l.action_type = 'bgp'
-	   AND l.trigger_phase = 'on_detected'
-	   AND l.status = 'success'
-	   AND l.connector_id IS NOT NULL
-	   AND l.external_rule_id != ''
-	   AND position('|' in l.external_rule_id) > 0
-	   AND NOT EXISTS (
-	     SELECT 1 FROM action_execution_log l2
-	     WHERE l2.action_type = 'bgp'
-	       AND l2.trigger_phase = 'on_expired'
-	       AND l2.status = 'success'
-	       AND l2.attack_id = l.attack_id
-	       AND l2.external_rule_id = l.external_rule_id
-	       AND l2.connector_id = l.connector_id
-	   )
-	 GROUP BY l.external_rule_id, l.connector_id
-	 ON CONFLICT (prefix, route_map, connector_id) DO NOTHING`,
+	bootstrapBGPAnnouncements,
 
 	// Backfill bgp_announcement_attacks join table — one row per (attack, announcement).
-	`INSERT INTO bgp_announcement_attacks (announcement_id, attack_id, action_id, attached_at)
-	 SELECT DISTINCT ON (a.id, l.attack_id)
-	     a.id AS announcement_id,
-	     l.attack_id,
-	     l.action_id,
-	     l.executed_at AS attached_at
-	 FROM action_execution_log l
-	 JOIN bgp_announcements a
-	   ON a.connector_id = l.connector_id
-	  AND a.prefix = split_part(l.external_rule_id, '|', 1)
-	  AND a.route_map = split_part(l.external_rule_id, '|', 2)
-	 WHERE l.action_type = 'bgp'
-	   AND l.trigger_phase = 'on_detected'
-	   AND l.status = 'success'
-	   AND l.connector_id IS NOT NULL
-	   AND l.external_rule_id != ''
-	   AND NOT EXISTS (
-	     SELECT 1 FROM action_execution_log l2
-	     WHERE l2.action_type = 'bgp'
-	       AND l2.trigger_phase = 'on_expired'
-	       AND l2.status = 'success'
-	       AND l2.attack_id = l.attack_id
-	       AND l2.external_rule_id = l.external_rule_id
-	       AND l2.connector_id = l.connector_id
-	   )
-	 ORDER BY a.id, l.attack_id, l.executed_at DESC
-	 ON CONFLICT (announcement_id, attack_id) DO NOTHING`,
+	bootstrapBGPAttachments,
 
+	// Intentionally repeated on every startup: state-write failure fallback (dao4 4-5).
 	// v1.2 PR-4 bootstrap: backfill from historical action_execution_log rows.
-	// Find every xdrop on_detected success that does NOT have a matching
-	// on_expired success in the log — those rules are still externally active
-	// and need a row in xdrop_active_rules. ON CONFLICT DO NOTHING keeps the
-	// migration idempotent across restarts.
+	// Select xdrop on_detected / confirmed / type_upgrade / updated success rows
+	// without matching on_expired / expired / evicted success rows in the log.
+	// Exclude successful manual_override matches on attack_id / action_id / connector_id / external_rule_id.
+	// ON CONFLICT DO NOTHING preserves existing conflicting rows in xdrop_active_rules.
 	//
 	// v1.2.2: the paired on_expired action (auto-created unblock) has a
 	// *different* action_id from the on_detected parent — so the NOT EXISTS
@@ -1294,21 +1484,35 @@ var migrations = []string{
 	        'active', l.executed_at
 	 FROM action_execution_log l
 	 WHERE l.action_type = 'xdrop'
-	   AND l.trigger_phase = 'on_detected'
+	   AND l.trigger_phase IN ('on_detected','confirmed','type_upgrade','updated')
 	   AND l.status = 'success'
 	   AND l.connector_id IS NOT NULL
 	   AND l.external_rule_id != ''
 	   AND NOT EXISTS (
 	     SELECT 1 FROM action_execution_log l2
 	     WHERE l2.action_type = 'xdrop'
-	       AND l2.trigger_phase = 'on_expired'
 	       AND l2.status = 'success'
 	       AND l2.attack_id = l.attack_id
 	       AND l2.connector_id = l.connector_id
 	       AND l2.external_rule_id = l.external_rule_id
+	       AND l2.trigger_phase IN ('on_expired','expired','evicted')
+	   )
+	   AND NOT EXISTS (
+	     SELECT 1 FROM action_execution_log o
+	     WHERE o.trigger_phase = 'manual_override' AND o.status = 'success'
+	       AND o.attack_id = l.attack_id AND o.connector_id = l.connector_id
+	       AND o.external_rule_id = l.external_rule_id
+	       AND o.action_id = l.action_id
 	   )
 	 ORDER BY l.attack_id, l.action_id, l.connector_id, l.external_rule_id, l.executed_at DESC
 	 ON CONFLICT DO NOTHING`,
+	`ALTER TABLE bgp_announcements ADD COLUMN IF NOT EXISTS gen INTEGER NOT NULL DEFAULT 0`,
+	`DO $$ BEGIN
+	  IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'bgp_connectors'::regclass
+	             AND attname = 'bgp_asn' AND atttypid = 'int4'::regtype) THEN
+	    ALTER TABLE bgp_connectors ALTER COLUMN bgp_asn TYPE BIGINT;
+	  END IF;
+	END $$`,
 }
 
 // TimescaleDB-specific DDL — non-fatal if TimescaleDB is not available.

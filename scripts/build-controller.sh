@@ -2,7 +2,7 @@
 # xSight Controller — Build Script
 # Usage: ./scripts/build-controller.sh [web|go|all]
 #
-#   web  Build Vue 3 frontend (requires node + npm)
+#   web  Build web console (Vue 3 + TypeScript) (requires node + npm)
 #   go   Build Go controller binary (embeds pre-built frontend via go:embed)
 #   all  Build frontend then Go (default)
 #
@@ -17,15 +17,19 @@ die()   { echo -e "${RED}[build-ctrl] ERROR:${NC} $*" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CTRL_DIR="$ROOT/controller"
-WEB_DIR="$CTRL_DIR/web"
+WEB_DIR="$CTRL_DIR/console"
 BIN_DIR="$CTRL_DIR/bin"
 CTRL_BIN="$BIN_DIR/xsight-controller"
 
 build_web() {
-    info "Building frontend (Vue 3)..."
+    info "Building frontend (Vue 3 + TypeScript)..."
+    if [[ -z "${XSIGHT_VERSION:-}" ]]; then
+        XSIGHT_VERSION="$(git -C "$ROOT" describe --always 2>/dev/null || echo unknown)"
+    fi
+    export XSIGHT_VERSION
     command -v node &>/dev/null || die "node not found. Install from https://nodejs.org"
     command -v npm  &>/dev/null || die "npm not found."
-    (cd "$WEB_DIR" && npm install && npm run build)
+    (cd "$WEB_DIR" && npm ci && npm run build)
     [[ -d "$WEB_DIR/dist" ]] || die "Frontend build failed — dist/ not found"
     info "Frontend build OK -> $WEB_DIR/dist"
 }

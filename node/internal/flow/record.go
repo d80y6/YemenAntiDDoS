@@ -15,7 +15,7 @@ type FlowRecord struct {
 	DstIP    net.IP
 	SrcPort  uint16
 	DstPort  uint16
-	Protocol uint8  // 6=TCP, 17=UDP, 1=ICMP
+	Protocol uint8 // 6=TCP, 17=UDP, 1=ICMP
 	TCPFlags uint8
 
 	Packets    uint64 // raw value (not yet multiplied by sample rate)

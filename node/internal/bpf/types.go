@@ -3,6 +3,8 @@ package bpf
 import (
 	"fmt"
 	"net"
+	"net/netip"
+	"strings"
 
 	"github.com/littlewolf9527/xsight/shared/decoder"
 )
@@ -24,8 +26,8 @@ type GlobalStats struct {
 	TotalPkts         uint64
 	TotalBytes        uint64
 	MatchedPkts       uint64
-	MatchedBytes      uint64                     // bytes within watch scope (for global ip+bps)
-	SampleDrops       uint64                     // ring buffer reserve failures (backpressure signal)
+	MatchedBytes      uint64                      // bytes within watch scope (for global ip+bps)
+	SampleDrops       uint64                      // ring buffer reserve failures (backpressure signal)
 	DecoderCounts     [decoder.MaxDecoders]uint32 // per-decoder PPS (inbound matched only)
 	DecoderByteCounts [decoder.MaxDecoders]uint64 // per-decoder BPS (inbound matched only)
 	// Outbound (src_ip matched) global counters
@@ -54,7 +56,7 @@ type PrefixStats struct {
 	PktCount          uint64
 	ByteCount         uint64
 	OverflowCount     uint32
-	Pad               uint32                     // alignment padding, matches BPF struct
+	Pad               uint32                      // alignment padding, matches BPF struct
 	DecoderCounts     [decoder.MaxDecoders]uint32 // indexed by decoder.TCP, decoder.UDP, etc.
 	DecoderByteCounts [decoder.MaxDecoders]uint64 // per-decoder byte counts for BPS thresholds
 }
@@ -77,8 +79,21 @@ type PrefixEntry struct {
 	Prefixlen uint32
 }
 
+// isIPv4MappedPrefix checks the original address independently of mask syntax.
+func isIPv4MappedPrefix(cidr string) bool {
+	address, _, _ := strings.Cut(cidr, "/")
+	if ip, err := netip.ParseAddr(address); err == nil && ip.Is4In6() {
+		return true
+	}
+	ip := net.ParseIP(address)
+	return strings.Contains(address, ":") && ip != nil && ip.To4() != nil
+}
+
 // ParsePrefix parses a CIDR string into a PrefixEntry.
 func ParsePrefix(cidr string) (PrefixEntry, error) {
+	if isIPv4MappedPrefix(cidr) {
+		return PrefixEntry{}, fmt.Errorf("use IPv4 notation for IPv4-mapped prefix %q", cidr)
+	}
 	_, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return PrefixEntry{}, fmt.Errorf("parse CIDR %q: %w", cidr, err)
@@ -92,7 +107,9 @@ func (p PrefixEntry) LPMKey() LPMKey {
 	key := LPMKey{Prefixlen: p.Prefixlen}
 	ip := p.Net.IP
 	if ip4 := ip.To4(); ip4 != nil {
-		copy(key.Addr[:4], ip4)
+		key.Addr[10], key.Addr[11] = 0xff, 0xff
+		copy(key.Addr[12:], ip4)
+		key.Prefixlen += 96
 	} else {
 		copy(key.Addr[:], ip.To16())
 	}
@@ -104,11 +121,26 @@ func (p PrefixEntry) PrefixKey() PrefixKeyGo {
 	pkey := PrefixKeyGo{Prefixlen: p.Prefixlen}
 	ip := p.Net.IP
 	if ip4 := ip.To4(); ip4 != nil {
-		copy(pkey.Addr[:4], ip4)
+		pkey.Addr[10], pkey.Addr[11] = 0xff, 0xff
+		copy(pkey.Addr[12:], ip4)
+		pkey.Prefixlen += 96
 	} else {
 		copy(pkey.Addr[:], ip.To16())
 	}
 	return pkey
+}
+
+// PrefixKeyToIPNet decodes prefix keys; per-IP HASH keys use a separate format.
+func PrefixKeyToIPNet(k PrefixKeyGo) net.IPNet {
+	ones := int(k.Prefixlen)
+	isV4 := ones >= 96 && k.Addr[10] == 0xff && k.Addr[11] == 0xff
+	for i := 0; i < 10; i++ {
+		isV4 = isV4 && k.Addr[i] == 0
+	}
+	if isV4 {
+		return net.IPNet{IP: net.IP(k.Addr[12:]), Mask: net.CIDRMask(ones-96, 32)}
+	}
+	return net.IPNet{IP: net.IP(k.Addr[:]), Mask: net.CIDRMask(ones, 128)}
 }
 
 // String returns the CIDR notation.

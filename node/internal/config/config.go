@@ -13,7 +13,7 @@ import (
 
 // Config is the top-level Node configuration.
 type Config struct {
-	Mode         string      `yaml:"mode"`    // "xdp" (default) | "flow" — v3.0
+	Mode         string      `yaml:"mode"` // "xdp" (default) | "flow" — v3.0
 	NodeID       string      `yaml:"node_id"`
 	Interfaces   []Interface `yaml:"interfaces"`
 	BPF          BPFConfig   `yaml:"bpf"`
@@ -27,8 +27,8 @@ type Config struct {
 type Interface struct {
 	Name               string `yaml:"name"`
 	Mode               string `yaml:"mode"`                 // "mirror" | "erspan"
-	UpstreamSampleRate uint32 `yaml:"upstream_sample_rate"`  // 1=passthrough, 300=upstream 1:300
-	SampleBytes        uint32 `yaml:"sample_bytes"`          // 128-512, default 256
+	UpstreamSampleRate uint32 `yaml:"upstream_sample_rate"` // 1=passthrough, 300=upstream 1:300
+	SampleBytes        uint32 `yaml:"sample_bytes"`         // 128-512, default 256
 }
 
 // BPFConfig holds BPF-related settings.
@@ -97,8 +97,23 @@ func (c *Config) validate() error {
 			if iface.SampleBytes == 0 {
 				c.Interfaces[i].SampleBytes = 256
 			}
-			if iface.SampleBytes < 128 || iface.SampleBytes > 512 {
-				return fmt.Errorf("interfaces[%d].sample_bytes must be 128-512, got %d", i, iface.SampleBytes)
+			if c.Interfaces[i].SampleBytes < 128 || c.Interfaces[i].SampleBytes > 512 {
+				return fmt.Errorf("interfaces[%d].sample_bytes must be 128-512, got %d", i, c.Interfaces[i].SampleBytes)
+			}
+		}
+		for i := 1; i < len(c.Interfaces); i++ {
+			first, iface := c.Interfaces[0], c.Interfaces[i]
+			for _, field := range []struct {
+				name       string
+				got, first any
+			}{
+				{"mode", iface.Mode, first.Mode},
+				{"sample_bytes", iface.SampleBytes, first.SampleBytes},
+				{"upstream_sample_rate", iface.UpstreamSampleRate, first.UpstreamSampleRate},
+			} {
+				if field.got != field.first {
+					return fmt.Errorf("interfaces[%d].%s=%v differs from interfaces[0] (%v): all XDP interfaces share one BPF config and one upstream rate; run separate nodes for different settings", i, field.name, field.got, field.first)
+				}
 			}
 		}
 		if c.BPF.MaxEntries == 0 {

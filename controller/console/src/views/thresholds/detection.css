@@ -1,0 +1,27 @@
+.detection table { width: 100%; }
+.detection td { overflow-wrap: anywhere; vertical-align: middle; }
+.detection .r { text-align: right; }
+.detection .count { font-size: 12px; font-weight: 500; }
+.detection .disabled-row td { color: var(--muted); }
+.detection .disabled-row .cidr { color: var(--ink); }
+.detection .actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.detection .meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.detection .crumb { color: var(--muted); margin-bottom: 10px; font-size: 12px; }
+.detection .inline { padding: 10px; background: var(--sunk); border: 1px solid var(--line); }
+.detection .inline input { width: 240px; max-width: 100%; }
+.detection .info { color: var(--muted); line-height: 1.6; }
+.detection .learn { color: var(--accent); }
+.detection .exceeded td:first-child { box-shadow: inset 2px 0 0 var(--crit); }
+.detection .config-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.detection .config-grid input { width: 140px; max-width: 100%; }
+.dt-form .field { grid-template-columns: 100px minmax(0, 1fr); }
+.dt-form .field input, .dt-form .field textarea { width: 100%; min-width: 0; }
+.dt-form .field small { grid-column: 2; }
+.dt-form .mono { font-family: var(--font-num); }
+.dt-decoder-field > .listbox-button,
+.drawer:has(.dt-decoder-field) .mpop [role=option] { font-family: var(--font-num); }
+@media (max-width: 1100px) { .detection .config-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) {
+  .detection table { min-width: 980px; }
+  .detection .config-grid { grid-template-columns: minmax(0, 1fr); }
+}

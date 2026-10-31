@@ -1,6 +1,5 @@
 // Package ingestion — flow_writer.go converts FlowSample from StatsReport
 // into flow_logs DB rows and bulk-inserts them asynchronously.
-//
 package ingestion
 
 import (
@@ -49,21 +48,24 @@ func (w *FlowWriter) HandleFlows(nodeID string, report *pb.StatsReport) {
 	// Build prefix nets from the same report for dst_ip→prefix matching
 	var prefixNets []parsedPrefix
 	for _, ps := range report.PrefixStats {
-		cidr := netutil.FormatPrefix(ps.Prefix, ps.PrefixLen)
-		_, ipnet, err := net.ParseCIDR(cidr)
-		if err != nil {
+		cidr, ipnet, ok := netutil.CanonicalPrefix(ps.Prefix, ps.PrefixLen)
+		if !ok {
 			continue
 		}
 		prefixNets = append(prefixNets, parsedPrefix{cidr, ipnet})
 	}
 
+	matchNets := sortedForMatch(prefixNets)
 	logs := make([]store.FlowLog, 0, len(flows))
 	for _, f := range flows {
-		srcIP := net.IP(f.SrcIp)
-		dstIP := net.IP(f.DstIp)
+		src, okS := netutil.CanonicalIP(f.SrcIp)
+		dst, okD := netutil.CanonicalIP(f.DstIp)
+		if !okS || !okD {
+			continue
+		}
 
 		var prefix *string
-		if p := matchPrefix(prefixNets, dstIP); p != "" {
+		if p := matchPrefix(matchNets, net.IP(f.DstIp)); p != "" {
 			prefix = &p
 		}
 
@@ -71,8 +73,8 @@ func (w *FlowWriter) HandleFlows(nodeID string, report *pb.StatsReport) {
 			Time:     ts,
 			NodeID:   nodeID,
 			Prefix:   prefix,
-			SrcIP:    srcIP.String(),
-			DstIP:    dstIP.String(),
+			SrcIP:    src,
+			DstIP:    dst,
 			SrcPort:  int(f.SrcPort),
 			DstPort:  int(f.DstPort),
 			Protocol: int(f.Protocol),

@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
@@ -52,80 +51,19 @@ func (r *actionExecLogRepo) ListByAttack(ctx context.Context, attackID int) ([]s
 	return list, rows.Err()
 }
 
-func (r *actionExecLogRepo) FindByAttackAndAction(ctx context.Context, attackID, actionID int, triggerPhase string) (*store.ActionExecutionLog, error) {
-	var l store.ActionExecutionLog
-	err := r.pool.QueryRow(ctx,
-		`SELECT id, attack_id, action_id, response_name, action_type, connector_name, trigger_phase,
-		        status, status_code, error_message, request_body, response_body, external_rule_id,
-		        connector_id, duration_ms, executed_at, scheduled_for,
-		        COALESCE(detail, ''), COALESCE(skip_reason, '')
-		 FROM action_execution_log
-		 WHERE attack_id=$1 AND action_id=$2 AND trigger_phase=$3
-		 ORDER BY executed_at DESC LIMIT 1`, attackID, actionID, triggerPhase).
-		Scan(&l.ID, &l.AttackID, &l.ActionID, &l.ResponseName, &l.ActionType,
-			&l.ConnectorName, &l.TriggerPhase, &l.Status, &l.StatusCode, &l.ErrorMessage,
-			&l.RequestBody, &l.ResponseBody, &l.ExternalRuleID, &l.ConnectorID, &l.DurationMs, &l.ExecutedAt, &l.ScheduledFor,
-			&l.Detail, &l.SkipReason)
-	if err != nil {
-		return nil, fmt.Errorf("action_execution_log attack=%d action=%d phase=%s: %w", attackID, actionID, triggerPhase, err)
-	}
-	return &l, nil
-}
-
-// FindExternalRulesWithActions returns all (external_rule_id, action_id, connector_id) for a given attack.
-// Used by unblock to delete rules only on the connector that originally created them.
-// Includes synthetic "failed-create-*" IDs (see syntheticFailedXDropRuleID) so
-// orphan failed rows in xdrop_active_rules get closed out by the unblock loop
-// rather than lingering indefinitely. The unblock loop short-circuits the
-// actual HTTP DELETE for these synthetic IDs (per isSyntheticFailedXDropRuleID).
-func (r *actionExecLogRepo) FindExternalRulesWithActions(ctx context.Context, attackID int) ([]store.RuleWithAction, error) {
-	query := `SELECT DISTINCT external_rule_id, action_id, COALESCE(connector_id, 0)
-		 FROM action_execution_log
-		 WHERE attack_id=$1 AND action_type='xdrop' AND external_rule_id != ''
-		   AND (status='success' OR (status='failed' AND external_rule_id LIKE 'failed-create-%'))`
-	rows, err := r.pool.Query(ctx, query, attackID)
-	if err != nil {
-		return nil, fmt.Errorf("find external_rules attack=%d: %w", attackID, err)
-	}
-	defer rows.Close()
-	var results []store.RuleWithAction
-	for rows.Next() {
-		var r store.RuleWithAction
-		if err := rows.Scan(&r.RuleID, &r.ActionID, &r.ConnectorID); err != nil {
-			return nil, err
-		}
-		results = append(results, r)
-	}
-	return results, rows.Err()
-}
-
-// FindExternalRuleIDs returns all distinct external_rule_ids for a given attack.
-// When actionID > 0, scopes to that specific action; when 0, returns all xdrop rules.
-// Used by unblock to delete ALL rules created during an attack.
-func (r *actionExecLogRepo) FindExternalRuleIDs(ctx context.Context, attackID, actionID int) ([]string, error) {
-	var query string
-	var args []any
-	if actionID > 0 {
-		query = `SELECT DISTINCT external_rule_id FROM action_execution_log
-			 WHERE attack_id=$1 AND action_id=$2 AND external_rule_id != '' AND status='success'`
-		args = []any{attackID, actionID}
-	} else {
-		query = `SELECT DISTINCT external_rule_id FROM action_execution_log
-			 WHERE attack_id=$1 AND action_type='xdrop' AND external_rule_id != '' AND status='success'`
-		args = []any{attackID}
-	}
-	rows, err := r.pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("find external_rule_ids attack=%d action=%d: %w", attackID, actionID, err)
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+func (r *actionExecLogRepo) AllTargetsDone(ctx context.Context, attackID, actionID int, triggerPhase string) (bool, error) {
+	var done bool
+	err := r.pool.QueryRow(ctx, `WITH latest AS (
+	 SELECT DISTINCT ON (COALESCE(connector_id, 0))
+	        COALESCE(connector_id, 0) AS target, status, executed_at, id
+	 FROM action_execution_log
+	 WHERE attack_id=$1 AND action_id=$2 AND trigger_phase=$3 AND status <> 'skipped'
+	 ORDER BY COALESCE(connector_id, 0), executed_at DESC, id DESC
+	)
+	SELECT COALESCE(bool_and(status IN ('success','scheduled')), false)
+	FROM latest l WHERE target <> 0 OR NOT EXISTS (
+	 SELECT 1 FROM latest newer WHERE newer.target <> 0
+	 AND (newer.executed_at, newer.id) > (l.executed_at, l.id)
+	)`, attackID, actionID, triggerPhase).Scan(&done)
+	return done, err
 }

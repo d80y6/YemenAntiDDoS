@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -14,7 +16,7 @@ func listTemplates(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		templates, err := deps.Store.ThresholdTemplates().List(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, templates)
@@ -40,10 +42,10 @@ func createTemplate(deps Dependencies) gin.HandlerFunc {
 		}
 		id, err := deps.Store.ThresholdTemplates().Create(c, tmpl)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
-		publishAfterChange(c, deps, "threshold_template", strconv.Itoa(id), "create", makeDiff(nil, store.ThresholdTemplate{ID: id, Name: req.Name, Description: req.Description}))
+		publishAfterChange(c, deps, "threshold_template", strconv.Itoa(id), "create", makeDiff(nil, store.ThresholdTemplate{ID: id, Name: req.Name, Description: req.Description, ResponseID: req.ResponseID}))
 		created(c, gin.H{"id": id})
 	}
 }
@@ -72,12 +74,26 @@ func updateTemplate(deps Dependencies) gin.HandlerFunc {
 		}
 		// Read raw JSON to detect explicit null for response_id
 		var raw map[string]json.RawMessage
-		bodyBytes, _ := c.GetRawData()
-		_ = json.Unmarshal(bodyBytes, &raw)
+		bodyBytes, err := c.GetRawData()
+		if err != nil {
+			errResponse(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+			errResponse(c, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		// Merge: start from existing row, overwrite only fields present in request.
 		merged := *old
-		_ = json.Unmarshal(bodyBytes, &merged)
+		if old.ResponseID != nil {
+			v := *old.ResponseID
+			merged.ResponseID = &v
+		}
+		if err := json.Unmarshal(bodyBytes, &merged); err != nil {
+			errResponse(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		merged.ID = id
 
 		// Handle explicit response_id: null (clear the default response)
@@ -89,14 +105,14 @@ func updateTemplate(deps Dependencies) gin.HandlerFunc {
 		if merged.ResponseID != nil {
 			hasXDrop, err := responseHasXDropOrBGP(c, deps.Store, *merged.ResponseID)
 			if err != nil {
-				errResponse(c, http.StatusInternalServerError, "failed to check response actions: "+err.Error())
+				dbError(c, "failed to check response actions: ", err)
 				return
 			}
 			if hasXDrop {
 				// Global prefix: cannot use xDrop/BGP
 				prefixes, err := deps.Store.ThresholdTemplates().ListPrefixesUsing(c, id)
 				if err != nil {
-					errResponse(c, http.StatusInternalServerError, "failed to check template prefix usage: "+err.Error())
+					dbError(c, "failed to check template prefix usage: ", err)
 					return
 				}
 				for _, p := range prefixes {
@@ -108,7 +124,7 @@ func updateTemplate(deps Dependencies) gin.HandlerFunc {
 				// Sends rules: cannot use xDrop/BGP as template default
 				rules, err := deps.Store.ThresholdTemplates().ListRules(c, id)
 				if err != nil {
-					errResponse(c, http.StatusInternalServerError, "failed to check template rules: "+err.Error())
+					dbError(c, "failed to check template rules: ", err)
 					return
 				}
 				for _, r := range rules {
@@ -120,7 +136,7 @@ func updateTemplate(deps Dependencies) gin.HandlerFunc {
 			}
 		}
 		if err := deps.Store.ThresholdTemplates().Update(c, &merged); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "threshold_template", strconv.Itoa(id), "update", makeDiff(old, merged))
@@ -143,7 +159,7 @@ func deleteTemplate(deps Dependencies) gin.HandlerFunc {
 		}
 		old, _ := deps.Store.ThresholdTemplates().Get(c, id)
 		if err := deps.Store.ThresholdTemplates().Delete(c, id); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "threshold_template", strconv.Itoa(id), "delete", makeDiff(old, nil))
@@ -164,16 +180,20 @@ func duplicateTemplate(deps Dependencies) gin.HandlerFunc {
 		var req struct {
 			Name string `json:"name"`
 		}
-		if c.ShouldBindJSON(&req) == nil && req.Name != "" {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			errResponse(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Name != "" {
 			newName = req.Name
 		}
 		newID, err := deps.Store.ThresholdTemplates().Duplicate(c, id, newName)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "threshold_template", strconv.Itoa(newID), "create",
-			makeDiff(nil, map[string]any{"id": newID, "name": newName, "duplicated_from": id}))
+			makeDiff(nil, map[string]any{"id": newID, "name": newName, "description": orig.Description, "response_id": orig.ResponseID, "duplicated_from": id}))
 		created(c, gin.H{"id": newID, "name": newName})
 	}
 }
@@ -202,7 +222,7 @@ func listTemplateRules(deps Dependencies) gin.HandlerFunc {
 		id, _ := strconv.Atoi(c.Param("id"))
 		rules, err := deps.Store.ThresholdTemplates().ListRules(c, id)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, rules)
@@ -255,13 +275,16 @@ func createTemplateRule(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		// Global prefix: reject internal_ip domain + reject xDrop/BGP response
-		if err := validateGlobalPrefixConstraints(c, deps.Store, &req); err != nil {
+		if err := validateGlobalPrefixConstraints(c, deps.Store, &req); errors.Is(err, errValidationLookup) {
+			dbError(c, "validation lookup failed: ", err)
+			return
+		} else if err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
 		id, err := deps.Store.Thresholds().Create(c, &req)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		req.ID = id

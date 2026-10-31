@@ -17,7 +17,7 @@ func getDynDetectConfig(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg, err := deps.Store.DynDetect().GetConfig(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, cfg)
@@ -60,7 +60,7 @@ func updateDynDetectConfig(deps Dependencies) gin.HandlerFunc {
 		}
 
 		if err := deps.Store.DynDetect().UpdateConfig(c, &cfg); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 
@@ -121,11 +121,9 @@ func getDynDetectStatus(deps Dependencies) gin.HandlerFunc {
 			// Get current PPS/BPS from ring buffer
 			var curPPS, curBPS int64
 			if rings != nil {
-				if pr := rings.GetPrefixRing(s.NodeID, s.Prefix); pr != nil {
-					if dp, ok := pr.LatestOne(10 * time.Second); ok {
-						curPPS = dp.PPS
-						curBPS = dp.BPS
-					}
+				if dp, ok := rings.LatestPrefix(s.NodeID, s.Prefix, 10*time.Second); ok {
+					curPPS = dp.PPS
+					curBPS = dp.BPS
 				}
 			}
 
@@ -196,13 +194,13 @@ func getDynDetectStatus(deps Dependencies) gin.HandlerFunc {
 		}
 
 		ok(c, gin.H{
-			"enabled":          cfg.Enabled,
-			"current_slot":     slot,
+			"enabled":            cfg.Enabled,
+			"current_slot":       slot,
 			"current_slot_label": label,
-			"total_prefixes":   len(prefixes),
-			"activated_count":  activatedCount,
-			"learning_count":   learningCount,
-			"prefixes":         prefixes,
+			"total_prefixes":     len(prefixes),
+			"activated_count":    activatedCount,
+			"learning_count":     learningCount,
+			"prefixes":           prefixes,
 		})
 	}
 }

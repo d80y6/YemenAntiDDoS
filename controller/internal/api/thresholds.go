@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -52,7 +53,7 @@ func listThresholds(deps Dependencies) gin.HandlerFunc {
 			id, _ := strconv.Atoi(prefixID)
 			thresholds, err := deps.Store.Thresholds().ListByPrefix(c, id)
 			if err != nil {
-				errResponse(c, http.StatusInternalServerError, err.Error())
+				dbError(c, "", err)
 				return
 			}
 			ok(c, thresholds)
@@ -60,7 +61,7 @@ func listThresholds(deps Dependencies) gin.HandlerFunc {
 		}
 		thresholds, err := deps.Store.Thresholds().List(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, thresholds)
@@ -81,14 +82,17 @@ func createThreshold(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		// Global prefix: reject internal_ip domain + reject xDrop/BGP response
-		if err := validateGlobalPrefixConstraints(c, deps.Store, &req); err != nil {
+		if err := validateGlobalPrefixConstraints(c, deps.Store, &req); errors.Is(err, errValidationLookup) {
+			dbError(c, "validation lookup failed: ", err)
+			return
+		} else if err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		id, err := deps.Store.Thresholds().Create(c, &req)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		req.ID = id
@@ -120,26 +124,32 @@ func updateThreshold(deps Dependencies) gin.HandlerFunc {
 		// Merge: start from existing row, overwrite only fields present in request.
 		// This prevents partial updates from clearing unset fields.
 		merged := *old
+		// JSON decodes through non-nil pointers, so isolate ownership from old.
+		merged.TemplateID, merged.PrefixID = nil, nil
+		if old.ResponseID != nil {
+			v := *old.ResponseID
+			merged.ResponseID = &v
+		}
 		if err := c.ShouldBindJSON(&merged); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
 		merged.ID = id
-		// Preserve template_id — never allow update to detach from template
-		if old.TemplateID != nil {
-			merged.TemplateID = old.TemplateID
-		}
+		merged.TemplateID, merged.PrefixID = old.TemplateID, old.PrefixID // Rule ownership is immutable, like flow node_id.
 		if err := validateThreshold(&merged); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
 		// Global prefix: reject internal_ip domain + reject xDrop/BGP response
-		if err := validateGlobalPrefixConstraints(c, deps.Store, &merged); err != nil {
+		if err := validateGlobalPrefixConstraints(c, deps.Store, &merged); errors.Is(err, errValidationLookup) {
+			dbError(c, "validation lookup failed: ", err)
+			return
+		} else if err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
 		if err := deps.Store.Thresholds().Update(c, &merged); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "threshold", strconv.Itoa(id), "update", makeDiff(old, merged))
@@ -149,6 +159,18 @@ func updateThreshold(deps Dependencies) gin.HandlerFunc {
 
 // validateThreshold checks semantic constraints on threshold rules.
 func validateThreshold(t *store.Threshold) error {
+	if t.Unit != "pps" && t.Unit != "bps" && t.Unit != "pct" {
+		return fmt.Errorf("unit must be one of: pps, bps, pct; got %q", t.Unit)
+	}
+	if t.Comparison != "over" && t.Comparison != "under" {
+		return fmt.Errorf("comparison must be one of: over, under; got %q", t.Comparison)
+	}
+	if t.Domain != "internal_ip" && t.Domain != "subnet" {
+		return fmt.Errorf("domain must be one of: internal_ip, subnet; got %q", t.Domain)
+	}
+	if (t.Unit == "pps" || t.Unit == "bps") && t.Value < 0 {
+		return fmt.Errorf("value must be between 0 and 9223372036854775807, got %d", t.Value)
+	}
 	// Decoder: must be a valid decoder family (dynamic from shared/decoder.Names + "ip").
 	if t.Decoder != "" && !validThresholdDecoders()[t.Decoder] {
 		return fmt.Errorf("decoder must be one of: %s; got %q", validThresholdDecoderList(), t.Decoder)
@@ -173,7 +195,7 @@ func deleteThreshold(deps Dependencies) gin.HandlerFunc {
 		id, _ := strconv.Atoi(c.Param("id"))
 		old, _ := deps.Store.Thresholds().Get(c, id)
 		if err := deps.Store.Thresholds().Delete(c, id); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "threshold", strconv.Itoa(id), "delete", makeDiff(old, nil))

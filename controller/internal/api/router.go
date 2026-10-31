@@ -2,10 +2,14 @@
 package api
 
 import (
+	"errors"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/littlewolf9527/xsight/controller/internal/action"
@@ -44,7 +48,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	r.Use(gzip.Gzip(gzip.DefaultCompression))
 
 	// Public endpoints
-	r.POST("/api/login", loginHandler(deps))
+	lim := newLoginLimiter(time.Now, loginMaxKeys)
+	r.POST("/api/login", loginHandler(deps, lim))
 	// Prometheus scrape endpoint — unauthenticated by convention (rely on
 	// network-level isolation, same as kube-apiserver/etcd/etc.). Uses the
 	// default registry which metrics.Register() populates at startup, so
@@ -53,7 +58,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	// API group — requires auth
 	api := r.Group("/api")
-	api.Use(authMiddleware(deps.APIKey, deps.JWTSecret))
+	api.Use(authMiddleware(deps.APIKey, deps.JWTSecret, deps.Store), requireAdminForWrites())
 	{
 		// Users
 		api.GET("/users", listUsers(deps))
@@ -115,9 +120,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 		// Webhooks
 		api.GET("/webhooks", listWebhooks(deps))
-		api.POST("/webhooks", createWebhook(deps))
-		api.PUT("/webhooks/:id", updateWebhook(deps))
-		api.DELETE("/webhooks/:id", deleteWebhook(deps))
+		api.POST("/webhooks", retiredLegacyWebhookWrite(deps))
+		api.PUT("/webhooks/:id", retiredLegacyWebhookWrite(deps))
+		api.DELETE("/webhooks/:id", retiredLegacyWebhookWrite(deps))
 
 		// Stats summary (lightweight, for Dashboard)
 		api.GET("/stats/summary", statsSummary(deps))
@@ -135,6 +140,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 		// Attacks
 		api.GET("/attacks", listAttacks(deps))
 		api.GET("/attacks/active", listActiveAttacks(deps))
+		api.GET("/attacks/mitigation-brief", getMitigationBrief(deps))
 		api.GET("/attacks/:id", getAttack(deps))
 		api.GET("/attacks/:id/action-log", getAttackActionLog(deps))
 		api.GET("/attacks/:id/sensor-logs", getAttackSensorLogs(deps))
@@ -144,6 +150,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 		// Active response actions (BGP routing + xDrop filtering view)
 		api.GET("/active-actions/bgp", listActiveBGPRoutes(deps))
 		api.GET("/active-actions/xdrop", listActiveXDropRules(deps))
+		api.GET("/active-actions/xdrop/delivery", queryXDropDelivery(deps))
 		api.GET("/active-actions/timeline", getArtifactTimeline(deps))
 		api.POST("/active-actions/force-remove", forceRemoveAction(deps))
 		// v1.2 PR-5: operator endpoints for BGP orphan announcements.
@@ -232,4 +239,36 @@ func created(c *gin.Context, data any) {
 
 func errResponse(c *gin.Context, code int, msg string) {
 	c.JSON(code, gin.H{"error": msg})
+}
+
+// storeFailure maps known input errors and keeps all other database details in logs.
+func storeFailure(c *gin.Context, prefix string, err error) (int, string) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23505":
+			return http.StatusConflict, prefix + "already exists"
+		case "23503":
+			if c.Request.Method == http.MethodDelete {
+				return http.StatusConflict, prefix + "in use"
+			}
+			return http.StatusBadRequest, prefix + "referenced object not found"
+		case "23514", "23502":
+			return http.StatusBadRequest, prefix + "invalid value"
+		case "22P02", "2201X":
+			return http.StatusBadRequest, prefix + "invalid input"
+		}
+	}
+	return http.StatusInternalServerError, storeInternal(c, prefix, err)
+}
+
+// storeInternal preserves diagnostic details in the log, with a fixed HTTP message.
+func storeInternal(c *gin.Context, prefix string, err error) string {
+	log.Printf("ERROR api: %s %s: %s%v", c.Request.Method, c.FullPath(), prefix, err)
+	return prefix + "database error"
+}
+
+func dbError(c *gin.Context, prefix string, err error) {
+	status, msg := storeFailure(c, prefix, err)
+	errResponse(c, status, msg)
 }

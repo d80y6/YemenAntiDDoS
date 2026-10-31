@@ -15,23 +15,29 @@ Packet in (mirror/ERSPAN)
   -> Parse Ethernet/IP/Transport headers
   -> Extract 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol)
   -> Classify decoder (TCP / TCP_SYN / UDP / ICMP / FRAG / ...)
-  -> LPM trie lookup: match dst_ip against watch_prefixes
-  -> Update ip_stats map (per-IP counters)
-  -> Update prefix_stats map (per-prefix counters)
-  -> Update global_stats map (total counters)
-  -> Probabilistic sample -> perf ring buffer (sample_ring)
-  -> XDP_DROP (mirror port, no forwarding)
+  -> LPM trie lookup (watch_trie_a/b): match dst_ip (inbound) / src_ip (outbound)
+  -> Update ip_stats_a/b or src_stats_a/b (per-IP counters)
+  -> Update prefix_stats_map / src_prefix_stats_map (per-prefix counters)
+  -> Update global_stats (total counters)
+  -> Probabilistic sample -> ring buffer (samples)
+  -> XDP_DROP (mirror port, no forwarding; ARP/NDP exception below)
 ```
+
+ARP and IPv6 NDP (ICMPv6 133–137, including a single VLAN tag) use `XDP_PASS`.
 
 **BPF Maps:**
 
 | Map | Type | Description |
 |-----|------|-------------|
-| `ip_stats` | Per-CPU Hash | Per-destination-IP counters: pkt_count, byte_count, decoder_counts[16], decoder_byte_counts[16], size buckets |
-| `prefix_stats` | Per-CPU Hash | Per-prefix aggregate counters: pkt_count, byte_count, decoder_counts[16], decoder_byte_counts[16], active_ips, overflow_count |
-| `global_stats` | Per-CPU Array | Total counters: total_pkts, total_bytes, matched_pkts, matched_bytes, sample_drops, per-decoder breakdown |
-| `watch_prefixes` | LPM Trie | Prefix list pushed from Controller. Used for dst_ip match in the fast path |
-| `sample_ring` | Perf Event Array | Ring buffer for sampled packet headers sent to userspace |
+| `global_stats` | Array | Total counters: total_pkts, total_bytes, matched_pkts, matched_bytes, per-decoder breakdown (inbound and outbound) |
+| `watch_trie_a` / `watch_trie_b` | LPM Trie | Prefix list pushed from the Controller. An A/B pair: a new list is written to the inactive side and then switched in. Used for the dst_ip / src_ip match in the fast path |
+| `prefix_stats_map` | Hash | Per-prefix inbound counters: pkt_count, byte_count, decoder counts, active_ips, overflow_count |
+| `ip_stats_a` / `ip_stats_b` | Hash | Per-destination-IP inbound counters (size set by `bpf.max_entries`). An A/B pair that switches together with the watch trie |
+| `src_stats_a` / `src_stats_b` | Hash | Per-source-IP outbound counters, A/B pair like `ip_stats_*` |
+| `src_prefix_stats_map` | Hash | Per-prefix outbound counters |
+| `active_slot` | Array | Which A/B set (trie and IP maps) is active |
+| `xsight_config` | Array | Runtime settings written by userspace (e.g. sample rate) |
+| `samples` | Ring buffer (`BPF_MAP_TYPE_RINGBUF`) | Sampled packet headers sent to userspace |
 
 ### Flow Mode
 
@@ -44,31 +50,41 @@ Flow record in (sFlow/NetFlow/IPFIX over UDP)
   -> goflow2 auto-detect protocol + decode
   -> Extract 5-tuple + TCP flags from FlowMessage
   -> Classify decoder (TCP / TCP_SYN / UDP / ICMP / FRAG / ...)
-  -> Prefix trie lookup: match dst_ip against watch_prefixes
+  -> Prefix trie lookup: match dst_ip (inbound) / src_ip (outbound) against watch_prefixes
   -> Aggregate into per-IP + per-prefix stats (RecordTable)
   -> Every 1s: flush stats -> gRPC StatsReport
 ```
 
-Flow listeners and sources (exporter devices) are configured via the Controller Web UI, not the local config file.
+Configure flow listeners and sources as an admin on the Controller Web UI’s **Flow** page (DETECTION → Flow; title: Flow configuration), using Add Listener and Add source, rather than in the local config file.
 
 ## gRPC Streams
 
-The Node is a **gRPC client** that connects to the Controller. It does not expose any REST API or listening port (except optional pprof). Four streams are maintained:
+The Node is a **gRPC client** that connects to the Controller. It exposes no REST API; besides optional pprof, Flow mode binds UDP flow-listener ports configured by the controller. Three streams are used; `CriticalEventStream` is reserved in the protocol but not opened:
 
 | Stream | Direction | Interval | Purpose |
 |--------|-----------|----------|---------|
 | `StatsStream` | Node -> Controller | 1s | Aggregated per-IP/prefix stats, health metrics, top flows |
 | `SampleStream` | Node -> Controller | Batched | Raw packet header samples from BPF ring buffer (XDP mode only) |
-| `CriticalEventStream` | Node -> Controller | Event-driven | Urgent alerts (BPF map full, interface down, hard threshold exceeded) |
-| `ControlStream` | Bidirectional | On change | Controller pushes WatchConfig (prefixes, thresholds, flow listeners); Node ACKs with delivery_version |
+| `CriticalEventStream` | Node -> Controller | — | Reserved, not used. The Node never opens it |
+| `ControlStream` | Bidirectional | On change | Controller pushes WatchConfig (prefixes, flow listeners; hard thresholds are stored but unused); Node ACKs with delivery_version |
 
 See [API.md](API.md) for full gRPC message type documentation.
 
+**Security:** the gRPC link is plaintext and the Controller accepts statistics by the `node_id` in each message after that node's first successful handshake, so run Nodes and the Controller only on a trusted network or inside an encrypted tunnel. See [API.md — Security Considerations](API.md#security-considerations).
+
 ## Build
 
-### XDP Mode
+The Node is built for **Linux x86_64** in both modes (bpf2go runs with `-target amd64`). Requirements:
 
-Requires Linux with `clang`, `llvm-strip`, and kernel headers. Cannot be built on macOS.
+- Linux 5.18+ to run XDP mode (the XDP program uses `bpf_xdp_load_bytes`); verified on Debian 13 / kernel 6.12
+- Go 1.24+, `clang`, `llvm-strip`, `bpftool` and libbpf headers (e.g. `libbpf-dev`)
+- `bpf/vmlinux.h`, which is not in the repository. Generate it on a host with BTF:
+
+```bash
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+```
+
+Then:
 
 ```bash
 # Generate BPF Go bindings (bpf2go)
@@ -83,21 +99,43 @@ Or use the Makefile:
 ```bash
 make all        # generate + build
 make generate   # bpf2go only
-make build      # go build only
+make build      # generate + go build
 make clean      # remove artifacts
 ```
 
 ### Flow Mode
 
-Flow mode does not use BPF, so it can be built with just Go (cross-compile from macOS is fine):
-
-```bash
-go build -o bin/xsight-node .
-```
-
-The pre-generated BPF stubs (`internal/bpf/stub_notlinux.go`) allow building on non-Linux platforms.
+Flow mode uses the same binary, and a Linux build always compiles the BPF loader, so building a Linux binary for flow mode also needs `go generate` and the toolchain above, including when cross-compiling from macOS. Only a native non-Linux build (for example on macOS for development) uses the stub `internal/bpf/stub_notlinux.go` and skips BPF generation.
 
 ## Configuration
+
+All XDP interfaces in one node must have identical `mode`, `sample_bytes`, and
+`upstream_sample_rate` after defaults are applied. Heterogeneous settings are
+rejected at startup and reload; use separate nodes for different settings.
+`sample_bytes` may be omitted and defaults to 256.
+
+In XDP mode, SIGHUP reloads `sample_bytes` and `upstream_sample_rate`. The new
+upstream rate is bound to subsequent collection ticks; queued reports keep their
+own rate. Sample batches follow the latest Stats report processed by the reporter.
+Changing interface mode, the interface set or names, collection mode (`xdp`/`flow`),
+`node_id`, the controller address, `parse_workers`, `bpf.max_entries`,
+`auth.node_api_key`, or `pprof` requires a restart. SIGHUP mode changes are
+rejected. Interface set/name changes are not applied: appending a homogeneous
+interface can report reload success without attaching XDP to that interface.
+
+Flow-mode nodes terminate immediately on SIGHUP; they do not support this reload
+path. The supplied systemd unit uses `Restart=on-failure`, which does not restart
+the node after SIGHUP termination. Use an explicit service restart for flow-mode
+configuration changes.
+
+For ERSPAN Type II samples in `erspan` mode, attribution follows the first IP
+layer after decapsulation, including inner IPv6 under outer IPv4. Type I and
+Type III sample attribution is unverified. Collection mode remains fixed for the
+process lifetime.
+
+Before the first start, register the node on the Controller (Web UI **Nodes → Add Node** or `POST /api/nodes`; select Mode = Flow for Flow nodes) with its `node_id` and an API key. `auth.node_api_key` must be that same key; it is not the Controller's REST `auth.api_key`. Unregistered nodes are rejected with `node not found`, a wrong key with `invalid api_key`.
+
+In XDP mode, hosts with more than 32 CPU cores must explicitly set `parse_workers` (1–16).
 
 Copy `config.example.yaml` and edit:
 
@@ -119,7 +157,7 @@ controller:
   address: "controller:50051"
 
 auth:
-  node_api_key: "CHANGE_ME"    # openssl rand -hex 32
+  node_api_key: "CHANGE_ME"    # the key registered for this node_id on the Controller
 
 # Optional tuning (xdp mode only)
 # parse_workers: 4             # default = NumCPU/2, range 1-16
@@ -138,12 +176,12 @@ auth:
   node_api_key: "CHANGE_ME"
 ```
 
-In flow mode, `interfaces` and `bpf` sections are not needed. Flow listeners and sources are managed through the Controller Web UI and pushed to the Node via `ControlStream`.
+In flow mode, `interfaces` and `bpf` sections are not needed. Admins manage flow listeners and sources on the Flow page (DETECTION → Flow), and `ControlStream` pushes them to the Node.
 
 ## Permissions
 
 - **XDP mode** requires root or `CAP_BPF` + `CAP_NET_ADMIN` capabilities. The BPF program is attached to the network interface.
-- **Flow mode** needs permission to bind UDP ports (typically no special capabilities unless binding to privileged ports < 1024).
+- **Flow mode** needs permission to bind UDP ports (typically no special capabilities unless binding to privileged ports < 1024). Note that `scripts/node.sh` refuses to start without root in either mode; run the binary directly to avoid that.
 
 ## Directory Structure
 
@@ -166,9 +204,9 @@ node/
       config.go               # Config struct, Load(), validate()
       snapshot.go             # WatchConfig snapshot persistence (survive restarts)
     collector/                # Periodic BPF map reader (XDP mode)
-      collector.go            # Reads ip_stats/prefix_stats/global_stats every 1s
+      collector.go            # Reads the active stats maps and global_stats every 1s
     sampler/                  # Packet sample pipeline (XDP mode)
-      sampler.go              # Perf ring buffer reader
+      sampler.go              # BPF ring buffer reader
       batcher.go              # Batch samples for gRPC SampleStream
       packet.go               # Packet header parser (5-tuple extraction)
       flowtable.go            # Top-N flow tracking per tick
@@ -180,7 +218,7 @@ node/
       record.go               # Flow record types
       recordtable.go          # Per-IP record table for aggregation
       prefixtrie.go           # In-memory prefix trie for watch_prefixes matching
-    reporter/                 # gRPC client: handshake + 4 streams
+    reporter/                 # gRPC client: handshake + streams
       reporter.go             # Stream lifecycle, reconnect, backoff
       convert.go              # Collector Report -> protobuf StatsReport conversion
     watchdog/                 # Health monitoring

@@ -20,15 +20,76 @@ import (
 
 type bgpAnnouncementRepo struct{ pool *pgxpool.Pool }
 
+func (r *bgpAnnouncementRepo) ReconcileAttachments(ctx context.Context, id int, ended []int, detach bool) (store.BGPReconcileResult, error) {
+	var result store.BGPReconcileResult
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status,refcount,gen FROM bgp_announcements WHERE id=$1 FOR UPDATE`, id).Scan(&status, &result.RefcountBefore, &result.Gen); err != nil {
+			return err
+		}
+		result.RefcountAfter = result.RefcountBefore
+		if status != "active" && (detach || status != "announcing") {
+			result.Skipped = "status=" + status
+			return nil
+		}
+		var attached int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM bgp_announcement_attacks WHERE announcement_id=$1 AND detached_at IS NULL`, id).Scan(&attached); err != nil {
+			return err
+		}
+		if !detach && result.RefcountBefore >= attached {
+			result.Skipped = "consistent"
+			return nil
+		}
+		if detach && result.RefcountBefore > attached {
+			result.Skipped = "refcount_exceeds_attachments"
+			return nil
+		}
+		if detach {
+			rows, err := tx.Query(ctx, `UPDATE bgp_announcement_attacks SET detached_at=now() WHERE announcement_id=$1 AND detached_at IS NULL AND attack_id=ANY($2) RETURNING attack_id`, id, ended)
+			if err != nil {
+				return err
+			}
+			result.Detached, err = pgx.CollectRows(rows, pgx.RowTo[int])
+			if err != nil {
+				return err
+			}
+		}
+		result.RefcountAfter = attached - len(result.Detached)
+		if result.RefcountAfter == result.RefcountBefore && len(result.Detached) == 0 {
+			result.Skipped = "consistent"
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `UPDATE bgp_announcements SET refcount=$2 WHERE id=$1`, id, result.RefcountAfter); err != nil {
+			return err
+		}
+		if detach && result.RefcountAfter == 0 {
+			tag, err := tx.Exec(ctx, `UPDATE bgp_announcements SET status='withdrawing' WHERE id=$1 AND status='active'`, id)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return fmt.Errorf("reconcile announcement %d: withdrawing affected %d rows", id, tag.RowsAffected())
+			}
+			result.NeedWithdraw = true
+		}
+		if err := recomputeDelayMinutes(ctx, tx, id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO bgp_announcement_events(announcement_id,event_type,detail) VALUES($1,'attack_detached',$2)`, id, fmt.Sprintf("reconcile detached=%v refcount=%d->%d", result.Detached, result.RefcountBefore, result.RefcountAfter))
+		return err
+	})
+	return result, err
+}
+
 const bgpAnnouncementCols = `id, prefix, route_map, connector_id, first_action_id,
 	status, refcount, announced_at, delay_started_at, delay_minutes, withdrawn_at,
-	COALESCE(error_message, ''), created_at`
+	COALESCE(error_message, ''), created_at, gen`
 
 func (r *bgpAnnouncementRepo) scanOne(row pgx.Row) (*store.BGPAnnouncement, error) {
 	var a store.BGPAnnouncement
 	err := row.Scan(&a.ID, &a.Prefix, &a.RouteMap, &a.ConnectorID, &a.FirstActionID,
 		&a.Status, &a.Refcount, &a.AnnouncedAt, &a.DelayStartedAt, &a.DelayMinutes,
-		&a.WithdrawnAt, &a.ErrorMessage, &a.CreatedAt)
+		&a.WithdrawnAt, &a.ErrorMessage, &a.CreatedAt, &a.Gen)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -61,16 +122,16 @@ func (r *bgpAnnouncementRepo) Attach(ctx context.Context, p store.BGPAttachParam
 		// Lock the existing row (if any) — SELECT ... FOR UPDATE serializes
 		// concurrent Attach/Detach on the same business key.
 		var (
-			annID     int
-			status    string
-			refcount  int
-			existing  bool
+			annID    int
+			status   string
+			refcount int
+			existing bool
 		)
 		err := tx.QueryRow(ctx,
-			`SELECT id, status, refcount FROM bgp_announcements
+			`SELECT id, status, refcount, gen FROM bgp_announcements
 			 WHERE prefix=$1 AND route_map=$2 AND connector_id=$3
 			 FOR UPDATE`,
-			p.Prefix, p.RouteMap, p.ConnectorID).Scan(&annID, &status, &refcount)
+			p.Prefix, p.RouteMap, p.ConnectorID).Scan(&annID, &status, &refcount, &result.Gen)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("lock announcement: %w", err)
 		}
@@ -107,13 +168,22 @@ func (r *bgpAnnouncementRepo) Attach(ctx context.Context, p store.BGPAttachParam
 			return nil
 		}
 
+		var increment int
+		if status == "active" || status == "announcing" || status == "delayed" {
+			if err := tx.QueryRow(ctx, `SELECT CASE WHEN EXISTS (
+		 SELECT 1 FROM bgp_announcement_attacks WHERE announcement_id=$1 AND attack_id=$2 AND detached_at IS NULL
+		) THEN 0 ELSE 1 END`, annID, p.AttackID).Scan(&increment); err != nil {
+				return err
+			}
+		}
+
 		// Existing row — decide whether to reuse or resurrect.
 		switch status {
 		case "announcing", "active":
 			// Normal reuse: refcount++, no vtysh
 			if _, err := tx.Exec(ctx,
-				`UPDATE bgp_announcements SET refcount = refcount + 1 WHERE id = $1`,
-				annID); err != nil {
+				`UPDATE bgp_announcements SET refcount = refcount + $2 WHERE id = $1`,
+				annID, increment); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx,
@@ -133,10 +203,10 @@ func (r *bgpAnnouncementRepo) Attach(ctx context.Context, p store.BGPAttachParam
 			if _, err := tx.Exec(ctx,
 				`INSERT INTO bgp_announcement_events (announcement_id, event_type, attack_id, detail)
 				 VALUES ($1, 'attack_attached', $2, $3)`,
-				annID, p.AttackID, fmt.Sprintf("shared (refcount=%d)", refcount+1)); err != nil {
+				annID, p.AttackID, fmt.Sprintf("shared (refcount=%d)", refcount+increment)); err != nil {
 				return err
 			}
-			result = store.BGPAttachResult{AnnouncementID: annID, NeedAnnounce: false}
+			result = store.BGPAttachResult{AnnouncementID: annID, Gen: result.Gen, NeedAnnounce: false}
 			return nil
 
 		case "delayed":
@@ -144,9 +214,9 @@ func (r *bgpAnnouncementRepo) Attach(ctx context.Context, p store.BGPAttachParam
 			// refcount was 0 in delayed; now ++ to 1.
 			if _, err := tx.Exec(ctx,
 				`UPDATE bgp_announcements
-				 SET refcount = refcount + 1, status = 'active',
+				 SET refcount = refcount + $2, status = 'active',
 				     delay_started_at = NULL
-				 WHERE id = $1`, annID); err != nil {
+				 WHERE id = $1`, annID, increment); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx,
@@ -169,20 +239,29 @@ func (r *bgpAnnouncementRepo) Attach(ctx context.Context, p store.BGPAttachParam
 				annID, p.AttackID); err != nil {
 				return err
 			}
-			result = store.BGPAttachResult{AnnouncementID: annID, NeedAnnounce: false}
+			result = store.BGPAttachResult{AnnouncementID: annID, Gen: result.Gen, NeedAnnounce: false}
 			return nil
 
 		case "withdrawn", "failed":
 			// Row exists but the route isn't in FRR any more — treat as fresh announce.
 			// Reset delay_minutes so the new cycle's sticky MAX starts from the
 			// incoming attack's delay (previous cycle's peak is no longer relevant).
+			if _, err := tx.Exec(ctx, `UPDATE bgp_announcement_attacks SET detached_at=now()
+			 WHERE announcement_id=$1 AND attack_id<>$2 AND detached_at IS NULL
+			 AND NOT EXISTS(SELECT 1 FROM attacks t WHERE t.id=bgp_announcement_attacks.attack_id AND t.ended_at IS NULL)`, annID, p.AttackID); err != nil {
+				return err
+			}
+			var liveResidual int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM bgp_announcement_attacks WHERE announcement_id=$1 AND attack_id<>$2 AND detached_at IS NULL`, annID, p.AttackID).Scan(&liveResidual); err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx,
 				`UPDATE bgp_announcements
-				 SET status = 'announcing', refcount = 1,
+				 SET status = 'announcing', refcount = $2, gen = gen + 1,
 				     announced_at = now(), withdrawn_at = NULL,
 				     delay_started_at = NULL, error_message = '',
 				     delay_minutes = 0
-				 WHERE id = $1`, annID); err != nil {
+				 WHERE id = $1`, annID, 1+liveResidual); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx,
@@ -205,7 +284,7 @@ func (r *bgpAnnouncementRepo) Attach(ctx context.Context, p store.BGPAttachParam
 				annID, p.AttackID, status); err != nil {
 				return err
 			}
-			result = store.BGPAttachResult{AnnouncementID: annID, NeedAnnounce: true}
+			result = store.BGPAttachResult{AnnouncementID: annID, Gen: result.Gen + 1, NeedAnnounce: true}
 			return nil
 
 		case "withdrawing", "orphan", "dismissed", "dismissed_on_upgrade":
@@ -226,10 +305,10 @@ func (r *bgpAnnouncementRepo) Detach(ctx context.Context, attackID int, prefix, 
 		var annID int
 		var status string
 		err := tx.QueryRow(ctx,
-			`SELECT id, status FROM bgp_announcements
+			`SELECT id, status, gen FROM bgp_announcements
 			 WHERE prefix=$1 AND route_map=$2 AND connector_id=$3
 			 FOR UPDATE`,
-			prefix, routeMap, connectorID).Scan(&annID, &status)
+			prefix, routeMap, connectorID).Scan(&annID, &status, &result.Gen)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				// No announcement — nothing to detach. Silently succeed (idempotent).
@@ -354,56 +433,109 @@ func recomputeDelayMinutes(ctx context.Context, tx pgx.Tx, annID int) error {
 	return nil
 }
 
-func (r *bgpAnnouncementRepo) MarkAnnounced(ctx context.Context, id int) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE bgp_announcements SET status='active' WHERE id=$1 AND status='announcing'`, id)
+func (r *bgpAnnouncementRepo) MarkAnnounced(ctx context.Context, id int, gen int) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE bgp_announcements SET status='active' WHERE id=$1 AND gen=$2 AND status='announcing'`, id, gen)
 	if err != nil {
 		return fmt.Errorf("mark announced %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrStaleAnnouncement
 	}
 	r.appendEventIgnore(ctx, id, store.BGPEventAnnounced, nil, "vtysh announce succeeded")
 	return nil
 }
 
-func (r *bgpAnnouncementRepo) MarkWithdrawing(ctx context.Context, id int) (bool, error) {
+func (r *bgpAnnouncementRepo) MarkWithdrawing(ctx context.Context, id int, gen int) (bool, error) {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE bgp_announcements SET status='withdrawing'
-		 WHERE id=$1 AND status IN ('active','delayed')`, id)
+		 WHERE id=$1 AND gen=$2 AND status='delayed'`, id, gen)
 	if err != nil {
 		return false, fmt.Errorf("mark withdrawing %d: %w", id, err)
 	}
 	return tag.RowsAffected() > 0, nil
 }
 
-func (r *bgpAnnouncementRepo) MarkWithdrawn(ctx context.Context, id int) error {
-	_, err := r.pool.Exec(ctx,
+func (r *bgpAnnouncementRepo) ClaimWithdrawing(ctx context.Context, id, gen int) (int, bool, error) {
+	var newGen int
+	err := r.pool.QueryRow(ctx,
+		`UPDATE bgp_announcements SET gen=gen+1 WHERE id=$1 AND gen=$2 AND status='withdrawing' RETURNING gen`,
+		id, gen).Scan(&newGen)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return newGen, true, nil
+}
+
+func (r *bgpAnnouncementRepo) ClaimFailedWithdraw(ctx context.Context, id, gen int) (int, bool, error) {
+	var newGen int
+	err := r.pool.QueryRow(ctx,
+		`UPDATE bgp_announcements SET status='withdrawing', gen=gen+1
+		 WHERE id=$1 AND gen=$2 AND status='failed' AND refcount=0
+		 AND NOT EXISTS (SELECT 1 FROM bgp_announcement_attacks WHERE announcement_id=$1 AND detached_at IS NULL)
+		 RETURNING gen`, id, gen).Scan(&newGen)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	r.appendEventIgnore(ctx, id, "withdraw_retry_claimed", nil, fmt.Sprintf("generation %d -> %d", gen, newGen))
+	return newGen, true, nil
+}
+
+func (r *bgpAnnouncementRepo) CountLiveByConnector(ctx context.Context, connectorID int) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM bgp_announcements WHERE connector_id=$1
+		 AND status IN ('announcing','active','delayed','withdrawing','failed','orphan')`,
+		connectorID).Scan(&count)
+	return count, err
+}
+
+func (r *bgpAnnouncementRepo) MarkWithdrawn(ctx context.Context, id int, gen int) error {
+	tag, err := r.pool.Exec(ctx,
 		`UPDATE bgp_announcements SET status='withdrawn', withdrawn_at=now()
-		 WHERE id=$1`, id)
+		 WHERE id=$1 AND gen=$2 AND status IN ('withdrawing','delayed','failed')`, id, gen)
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrStaleAnnouncement
 	}
 	r.appendEventIgnore(ctx, id, store.BGPEventWithdrawn, nil, "vtysh withdraw succeeded")
 	return nil
 }
 
-// MarkFailedAnnounce compensates an announce failure. If refcount=1 (no
-// concurrent attach raced in), safe to delete the row. Otherwise set status
-// =failed, preserving the attack attachments for operator inspection.
-func (r *bgpAnnouncementRepo) MarkFailedAnnounce(ctx context.Context, id int, errMsg string) error {
+// MarkFailedAnnounce compensates failure in the same unfinished generation.
+// Only a never-recycled announcing row (gen = 0, refcount = 1) is deleted;
+// recycled rows (gen > 0) and other hits become failed.
+func (r *bgpAnnouncementRepo) MarkFailedAnnounce(ctx context.Context, id int, gen int, errMsg string) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var refcount int
+		var refcount, currentGen int
+		var status string
 		if err := tx.QueryRow(ctx,
-			`SELECT refcount FROM bgp_announcements WHERE id=$1 FOR UPDATE`, id).Scan(&refcount); err != nil {
+			`SELECT refcount,gen,status FROM bgp_announcements WHERE id=$1 FOR UPDATE`, id).Scan(&refcount, &currentGen, &status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return store.ErrStaleAnnouncement
+			}
 			return err
 		}
-		if refcount == 1 {
-			// Safe to DELETE — no concurrent attach.
+		if currentGen != gen || (status != "announcing" && status != "active" && status != "delayed" && status != "withdrawing") {
+			return store.ErrStaleAnnouncement
+		}
+		if status == "announcing" && refcount == 1 && currentGen == 0 {
+			// First generation, single attachment: safe to delete after its only attempt.
 			if _, err := tx.Exec(ctx, `DELETE FROM bgp_announcements WHERE id=$1`, id); err != nil {
 				return err
 			}
 			// Note: CASCADE deletes bgp_announcement_attacks and events rows.
 			return nil
 		}
-		// Concurrent attach raced in; preserve row with status=failed.
+		// Preserve recycled or shared rows and their operational history.
 		if _, err := tx.Exec(ctx,
 			`UPDATE bgp_announcements
 			 SET status='failed', error_message=$2
@@ -419,35 +551,49 @@ func (r *bgpAnnouncementRepo) MarkFailedAnnounce(ctx context.Context, id int, er
 	})
 }
 
-func (r *bgpAnnouncementRepo) MarkFailedWithdraw(ctx context.Context, id int, errMsg string) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE bgp_announcements SET status='failed', error_message=$2 WHERE id=$1`,
-		id, errMsg)
+func (r *bgpAnnouncementRepo) MarkFailedWithdraw(ctx context.Context, id int, gen int, errMsg string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE bgp_announcements SET status='failed', error_message=$2 WHERE id=$1 AND gen=$3 AND status IN ('withdrawing','delayed','failed')`,
+		id, errMsg, gen)
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrStaleAnnouncement
 	}
 	r.appendEventIgnore(ctx, id, store.BGPEventWithdrawFailed, nil, errMsg)
 	return nil
 }
 
-func (r *bgpAnnouncementRepo) ForceWithdraw(ctx context.Context, id int) error {
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+func (r *bgpAnnouncementRepo) ForceWithdraw(ctx context.Context, id int) ([]store.BGPAnnouncementAttack, int, error) {
+	var detached []store.BGPAnnouncementAttack
+	var gen int
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		// Lock + transition to withdrawing, detach all attacks.
 		var status string
 		if err := tx.QueryRow(ctx,
-			`SELECT status FROM bgp_announcements WHERE id=$1 FOR UPDATE`, id).Scan(&status); err != nil {
+			`SELECT status,gen FROM bgp_announcements WHERE id=$1 FOR UPDATE`, id).Scan(&status, &gen); err != nil {
 			return err
 		}
 		if status == "withdrawn" || status == "dismissed" {
 			return nil // already done
 		}
 		if _, err := tx.Exec(ctx,
-			`UPDATE bgp_announcements SET status='withdrawing', refcount=0 WHERE id=$1`, id); err != nil {
+			`UPDATE bgp_announcements SET status='withdrawing', refcount=0, gen=gen+1 WHERE id=$1`, id); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE bgp_announcement_attacks SET detached_at=now()
-			 WHERE announcement_id=$1 AND detached_at IS NULL`, id); err != nil {
+		gen++
+		rows, err := tx.Query(ctx, `UPDATE bgp_announcement_attacks SET detached_at=now()
+		 WHERE announcement_id=$1 AND detached_at IS NULL RETURNING attack_id, action_id`, id)
+		if err != nil {
+			return err
+		}
+		detached, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (store.BGPAnnouncementAttack, error) {
+			var a store.BGPAnnouncementAttack
+			err := row.Scan(&a.AttackID, &a.ActionID)
+			return a, err
+		})
+		if err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx,
@@ -457,6 +603,10 @@ func (r *bgpAnnouncementRepo) ForceWithdraw(ctx context.Context, id int) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return detached, gen, nil
 }
 
 func (r *bgpAnnouncementRepo) Dismiss(ctx context.Context, id int) error {
@@ -541,7 +691,7 @@ func (r *bgpAnnouncementRepo) UpsertOrphan(ctx context.Context, prefix, routeMap
 		INSERT INTO bgp_announcements (prefix, route_map, connector_id, status, refcount)
 		VALUES ($1, $2, $3, $4, 0)
 		ON CONFLICT (prefix, route_map, connector_id) DO UPDATE
-		  SET status = EXCLUDED.status
+		  SET status = EXCLUDED.status, gen = bgp_announcements.gen + 1
 		  WHERE bgp_announcements.status = 'withdrawn'
 		RETURNING id
 	`, prefix, routeMap, connectorID, status).Scan(&id)
@@ -583,7 +733,7 @@ func (r *bgpAnnouncementRepo) list(ctx context.Context, where string, args ...an
 		var a store.BGPAnnouncement
 		if err := rows.Scan(&a.ID, &a.Prefix, &a.RouteMap, &a.ConnectorID, &a.FirstActionID,
 			&a.Status, &a.Refcount, &a.AnnouncedAt, &a.DelayStartedAt, &a.DelayMinutes,
-			&a.WithdrawnAt, &a.ErrorMessage, &a.CreatedAt); err != nil {
+			&a.WithdrawnAt, &a.ErrorMessage, &a.CreatedAt, &a.Gen); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

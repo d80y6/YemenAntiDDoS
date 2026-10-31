@@ -67,15 +67,6 @@ node/cmd/
 *.log
 logs/
 
-# Vite template defaults (not used)
-controller/web/public/favicon.svg
-controller/web/public/icons.svg
-controller/web/src/assets/hero.png
-controller/web/src/assets/vite.svg
-controller/web/src/assets/vue.svg
-controller/web/src/components/HelloWorld.vue
-controller/web/src/style.css
-
 # Test artifacts (temporary scripts, not test code)
 controller/internal/tests/test-result/
 
@@ -86,3 +77,6 @@ check-oss-ready.sh
 
 # Internal documentation (not for distribution)
 internal_docs/
+
+# Session memory (disk-only, like internal_docs)
+.memory/

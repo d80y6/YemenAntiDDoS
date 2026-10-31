@@ -28,13 +28,31 @@ type PacketSample struct {
 	ICMPCode       uint32
 }
 
+// greDecoder records each GRE sequence flag before a deeper GRE layer can
+// overwrite the shared decoding struct. Entries match successfully decoded GREs.
+type greDecoder struct {
+	layers.GRE
+	sequenceFlags []bool
+}
+
+func (g *greDecoder) DecodeFromBytes(data []byte, feedback gopacket.DecodeFeedback) error {
+	if err := g.GRE.DecodeFromBytes(data, feedback); err != nil {
+		return err
+	}
+	g.sequenceFlags = append(g.sequenceFlags, g.SeqPresent)
+	return nil
+}
+
 // PacketParser is a reusable, zero-allocation packet decoder.
 // It pre-allocates all layer structs and reuses them across calls.
 // Handles both direct (mirror) and ERSPAN-encapsulated packets:
 //   - Mirror: Ethernet → IP → TCP/UDP/ICMP
 //   - ERSPAN Type II: Ethernet → IP → GRE → ERSPAN → inner Ethernet → inner IP → L4
-//     For ERSPAN, the layer structs are overwritten by the inner layers,
-//     so the final state naturally reflects the innermost (real) traffic.
+//
+// Parse preserves the legacy IPv4-first attribution. ParseMode in ERSPAN mode
+// selects IPv6 when the first IP layer after ERSPAN Type II is IPv6.
+// Type II requires the immediately preceding GRE's sequence flag, as in BPF.
+// Repeated layers of the same family still overwrite their shared layer struct.
 type PacketParser struct {
 	parser  *gopacket.DecodingLayerParser
 	decoded []gopacket.LayerType
@@ -48,7 +66,7 @@ type PacketParser struct {
 	udp     layers.UDP
 	icmpv4  layers.ICMPv4
 	icmpv6  layers.ICMPv6
-	gre     layers.GRE
+	gre     greDecoder
 	erspan2 layers.ERSPANII
 }
 
@@ -64,6 +82,7 @@ type PacketParser struct {
 func NewPacketParser() *PacketParser {
 	p := &PacketParser{
 		decoded: make([]gopacket.LayerType, 0, 10),
+		gre:     greDecoder{sequenceFlags: make([]bool, 0, 2)},
 	}
 	p.parser = gopacket.NewDecodingLayerParser(
 		layers.LayerTypeEthernet,
@@ -86,12 +105,19 @@ func NewPacketParser() *PacketParser {
 // Parse decodes raw Ethernet frame bytes into a PacketSample.
 // This method is NOT goroutine-safe — use one PacketParser per goroutine.
 func (p *PacketParser) Parse(raw []byte, pktLen uint32) PacketSample {
+	return p.ParseMode(raw, pktLen, false)
+}
+
+// ParseMode decodes a frame using the process's fixed collection mode.
+// This method is not goroutine-safe; use one parser per worker.
+func (p *PacketParser) ParseMode(raw []byte, pktLen uint32, erspan bool) PacketSample {
 	ps := PacketSample{
 		RawHeader:    raw,
 		PacketLength: pktLen,
 	}
 
 	p.decoded = p.decoded[:0]
+	p.gre.sequenceFlags = p.gre.sequenceFlags[:0]
 	_ = p.parser.DecodeLayers(raw, &p.decoded)
 
 	// Track which layers were decoded to populate the sample.
@@ -99,12 +125,28 @@ func (p *PacketParser) Parse(raw []byte, pktLen uint32) PacketSample {
 	// when it encounters the inner Ethernet/IP/L4, so the final state
 	// of ipv4/tcp/udp etc. already reflects the innermost layer.
 	var hasIPv4, hasIPv6 bool
-	for _, lt := range p.decoded {
+	var afterERSPAN, innerSeen, innerV6 bool
+	var greSequence bool
+	greIndex := 0
+	for i, lt := range p.decoded {
 		switch lt {
+		case layers.LayerTypeGRE:
+			greSequence = p.gre.sequenceFlags[greIndex]
+			greIndex++
+		case layers.LayerTypeERSPANII:
+			afterERSPAN = i > 0 && p.decoded[i-1] == layers.LayerTypeGRE && greSequence
 		case layers.LayerTypeIPv4:
 			hasIPv4 = true
+			if afterERSPAN && !innerSeen {
+				innerSeen = true
+				innerV6 = false
+			}
 		case layers.LayerTypeIPv6:
 			hasIPv6 = true
+			if afterERSPAN && !innerSeen {
+				innerSeen = true
+				innerV6 = true
+			}
 
 		case layers.LayerTypeTCP:
 			ps.SrcPort = uint32(p.tcp.SrcPort)
@@ -144,7 +186,12 @@ func (p *PacketParser) Parse(raw []byte, pktLen uint32) PacketSample {
 		}
 	}
 
-	if hasIPv4 {
+	if erspan && innerV6 {
+		ps.SrcIP = p.ipv6.SrcIP
+		ps.DstIP = p.ipv6.DstIP
+		ps.Protocol = uint32(p.ipv6.NextHeader)
+		ps.TTL = uint32(p.ipv6.HopLimit)
+	} else if hasIPv4 {
 		ps.SrcIP = p.ipv4.SrcIP
 		ps.DstIP = p.ipv4.DstIP
 		ps.Protocol = uint32(p.ipv4.Protocol)

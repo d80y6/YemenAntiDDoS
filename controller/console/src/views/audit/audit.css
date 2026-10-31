@@ -1,0 +1,32 @@
+.au-page { min-width: 0; }
+.au-filters { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+.au-filters .field { display: grid; gap: 6px; min-width: 0; }
+.au-range { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.au-time { width: 208px; max-width: 100%; }
+.au-time-control { display: flex; gap: 4px; }
+.au-time-control input { width: 100%; min-width: 0; }
+.au-time-control input[aria-invalid="true"] { border-color: var(--crit); }
+.au-to { margin-top: 30px; }
+.au-table { width: 100%; table-layout: fixed; }
+.au-table th, .au-table td { white-space: normal; overflow-wrap: anywhere; }
+.au-table th:first-child { width: 5%; }
+.au-table th:nth-child(2) { width: 10%; }
+.au-table th:nth-child(3) { width: 14%; }
+.au-table th:nth-child(4) { width: 8%; }
+.au-table th:nth-child(5) { width: 11%; }
+.au-table th:nth-child(6) { width: 7%; }
+.au-table th:nth-child(7) { width: 15%; }
+.au-table tbody tr { cursor: pointer; }
+.au-table .au-diff { font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.au-pager { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 12px; flex-wrap: wrap; }
+.au-pager .pager { padding: 0; }
+.au-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px 20px; }
+.au-kv dd { margin: 0; overflow-wrap: anywhere; }
+.au-json { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+@media (max-width: 640px) {
+  .au-table { min-width: 1000px; }
+  .au-table .empty { text-align: left; }
+  .au-filters, .au-range { width: 100%; }
+  .au-time { width: 100%; }
+  .au-to { margin-top: 0; }
+}

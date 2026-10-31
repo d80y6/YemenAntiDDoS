@@ -42,10 +42,10 @@ func TestIsSyntheticFailedXDropRuleID(t *testing.T) {
 	}{
 		{"failed-create-13634-117", true},
 		{"failed-create-0-0", true},
-		{"rule_a1b2c3d4", false},                     // real xDrop rule id
-		{"", false},                                   // empty
-		{"rule_failed-create-xxx", false},             // prefix not at start
-		{"FAILED-CREATE-13634-117", false},            // case-sensitive
+		{"rule_a1b2c3d4", false},                       // real xDrop rule id
+		{"", false},                                    // empty
+		{"rule_failed-create-xxx", false},              // prefix not at start
+		{"FAILED-CREATE-13634-117", false},             // case-sensitive
 		{xDropSyntheticFailedRuleIDPrefix + "x", true}, // minimal valid
 	}
 	for _, c := range cases {

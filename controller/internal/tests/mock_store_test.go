@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
+	"slices"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/littlewolf9527/xsight/controller/internal/store/storetest"
 )
 
 // ─────────────────────────── MockStore ───────────────────────────
@@ -26,13 +30,13 @@ import (
 //	ms.bgpConnRepo    — used by active_actions_test.go
 type MockStore struct {
 	// Primary repo fields — names match NewMockStore() assignments and method receivers.
-	responses     *mockResponseRepo
-	attacks       *mockAttackRepo
-	bgpConnectors *mockBGPConnectorRepo
-	xdropTargets  *mockXDropTargetRepo
+	responses       *mockResponseRepo
+	attacks         *mockAttackRepo
+	bgpConnectors   *mockBGPConnectorRepo
+	xdropTargets    *mockXDropTargetRepo
 	xdropConnectors *mockXDropConnectorRepo
-	actionsLog    *mockActionsLogRepo
-	preconditions *mockPreconditionRepo
+	actionsLog      *mockActionsLogRepo
+	preconditions   *mockPreconditionRepo
 	// v1.2 PR-2
 	manualOverrides *mockManualOverrideRepo
 	// v1.2 PR-3
@@ -53,8 +57,8 @@ type MockStore struct {
 	// Stub repos for everything else.
 	nodeRepo              stubNodeRepo
 	prefixRepo            stubPrefixRepo
-	thresholdTemplateRepo stubThresholdTemplateRepo
-	thresholdRepo         stubThresholdRepo
+	thresholdTemplateRepo *stubThresholdTemplateRepo
+	thresholdRepo         *stubThresholdRepo
 	userRepo              stubUserRepo
 	webhookRepo           stubWebhookRepo
 	auditLogRepo          stubAuditLogRepo
@@ -67,6 +71,78 @@ type MockStore struct {
 	flowSourceRepo        stubFlowSourceRepo
 }
 
+func (r *mockAttackRepo) LiveIDs(ctx context.Context, ids []int) (map[int]bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	live := map[int]bool{}
+	for _, group := range [][]store.Attack{r.attacks, r.expiredAttacks} {
+		for _, a := range group {
+			if a.EndedAt == nil && slices.Contains(ids, a.ID) {
+				live[a.ID] = true
+			}
+		}
+	}
+	return live, nil
+}
+func (r *mockBGPAnnouncementRepo) ReconcileAttachments(ctx context.Context, id int, ended []int, detach bool) (store.BGPReconcileResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var result store.BGPReconcileResult
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	a := r.findByIDLocked(id)
+	if a == nil {
+		return result, errors.New("announcement not found")
+	}
+	result.RefcountBefore, result.RefcountAfter = a.Refcount, a.Refcount
+	result.Gen = a.Gen
+	if a.Status != "active" && (detach || a.Status != "announcing") {
+		result.Skipped = "status=" + a.Status
+		return result, nil
+	}
+	attached := 0
+	for _, row := range r.attacks {
+		if row.AnnouncementID == id && row.DetachedAt == nil {
+			attached++
+		}
+	}
+	if !detach && a.Refcount >= attached {
+		result.Skipped = "consistent"
+		return result, nil
+	}
+	if detach && a.Refcount > attached {
+		result.Skipped = "refcount_exceeds_attachments"
+		return result, nil
+	}
+	if detach {
+		for i := range r.attacks {
+			row := &r.attacks[i]
+			if row.AnnouncementID == id && row.DetachedAt == nil && slices.Contains(ended, row.AttackID) {
+				now := time.Now()
+				row.DetachedAt = &now
+				result.Detached = append(result.Detached, row.AttackID)
+			}
+		}
+	}
+	result.RefcountAfter = attached - len(result.Detached)
+	if result.RefcountAfter == a.Refcount && len(result.Detached) == 0 {
+		result.Skipped = "consistent"
+		return result, nil
+	}
+	a.Refcount = result.RefcountAfter
+	if detach && a.Refcount == 0 {
+		a.Status = "withdrawing"
+		result.NeedWithdraw = true
+	}
+	r.recomputeDelayLocked(id)
+	r.appendEventLocked(id, store.BGPEventAttackDetached, nil, fmt.Sprintf("reconcile detached=%v refcount=%d->%d", result.Detached, result.RefcountBefore, result.RefcountAfter))
+	return result, nil
+}
+
 // NewMockStore constructs a fully-wired MockStore with all aliases wired to
 // the same underlying repo instances.
 func NewMockStore() *MockStore {
@@ -77,22 +153,31 @@ func NewMockStore() *MockStore {
 	bgpRepo := &mockBGPConnectorRepo{}
 	ms := &MockStore{
 		// Primary fields
-		responses:       respRepo,
-		attacks:         atkRepo,
-		bgpConnectors:   bgpRepo,
-		xdropTargets:    &mockXDropTargetRepo{targets: make(map[int][]int), connectors: xdc},
-		xdropConnectors: xdc,
-		actionsLog:       &mockActionsLogRepo{},
-		preconditions:    &mockPreconditionRepo{},
-		manualOverrides:  &mockManualOverrideRepo{},
-		scheduledActions: &mockScheduledActionRepo{},
-		xdropActiveRules: &mockXDropActiveRuleRepo{},
-		bgpAnnouncements: &mockBGPAnnouncementRepo{},
+		responses:             respRepo,
+		thresholdTemplateRepo: &stubThresholdTemplateRepo{},
+		thresholdRepo:         &stubThresholdRepo{},
+		attacks:               atkRepo,
+		bgpConnectors:         bgpRepo,
+		xdropTargets:          &mockXDropTargetRepo{targets: make(map[int][]int), connectors: xdc},
+		xdropConnectors:       xdc,
+		actionsLog:            &mockActionsLogRepo{},
+		preconditions:         &mockPreconditionRepo{},
+		manualOverrides:       &mockManualOverrideRepo{},
+		scheduledActions:      &mockScheduledActionRepo{},
+		xdropActiveRules:      &mockXDropActiveRuleRepo{},
+		bgpAnnouncements:      &mockBGPAnnouncementRepo{},
 		// Aliases (same pointers, different names used by different test files)
 		responseRepo:      respRepo,
 		actionExecLog:     aelog,
 		actionExecLogRepo: aelog,
 		bgpConnRepo:       bgpRepo,
+	}
+	respRepo.store = ms
+	atkRepo.responses = respRepo
+	// Fixed lock order: announcement lock, then attack lock inside Get.
+	ms.bgpAnnouncements.liveAttack = func(id int) bool {
+		a, err := atkRepo.Get(context.Background(), id)
+		return err == nil && a.EndedAt == nil
 	}
 	return ms
 }
@@ -109,33 +194,33 @@ func (m *MockStore) seedResponse(id int) {
 	// so that callers compile cleanly.
 }
 
-func (m *MockStore) Nodes() store.NodeRepo                          { return m.nodeRepo }
-func (m *MockStore) Prefixes() store.PrefixRepo                     { return m.prefixRepo }
+func (m *MockStore) Nodes() store.NodeRepo                           { return m.nodeRepo }
+func (m *MockStore) Prefixes() store.PrefixRepo                      { return m.prefixRepo }
 func (m *MockStore) ThresholdTemplates() store.ThresholdTemplateRepo { return m.thresholdTemplateRepo }
-func (m *MockStore) Thresholds() store.ThresholdRepo                { return m.thresholdRepo }
-func (m *MockStore) Responses() store.ResponseRepo                  { return m.responses }
-func (m *MockStore) Attacks() store.AttackRepo                      { return m.attacks }
-func (m *MockStore) ActionsLog() store.ActionsLogRepo               { return m.actionsLog }
-func (m *MockStore) Users() store.UserRepo                          { return m.userRepo }
-func (m *MockStore) Webhooks() store.WebhookRepo                    { return m.webhookRepo }
-func (m *MockStore) AuditLog() store.AuditLogRepo                   { return m.auditLogRepo }
-func (m *MockStore) Stats() store.StatsRepo                         { return m.statsRepo }
-func (m *MockStore) DynDetect() store.DynDetectRepo                 { return m.dynDetectRepo }
-func (m *MockStore) WebhookConnectors() store.WebhookConnectorRepo  { return m.webhookConnectorRepo }
-func (m *MockStore) XDropConnectors() store.XDropConnectorRepo      { return m.xdropConnectors }
-func (m *MockStore) ShellConnectors() store.ShellConnectorRepo      { return m.shellConnectorRepo }
-func (m *MockStore) ActionExecLog() store.ActionExecLogRepo         { return m.actionExecLog }
-func (m *MockStore) XDropTargets() store.XDropTargetRepo            { return m.xdropTargets }
-func (m *MockStore) Preconditions() store.PreconditionRepo          { return m.preconditions }
-func (m *MockStore) FlowLogs() store.FlowLogRepo                    { return m.flowLogRepo }
-func (m *MockStore) FlowListeners() store.FlowListenerRepo          { return m.flowListenerRepo }
-func (m *MockStore) FlowSources() store.FlowSourceRepo              { return m.flowSourceRepo }
-func (m *MockStore) BGPConnectors() store.BGPConnectorRepo          { return m.bgpConnectors }
-func (m *MockStore) ManualOverrides() store.ActionManualOverrideRepo { return m.manualOverrides }   // v1.2 PR-2
+func (m *MockStore) Thresholds() store.ThresholdRepo                 { return m.thresholdRepo }
+func (m *MockStore) Responses() store.ResponseRepo                   { return m.responses }
+func (m *MockStore) Attacks() store.AttackRepo                       { return m.attacks }
+func (m *MockStore) ActionsLog() store.ActionsLogRepo                { return m.actionsLog }
+func (m *MockStore) Users() store.UserRepo                           { return m.userRepo }
+func (m *MockStore) Webhooks() store.WebhookRepo                     { return m.webhookRepo }
+func (m *MockStore) AuditLog() store.AuditLogRepo                    { return m.auditLogRepo }
+func (m *MockStore) Stats() store.StatsRepo                          { return m.statsRepo }
+func (m *MockStore) DynDetect() store.DynDetectRepo                  { return m.dynDetectRepo }
+func (m *MockStore) WebhookConnectors() store.WebhookConnectorRepo   { return m.webhookConnectorRepo }
+func (m *MockStore) XDropConnectors() store.XDropConnectorRepo       { return m.xdropConnectors }
+func (m *MockStore) ShellConnectors() store.ShellConnectorRepo       { return m.shellConnectorRepo }
+func (m *MockStore) ActionExecLog() store.ActionExecLogRepo          { return m.actionExecLog }
+func (m *MockStore) XDropTargets() store.XDropTargetRepo             { return m.xdropTargets }
+func (m *MockStore) Preconditions() store.PreconditionRepo           { return m.preconditions }
+func (m *MockStore) FlowLogs() store.FlowLogRepo                     { return m.flowLogRepo }
+func (m *MockStore) FlowListeners() store.FlowListenerRepo           { return m.flowListenerRepo }
+func (m *MockStore) FlowSources() store.FlowSourceRepo               { return m.flowSourceRepo }
+func (m *MockStore) BGPConnectors() store.BGPConnectorRepo           { return m.bgpConnectors }
+func (m *MockStore) ManualOverrides() store.ActionManualOverrideRepo { return m.manualOverrides }  // v1.2 PR-2
 func (m *MockStore) ScheduledActions() store.ScheduledActionRepo     { return m.scheduledActions } // v1.2 PR-3
-func (m *MockStore) XDropActiveRules() store.XDropActiveRuleRepo      { return m.xdropActiveRules }  // v1.2 PR-4
-func (m *MockStore) BGPAnnouncements() store.BGPAnnouncementRepo      { return m.bgpAnnouncements }  // v1.2 PR-5
-func (m *MockStore) Close()                                         {}
+func (m *MockStore) XDropActiveRules() store.XDropActiveRuleRepo     { return m.xdropActiveRules } // v1.2 PR-4
+func (m *MockStore) BGPAnnouncements() store.BGPAnnouncementRepo     { return m.bgpAnnouncements } // v1.2 PR-5
+func (m *MockStore) Close()                                          {}
 
 // ─────────────────────────── mockResponseRepo ───────────────────────────
 
@@ -143,13 +228,32 @@ func (m *MockStore) Close()                                         {}
 // actions via append (e.g. ms.responseRepo.actions = append(...)).
 // All interface methods do linear scans — acceptable for test volumes.
 type mockResponseRepo struct {
-	mu        sync.Mutex
-	actions   []store.ResponseAction // slice — supports direct append by tests
-	responses []store.Response       // seeded by tests; enables Get() for HandleEvent dispatch
-	nextID    int
+	store          *MockStore // wired once by NewMockStore; response lock precedes dependent repo locks
+	mu             sync.Mutex
+	actions        []store.ResponseAction // slice — supports direct append by tests
+	responses      []store.Response       // seeded by tests; enables Get() for HandleEvent dispatch
+	nextID         int
+	nextResponseID int
 }
 
-func (r *mockResponseRepo) List(_ context.Context) ([]store.Response, error) { return nil, nil }
+func (r *mockResponseRepo) List(_ context.Context) ([]store.Response, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := append([]store.Response(nil), r.responses...)
+	for i := range out {
+		out[i].ActionCount = 0
+		if r.store != nil {
+			out[i].BoundTemplateCount = r.store.thresholdTemplateRepo.countByResponse(out[i].ID)
+		}
+		for _, a := range r.actions {
+			if a.ResponseID == out[i].ID {
+				out[i].ActionCount++
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
 func (r *mockResponseRepo) Get(_ context.Context, id int) (*store.Response, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -161,14 +265,67 @@ func (r *mockResponseRepo) Get(_ context.Context, id int) (*store.Response, erro
 	}
 	return nil, errors.New("response not found")
 }
-func (r *mockResponseRepo) Create(_ context.Context, _ *store.Response) (int, error) {
-	return 0, errors.New("not implemented")
+func (r *mockResponseRepo) Create(_ context.Context, response *store.Response) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, v := range r.responses {
+		if v.ID > r.nextResponseID {
+			r.nextResponseID = v.ID
+		}
+	}
+	r.nextResponseID++
+	r.responses = append(r.responses, store.Response{ID: r.nextResponseID, Name: response.Name, Description: response.Description, Enabled: response.Enabled, CreatedAt: time.Now()})
+	return r.nextResponseID, nil
 }
-func (r *mockResponseRepo) Update(_ context.Context, _ *store.Response) error {
-	return errors.New("not implemented")
+func (r *mockResponseRepo) Update(_ context.Context, response *store.Response) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.responses {
+		if r.responses[i].ID == response.ID {
+			r.responses[i].Name = response.Name
+			r.responses[i].Description = response.Description
+			r.responses[i].Enabled = response.Enabled
+		}
+	}
+	return nil
 }
-func (r *mockResponseRepo) Delete(_ context.Context, _ int) error {
-	return errors.New("not implemented")
+func (r *mockResponseRepo) Delete(_ context.Context, id int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, v := range r.responses {
+		if v.ID == id {
+			r.responses = append(r.responses[:i], r.responses[i+1:]...)
+			break
+		}
+	}
+	deletedActions := make(map[int]bool)
+	kept := r.actions[:0]
+	for _, a := range r.actions {
+		if a.ResponseID == id {
+			deletedActions[a.ID] = true
+		} else {
+			kept = append(kept, a)
+		}
+	}
+	r.actions = kept
+	// Same repository: paired_with is a self-FK, updated under the response mutex.
+	for i := range r.actions {
+		if paired := r.actions[i].PairedWith; paired != nil && deletedActions[*paired] {
+			r.actions[i].PairedWith = nil
+		}
+	}
+	if r.store != nil {
+		// No dependent repo calls back into Responses while holding its lock.
+		for actionID := range deletedActions {
+			r.store.preconditions.deleteByAction(actionID)
+			r.store.xdropTargets.deleteByAction(actionID)
+		}
+		r.store.attacks.clearResponseID(id)
+		r.store.thresholdRepo.clearResponseID(id)
+		r.store.thresholdTemplateRepo.clearResponseID(id)
+		r.store.actionsLog.clearActionIDs(deletedActions)
+	}
+	return nil
 }
 
 func (r *mockResponseRepo) ListActions(_ context.Context, responseID int) ([]store.ResponseAction, error) {
@@ -252,65 +409,214 @@ func (r *mockResponseRepo) SetPairedWith(_ context.Context, actionID int, paired
 	return errors.New("action not found")
 }
 
-func (r *mockResponseRepo) CountActionsByWebhookConnector(_ context.Context, _ int) (int, error) {
-	return 0, nil
+func (r *mockResponseRepo) CountActionsByWebhookConnector(_ context.Context, connectorID int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, a := range r.actions {
+		if a.WebhookConnectorID != nil && *a.WebhookConnectorID == connectorID {
+			count++
+		}
+	}
+	return count, nil
 }
-func (r *mockResponseRepo) CountActionsByShellConnector(_ context.Context, _ int) (int, error) {
-	return 0, nil
+func (r *mockResponseRepo) CountActionsByShellConnector(_ context.Context, connectorID int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, a := range r.actions {
+		if a.ShellConnectorID != nil && *a.ShellConnectorID == connectorID {
+			count++
+		}
+	}
+	return count, nil
 }
-func (r *mockResponseRepo) CountActionsByBGPConnector(_ context.Context, _ int) (int, error) {
-	return 0, nil
+func (r *mockResponseRepo) CountActionsByBGPConnector(_ context.Context, connectorID int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, a := range r.actions {
+		if a.BGPConnectorID != nil && *a.BGPConnectorID == connectorID {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // ─────────────────────────── mockAttackRepo ───────────────────────────
 
 type mockAttackRepo struct {
+	responses      *mockResponseRepo
 	mu             sync.Mutex
+	nextID         int
 	attacks        []store.Attack // active attacks (EndedAt == nil)
 	expiredAttacks []store.Attack // expired attacks seeded by recovery tests
+}
+
+// snapshotPointer copies optional scalar fields owned by snapshot records.
+func snapshotPointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cp := *value
+	return &cp
+}
+
+func (r *mockAttackRepo) snapshotAttacks() []store.Attack {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := make([]store.Attack, len(r.attacks))
+	for i, a := range r.attacks {
+		cp[i] = snapshotAttack(a)
+	}
+	return cp
+}
+
+// snapshotAttack preserves SQL NULL versus empty TEXT[] while isolating owned data.
+func snapshotAttack(a store.Attack) store.Attack {
+	a.ReasonCodes = slices.Clone(a.ReasonCodes)
+	a.NodeSources = slices.Clone(a.NodeSources)
+	a.PrefixID = snapshotPointer(a.PrefixID)
+	a.ResponseID = snapshotPointer(a.ResponseID)
+	a.ThresholdRuleID = snapshotPointer(a.ThresholdRuleID)
+	a.EndedAt = snapshotPointer(a.EndedAt)
+	a.TemplateName = snapshotPointer(a.TemplateName)
+	a.RuleSummary = snapshotPointer(a.RuleSummary)
+	return a
+}
+
+func (r *mockAttackRepo) clearResponseID(responseID int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rows := range [][]store.Attack{r.attacks, r.expiredAttacks} {
+		for i := range rows {
+			if rows[i].ResponseID != nil && *rows[i].ResponseID == responseID {
+				rows[i].ResponseID = nil
+			}
+		}
+	}
+}
+
+func (r *mockAttackRepo) appendAttacks(attacks ...store.Attack) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, a := range attacks {
+		r.attacks = append(r.attacks, snapshotAttack(a))
+	}
+}
+
+func (r *mockAttackRepo) appendExpiredAttacks(attacks ...store.Attack) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, a := range attacks {
+		r.expiredAttacks = append(r.expiredAttacks, snapshotAttack(a))
+	}
 }
 
 func (r *mockAttackRepo) ListActive(_ context.Context, limit int) ([]store.Attack, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
 	var out []store.Attack
 	for _, a := range r.attacks {
 		if a.EndedAt == nil {
-			out = append(out, a)
-			if limit > 0 && len(out) >= limit {
-				break
-			}
+			out = append(out, snapshotAttack(a))
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].PeakPPS > out[j].PeakPPS })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *mockAttackRepo) ListAllActive(_ context.Context) ([]store.Attack, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []store.Attack
+	for _, a := range r.attacks {
+		if a.EndedAt == nil {
+			out = append(out, snapshotAttack(a))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
 func (r *mockAttackRepo) List(_ context.Context, filter store.AttackFilter) ([]store.Attack, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Combine both slices for iteration.
-	all := make([]store.Attack, 0, len(r.attacks)+len(r.expiredAttacks))
-	all = append(all, r.attacks...)
-	all = append(all, r.expiredAttacks...)
-	var out []store.Attack
-	for _, a := range all {
-		switch filter.Status {
-		case "expired":
-			if a.EndedAt == nil {
-				continue
-			}
-		case "active":
-			if a.EndedAt != nil {
-				continue
-			}
+	out := r.filteredLocked(filter)
+	sort.SliceStable(out, func(i, j int) bool {
+		if filter.Sort == "peak_pps" && out[i].PeakPPS != out[j].PeakPPS {
+			return out[i].PeakPPS > out[j].PeakPPS
 		}
-		out = append(out, a)
+		if out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].StartedAt.After(out[j].StartedAt)
+	})
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if filter.Offset < 0 {
+		return nil, errors.New("OFFSET must not be negative")
+	}
+	if filter.Offset >= len(out) {
+		return nil, nil
+	}
+	out = out[filter.Offset:]
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
 
-func (r *mockAttackRepo) Count(_ context.Context, _ store.AttackFilter) (int, error) {
-	return len(r.attacks), nil
+// filteredLocked mirrors postgres.buildAttackWhere; the caller holds mu.
+func (r *mockAttackRepo) filteredLocked(filter store.AttackFilter) []store.Attack {
+	var out []store.Attack
+	for _, group := range [][]store.Attack{r.attacks, r.expiredAttacks} {
+		for _, a := range group {
+			if filter.Status == "active" && a.EndedAt != nil {
+				continue
+			}
+			if filter.Status == "expired" && a.EndedAt == nil {
+				continue
+			}
+			if filter.Direction != "" && a.Direction != filter.Direction {
+				continue
+			}
+			if filter.PrefixID != nil && (a.PrefixID == nil || *a.PrefixID != *filter.PrefixID) {
+				continue
+			}
+			if filter.TimeFrom != nil && a.StartedAt.Before(*filter.TimeFrom) {
+				continue
+			}
+			if filter.TimeTo != nil && a.StartedAt.After(*filter.TimeTo) {
+				continue
+			}
+			if filter.DstIP != "" && !mockDstIPWithin(a.DstIP, filter.DstIP) {
+				continue
+			}
+			if filter.EndedAfter != nil && a.EndedAt != nil && a.EndedAt.Before(*filter.EndedAfter) {
+				continue
+			}
+			out = append(out, snapshotAttack(a))
+		}
+	}
+	return out
+}
+
+func (r *mockAttackRepo) Count(_ context.Context, filter store.AttackFilter) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.filteredLocked(filter)), nil
 }
 
 func (r *mockAttackRepo) Get(_ context.Context, id int) (*store.Attack, error) {
@@ -318,39 +624,76 @@ func (r *mockAttackRepo) Get(_ context.Context, id int) (*store.Attack, error) {
 	defer r.mu.Unlock()
 	for _, a := range r.attacks {
 		if a.ID == id {
-			cp := a
+			cp := snapshotAttack(a)
 			return &cp, nil
 		}
 	}
 	for _, a := range r.expiredAttacks {
 		if a.ID == id {
-			cp := a
+			cp := snapshotAttack(a)
 			return &cp, nil
 		}
 	}
 	return nil, errors.New("attack not found")
 }
 
-func (r *mockAttackRepo) Create(_ context.Context, a *store.Attack) (int, error) {
+func (r *mockAttackRepo) Create(ctx context.Context, a *store.Attack) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	id := len(r.attacks) + 1
-	cp := *a
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	started := a.StartedAt.Truncate(time.Microsecond)
+	for _, existing := range r.attacks {
+		if existing.EndedAt == nil && existing.DstIP == a.DstIP && existing.Direction == a.Direction && existing.DecoderFamily == a.DecoderFamily && existing.StartedAt.Truncate(time.Microsecond).Equal(started) {
+			return existing.ID, nil
+		}
+	}
+	for _, group := range [][]store.Attack{r.attacks, r.expiredAttacks} {
+		for _, existing := range group {
+			if existing.ID > r.nextID {
+				r.nextID = existing.ID
+			}
+		}
+	}
+	r.nextID++
+	id := r.nextID
+	cp := snapshotAttack(*a)
+	cp.StartedAt = started
 	cp.ID = id
+	cp.EndedAt = nil
 	r.attacks = append(r.attacks, cp)
 	return id, nil
 }
 
 func (r *mockAttackRepo) Update(_ context.Context, a *store.Attack) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for i, existing := range r.attacks {
-		if existing.ID == a.ID {
-			r.attacks[i] = *a
-			return nil
+	responseID := snapshotPointer(a.ResponseID)
+	if responseID != nil && r.responses != nil {
+		// Resolve before taking the attack lock: Delete uses Responses -> Attacks.
+		if _, err := r.responses.Get(context.Background(), *responseID); err != nil {
+			responseID = nil
 		}
 	}
-	return errors.New("attack not found")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, group := range [][]store.Attack{r.attacks, r.expiredAttacks} {
+		for i := range group {
+			existing := &group[i]
+			if existing.ID == a.ID {
+				existing.AttackType = a.AttackType
+				existing.Severity = a.Severity
+				existing.Confidence = a.Confidence
+				existing.PeakPPS = a.PeakPPS
+				existing.PeakBPS = a.PeakBPS
+				existing.ReasonCodes = slices.Clone(a.ReasonCodes)
+				existing.NodeSources = slices.Clone(a.NodeSources)
+				existing.ResponseID = responseID
+				existing.EndedAt = snapshotPointer(a.EndedAt)
+				return nil
+			}
+		}
+	}
+	return nil
 }
 
 func (r *mockAttackRepo) CountActive(_ context.Context) (int, error) {
@@ -373,6 +716,19 @@ type mockActionExecLogRepo struct {
 	nextID int
 }
 
+func (r *mockActionExecLogRepo) snapshotLogs() []store.ActionExecutionLog {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := make([]store.ActionExecutionLog, len(r.logs))
+	copy(cp, r.logs)
+	for i := range cp {
+		cp[i].StatusCode = snapshotPointer(cp[i].StatusCode)
+		cp[i].ConnectorID = snapshotPointer(cp[i].ConnectorID)
+		cp[i].ScheduledFor = snapshotPointer(cp[i].ScheduledFor)
+	}
+	return cp
+}
+
 func (r *mockActionExecLogRepo) Create(_ context.Context, l *store.ActionExecutionLog) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -393,59 +749,14 @@ func (r *mockActionExecLogRepo) ListByAttack(_ context.Context, attackID int) ([
 			out = append(out, l)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ExecutedAt.After(out[j].ExecutedAt) })
 	return out, nil
 }
 
-// FindByAttackAndAction returns the latest log for (attackID, actionID, triggerPhase).
-func (r *mockActionExecLogRepo) FindByAttackAndAction(_ context.Context, attackID, actionID int, triggerPhase string) (*store.ActionExecutionLog, error) {
+func (r *mockActionExecLogRepo) AllTargetsDone(_ context.Context, attackID, actionID int, phase string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var found *store.ActionExecutionLog
-	for i := range r.logs {
-		l := &r.logs[i]
-		if l.AttackID == attackID && l.ActionID == actionID && l.TriggerPhase == triggerPhase {
-			if found == nil || l.ExecutedAt.After(found.ExecutedAt) {
-				cp := *l
-				found = &cp
-			}
-		}
-	}
-	if found == nil {
-		return nil, errors.New("not found")
-	}
-	return found, nil
-}
-
-func (r *mockActionExecLogRepo) FindExternalRuleIDs(_ context.Context, attackID, actionID int) ([]string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var ids []string
-	for _, l := range r.logs {
-		if l.AttackID == attackID && l.ActionID == actionID && l.ExternalRuleID != "" {
-			ids = append(ids, l.ExternalRuleID)
-		}
-	}
-	return ids, nil
-}
-
-func (r *mockActionExecLogRepo) FindExternalRulesWithActions(_ context.Context, attackID int) ([]store.RuleWithAction, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []store.RuleWithAction
-	for _, l := range r.logs {
-		if l.AttackID == attackID && l.ExternalRuleID != "" {
-			connID := 0
-			if l.ConnectorID != nil {
-				connID = *l.ConnectorID
-			}
-			out = append(out, store.RuleWithAction{
-				RuleID:      l.ExternalRuleID,
-				ActionID:    l.ActionID,
-				ConnectorID: connID,
-			})
-		}
-	}
-	return out, nil
+	return storetest.TargetsDone(r.logs, attackID, actionID, phase), nil
 }
 
 // ─────────────────────────── mockXDropTargetRepo ───────────────────────────
@@ -459,6 +770,13 @@ type mockXDropTargetRepo struct {
 func (r *mockXDropTargetRepo) Set(_ context.Context, actionID int, connectorIDs []int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	seen := make(map[int]bool, len(connectorIDs))
+	for _, id := range connectorIDs {
+		if seen[id] {
+			return errors.New("duplicate xdrop target")
+		}
+		seen[id] = true
+	}
 	cp := make([]int, len(connectorIDs))
 	copy(cp, connectorIDs)
 	r.targets[actionID] = cp
@@ -477,6 +795,7 @@ func (r *mockXDropTargetRepo) List(ctx context.Context, actionID int) ([]store.X
 			out = append(out, *conn)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
@@ -494,11 +813,25 @@ func (r *mockXDropTargetRepo) CountByConnector(_ context.Context, connectorID in
 	return count, nil
 }
 
+// deleteByAction models response_action_xdrop_targets ON DELETE CASCADE.
+func (r *mockXDropTargetRepo) deleteByAction(actionID int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.targets, actionID)
+}
+
 // ─────────────────────────── mockBGPConnectorRepo ───────────────────────────
 
 type mockBGPConnectorRepo struct {
+	nextID     int
 	mu         sync.Mutex
 	connectors []store.BGPConnector
+}
+
+func (r *mockBGPConnectorRepo) appendConnectors(connectors ...store.BGPConnector) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.connectors = append(r.connectors, connectors...)
 }
 
 func (r *mockBGPConnectorRepo) List(_ context.Context) ([]store.BGPConnector, error) {
@@ -524,7 +857,13 @@ func (r *mockBGPConnectorRepo) Get(_ context.Context, id int) (*store.BGPConnect
 func (r *mockBGPConnectorRepo) Create(_ context.Context, c *store.BGPConnector) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	id := len(r.connectors) + 1
+	for _, existing := range r.connectors {
+		if existing.ID > r.nextID {
+			r.nextID = existing.ID
+		}
+	}
+	r.nextID++
+	id := r.nextID
 	cp := *c
 	cp.ID = id
 	r.connectors = append(r.connectors, cp)
@@ -558,6 +897,7 @@ func (r *mockBGPConnectorRepo) Delete(_ context.Context, id int) error {
 // ─────────────────────────── mockXDropConnectorRepo ───────────────────────────
 
 type mockXDropConnectorRepo struct {
+	nextID     int
 	mu         sync.Mutex
 	connectors []store.XDropConnector
 }
@@ -597,7 +937,13 @@ func (r *mockXDropConnectorRepo) Get(_ context.Context, id int) (*store.XDropCon
 func (r *mockXDropConnectorRepo) Create(_ context.Context, c *store.XDropConnector) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	id := len(r.connectors) + 1
+	for _, existing := range r.connectors {
+		if existing.ID > r.nextID {
+			r.nextID = existing.ID
+		}
+	}
+	r.nextID++
+	id := r.nextID
 	cp := *c
 	cp.ID = id
 	r.connectors = append(r.connectors, cp)
@@ -630,17 +976,83 @@ func (r *mockXDropConnectorRepo) Delete(_ context.Context, id int) error {
 
 // ─────────────────────────── mockActionsLogRepo ───────────────────────────
 
-type mockActionsLogRepo struct{}
+// Nullable action_id is retained separately because store.ActionLog exposes an int.
+type mockActionLogRecord struct {
+	log      store.ActionLog
+	actionID *int
+}
+type mockActionsLogRepo struct {
+	mu      sync.Mutex
+	records []mockActionLogRecord
+	nextID  int
+}
 
-func (r *mockActionsLogRepo) Create(_ context.Context, _ *store.ActionLog) (int, error) {
-	return 0, nil
+func (r *mockActionsLogRepo) Create(_ context.Context, l *store.ActionLog) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	cp := *l
+	cp.ID = r.nextID
+	cp.CreatedAt = time.Now()
+	r.records = append(r.records, mockActionLogRecord{log: cp, actionID: snapshotPointer(&l.ActionID)})
+	return cp.ID, nil
 }
-func (r *mockActionsLogRepo) Update(_ context.Context, _ *store.ActionLog) error { return nil }
-func (r *mockActionsLogRepo) FindByAttackAndAction(_ context.Context, _, _ int) (*store.ActionLog, error) {
-	return nil, errors.New("not found")
+func (r *mockActionsLogRepo) Update(_ context.Context, l *store.ActionLog) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.records {
+		v := &r.records[i].log
+		if v.ID == l.ID {
+			v.Status = l.Status
+			v.ExternalID = l.ExternalID
+			v.LastAttemptAt = l.LastAttemptAt
+			v.LastResult = l.LastResult
+			v.RetryCount = l.RetryCount
+		}
+	}
+	return nil
 }
-func (r *mockActionsLogRepo) ListByAttack(_ context.Context, _ int) ([]store.ActionLog, error) {
-	return nil, nil
+func (r *mockActionsLogRepo) FindByAttackAndAction(_ context.Context, attackID, actionID int) (*store.ActionLog, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var found *store.ActionLog
+	for _, v := range r.records {
+		if v.log.AttackID == attackID && v.actionID != nil && *v.actionID == actionID && (found == nil || v.log.CreatedAt.After(found.CreatedAt)) {
+			cp := v.log
+			cp.ActionID = *v.actionID
+			found = &cp
+		}
+	}
+	return found, nil
+}
+func (r *mockActionsLogRepo) ListByAttack(_ context.Context, attackID int) ([]store.ActionLog, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []store.ActionLog
+	for _, v := range r.records {
+		if v.log.AttackID == attackID {
+			// Match current postgres/actions_log.go Scan into an int after ON DELETE SET NULL.
+			if v.actionID == nil {
+				return nil, errors.New("cannot scan NULL into *int")
+			}
+			cp := v.log
+			cp.ActionID = *v.actionID
+			out = append(out, cp)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (r *mockActionsLogRepo) clearActionIDs(deleted map[int]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.records {
+		v := &r.records[i]
+		if v.actionID != nil && deleted[*v.actionID] {
+			v.actionID = nil
+		}
+	}
 }
 
 // ─────────────────────────── mockPreconditionRepo ───────────────────────────
@@ -648,7 +1060,8 @@ func (r *mockActionsLogRepo) ListByAttack(_ context.Context, _ int) ([]store.Act
 // mockPreconditionRepo stores preconditions per action so tests can drive
 // precondition-fail paths in the engine (v1.2 PR-1 skip_reason tests).
 type mockPreconditionRepo struct {
-	mu     sync.Mutex
+	nextID     int
+	mu         sync.Mutex
 	byActionID map[int][]store.ActionPrecondition
 }
 
@@ -660,12 +1073,71 @@ func (r *mockPreconditionRepo) List(_ context.Context, actionID int) ([]store.Ac
 	}
 	return append([]store.ActionPrecondition(nil), r.byActionID[actionID]...), nil
 }
-func (r *mockPreconditionRepo) Create(_ context.Context, _ *store.ActionPrecondition) (int, error) {
-	return 0, nil
+func (r *mockPreconditionRepo) Create(_ context.Context, p *store.ActionPrecondition) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byActionID == nil {
+		r.byActionID = make(map[int][]store.ActionPrecondition)
+	}
+	for _, rows := range r.byActionID {
+		for _, v := range rows {
+			if v.ID > r.nextID {
+				r.nextID = v.ID
+			}
+		}
+	}
+	r.nextID++
+	cp := *p
+	cp.ID = r.nextID
+	cp.CreatedAt = time.Now()
+	r.byActionID[p.ActionID] = append(r.byActionID[p.ActionID], cp)
+	return cp.ID, nil
 }
-func (r *mockPreconditionRepo) Delete(_ context.Context, _ int) error         { return nil }
-func (r *mockPreconditionRepo) DeleteByAction(_ context.Context, _ int) error  { return nil }
-func (r *mockPreconditionRepo) ReplaceAll(_ context.Context, _ int, _ []store.ActionPrecondition) error {
+func (r *mockPreconditionRepo) Delete(_ context.Context, id int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for aid, rows := range r.byActionID {
+		for i, p := range rows {
+			if p.ID == id {
+				r.byActionID[aid] = append(rows[:i], rows[i+1:]...)
+				return nil
+			}
+		}
+	}
+	return nil
+}
+func (r *mockPreconditionRepo) DeleteByAction(_ context.Context, actionID int) error {
+	r.deleteByAction(actionID)
+	return nil
+}
+
+func (r *mockPreconditionRepo) deleteByAction(actionID int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byActionID, actionID)
+}
+func (r *mockPreconditionRepo) ReplaceAll(_ context.Context, actionID int, preconditions []store.ActionPrecondition) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byActionID == nil {
+		r.byActionID = make(map[int][]store.ActionPrecondition)
+	}
+	for _, rows := range r.byActionID {
+		for _, v := range rows {
+			if v.ID > r.nextID {
+				r.nextID = v.ID
+			}
+		}
+	}
+	replacement := make([]store.ActionPrecondition, 0, len(preconditions))
+	for _, p := range preconditions {
+		r.nextID++
+		p.ID = r.nextID
+		p.ActionID = actionID
+		p.CreatedAt = time.Now()
+		replacement = append(replacement, p)
+	}
+	r.byActionID[actionID] = replacement
 	return nil
 }
 
@@ -684,9 +1156,9 @@ func (r *mockPreconditionRepo) SeedPreconditions(actionID int, pcs []store.Actio
 // constraint is enforced by Create() — duplicate keys update created_by and
 // return the existing ID, matching postgres ON CONFLICT behavior.
 type mockManualOverrideRepo struct {
-	mu        sync.Mutex
-	records   []store.ActionManualOverride
-	nextID    int
+	mu      sync.Mutex
+	records []store.ActionManualOverride
+	nextID  int
 }
 
 func (r *mockManualOverrideRepo) key(attackID, actionID, connectorID int, externalRuleID string) string {
@@ -733,6 +1205,7 @@ func (r *mockManualOverrideRepo) ListByAttack(_ context.Context, attackID int) (
 			out = append(out, o)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
 }
 
@@ -746,6 +1219,21 @@ type mockScheduledActionRepo struct {
 	// v1.2 PR-4 P2 fault-injection: when non-nil, Schedule returns this error
 	// so tests can exercise the "persist failed" fallback path.
 	scheduleErr error
+	markErrors  []error
+	markCalls   int
+	firstMark   chan struct{}
+}
+
+func (r *mockScheduledActionRepo) appendRecords(records ...store.ScheduledAction) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = append(r.records, records...)
+}
+
+func (r *mockScheduledActionRepo) setNextID(nextID int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID = nextID
 }
 
 func (r *mockScheduledActionRepo) businessKey(actionType string, attackID, actionID, connectorID int, externalRuleID string) string {
@@ -774,7 +1262,7 @@ func (r *mockScheduledActionRepo) Schedule(_ context.Context, a *store.Scheduled
 				return rec.ID, nil
 			}
 		} else {
-			if r.businessKey(rec.ActionType, rec.AttackID, rec.ActionID, rec.ConnectorID, rec.ExternalRuleID) ==
+			if rec.AnnouncementID == nil && r.businessKey(rec.ActionType, rec.AttackID, rec.ActionID, rec.ConnectorID, rec.ExternalRuleID) ==
 				r.businessKey(a.ActionType, a.AttackID, a.ActionID, a.ConnectorID, a.ExternalRuleID) {
 				rec.ScheduledFor = a.ScheduledFor
 				return rec.ID, nil
@@ -785,6 +1273,12 @@ func (r *mockScheduledActionRepo) Schedule(_ context.Context, a *store.Scheduled
 	cp := *a
 	cp.ID = r.nextID
 	cp.Status = "pending"
+	if cp.AnnouncementID != nil {
+		cp.AttackID = 0
+		cp.ActionID = 0
+		cp.ConnectorID = 0
+		cp.ExternalRuleID = ""
+	}
 	cp.CreatedAt = time.Now()
 	r.records = append(r.records, cp)
 	return cp.ID, nil
@@ -838,19 +1332,33 @@ func (r *mockScheduledActionRepo) CancelAllForAttack(_ context.Context, attackID
 	return n, nil
 }
 
-func (r *mockScheduledActionRepo) MarkExecuting(_ context.Context, id int) error {
+func (r *mockScheduledActionRepo) MarkExecuting(ctx context.Context, id int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.markCalls++
+	if r.markCalls == 1 && r.firstMark != nil {
+		close(r.firstMark)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(r.markErrors) > 0 {
+		err := r.markErrors[0]
+		r.markErrors = r.markErrors[1:]
+		if err != nil {
+			return err
+		}
+	}
 	for i := range r.records {
 		if r.records[i].ID == id {
 			if r.records[i].Status != "pending" {
-				return fmt.Errorf("scheduled_action %d status=%s, not pending", id, r.records[i].Status)
+				return fmt.Errorf("scheduled_action %d status=%s: %w", id, r.records[i].Status, store.ErrNotPending)
 			}
 			r.records[i].Status = "executing"
 			return nil
 		}
 	}
-	return fmt.Errorf("scheduled_action %d not found", id)
+	return fmt.Errorf("scheduled_action %d: %w", id, store.ErrNotPending)
 }
 
 func (r *mockScheduledActionRepo) Complete(_ context.Context, id int) error {
@@ -891,6 +1399,7 @@ func (r *mockScheduledActionRepo) ListPending(_ context.Context) ([]store.Schedu
 			out = append(out, rec)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ScheduledFor.Before(out[j].ScheduledFor) })
 	return out, nil
 }
 
@@ -945,6 +1454,9 @@ func (r *mockXDropActiveRuleRepo) Upsert(_ context.Context, rule *store.XDropAct
 	defer r.mu.Unlock()
 	if idx := r.findIdxLocked(rule.AttackID, rule.ActionID, rule.ConnectorID, rule.ExternalRuleID); idx >= 0 {
 		existing := &r.records[idx]
+		if existing.Status == "withdrawn" {
+			return existing.ID, nil
+		}
 		existing.Status = rule.Status
 		existing.DelayMinutes = rule.DelayMinutes
 		existing.DelayStartedAt = rule.DelayStartedAt
@@ -954,6 +1466,7 @@ func (r *mockXDropActiveRuleRepo) Upsert(_ context.Context, rule *store.XDropAct
 	r.nextID++
 	cp := *rule
 	cp.ID = r.nextID
+	cp.WithdrawnAt = nil
 	cp.CreatedAt = time.Now()
 	r.records = append(r.records, cp)
 	return cp.ID, nil
@@ -967,7 +1480,7 @@ func (r *mockXDropActiveRuleRepo) MarkWithdrawing(_ context.Context, attackID, a
 		return false, nil
 	}
 	switch r.records[idx].Status {
-	case "active", "delayed":
+	case "active", "delayed", "failed":
 		r.records[idx].Status = "withdrawing"
 		return true, nil
 	}
@@ -984,6 +1497,7 @@ func (r *mockXDropActiveRuleRepo) MarkWithdrawn(_ context.Context, attackID, act
 	now := time.Now()
 	r.records[idx].Status = "withdrawn"
 	r.records[idx].WithdrawnAt = &now
+	r.records[idx].ErrorMessage = ""
 	return nil
 }
 
@@ -992,6 +1506,9 @@ func (r *mockXDropActiveRuleRepo) MarkFailed(_ context.Context, attackID, action
 	defer r.mu.Unlock()
 	idx := r.findIdxLocked(attackID, actionID, connectorID, externalRuleID)
 	if idx < 0 {
+		return nil
+	}
+	if r.records[idx].Status == "withdrawn" {
 		return nil
 	}
 	r.records[idx].Status = "failed"
@@ -1004,6 +1521,9 @@ func (r *mockXDropActiveRuleRepo) MarkDelayed(_ context.Context, attackID, actio
 	defer r.mu.Unlock()
 	idx := r.findIdxLocked(attackID, actionID, connectorID, externalRuleID)
 	if idx < 0 {
+		return nil
+	}
+	if r.records[idx].Status != "active" && r.records[idx].Status != "failed" {
 		return nil
 	}
 	now := time.Now()
@@ -1023,6 +1543,7 @@ func (r *mockXDropActiveRuleRepo) ListActive(_ context.Context) ([]store.XDropAc
 			out = append(out, rec)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
 }
 
@@ -1035,6 +1556,7 @@ func (r *mockXDropActiveRuleRepo) ListWithdrawing(_ context.Context) ([]store.XD
 			out = append(out, rec)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
 }
 
@@ -1047,6 +1569,7 @@ func (r *mockXDropActiveRuleRepo) ListByAttack(_ context.Context, attackID int) 
 			out = append(out, rec)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
 }
 
@@ -1065,12 +1588,13 @@ func (r *mockXDropActiveRuleRepo) CountByStatus(_ context.Context) (map[string]i
 // each Attach/Detach/ForceWithdraw — matches the serialization guarantee
 // that SELECT ... FOR UPDATE provides in postgres.
 type mockBGPAnnouncementRepo struct {
-	mu             sync.Mutex
-	announcements  []store.BGPAnnouncement
-	attacks        []store.BGPAnnouncementAttack
-	events         []store.BGPAnnouncementEvent
-	nextAnnID      int
-	nextEventID    int
+	liveAttack    func(int) bool
+	mu            sync.Mutex
+	announcements []store.BGPAnnouncement
+	attacks       []store.BGPAnnouncementAttack
+	events        []store.BGPAnnouncementEvent
+	nextAnnID     int
+	nextEventID   int
 }
 
 func (r *mockBGPAnnouncementRepo) findByBKLocked(prefix, routeMap string, connectorID int) *store.BGPAnnouncement {
@@ -1172,40 +1696,61 @@ func (r *mockBGPAnnouncementRepo) Attach(_ context.Context, p store.BGPAttachPar
 	if existing == nil {
 		r.nextAnnID++
 		a := store.BGPAnnouncement{
-			ID:           r.nextAnnID,
-			Prefix:       p.Prefix,
-			RouteMap:     p.RouteMap,
-			ConnectorID:  p.ConnectorID,
+			ID:            r.nextAnnID,
+			Prefix:        p.Prefix,
+			RouteMap:      p.RouteMap,
+			ConnectorID:   p.ConnectorID,
 			FirstActionID: p.ActionID,
-			Status:       "announcing",
-			Refcount:     1,
-			DelayMinutes: p.DelayMinutes,
-			AnnouncedAt:  time.Now(),
-			CreatedAt:    time.Now(),
+			Status:        "announcing",
+			Refcount:      1,
+			DelayMinutes:  p.DelayMinutes,
+			AnnouncedAt:   time.Now(),
+			CreatedAt:     time.Now(),
 		}
 		r.announcements = append(r.announcements, a)
 		r.upsertAttackLocked(a.ID, p.AttackID, p.ActionID, p.ResponseName, p.DelayMinutes)
 		r.appendEventLocked(a.ID, store.BGPEventAttackAttached, &aid, "initial attach")
 		return store.BGPAttachResult{AnnouncementID: a.ID, NeedAnnounce: true}, nil
 	}
+	increment := 1
+	for _, a := range r.attacks {
+		if a.AnnouncementID == existing.ID && a.AttackID == p.AttackID && a.DetachedAt == nil {
+			increment = 0
+			break
+		}
+	}
 	switch existing.Status {
 	case "announcing", "active":
-		existing.Refcount++
+		existing.Refcount += increment
 		r.upsertAttackLocked(existing.ID, p.AttackID, p.ActionID, p.ResponseName, p.DelayMinutes)
 		r.recomputeDelayLocked(existing.ID)
 		r.appendEventLocked(existing.ID, store.BGPEventAttackAttached, &aid, fmt.Sprintf("shared (refcount=%d)", existing.Refcount))
-		return store.BGPAttachResult{AnnouncementID: existing.ID, NeedAnnounce: false}, nil
+		return store.BGPAttachResult{AnnouncementID: existing.ID, Gen: existing.Gen, NeedAnnounce: false}, nil
 	case "delayed":
-		existing.Refcount++
+		existing.Refcount += increment
 		existing.Status = "active"
 		existing.DelayStartedAt = nil
 		r.upsertAttackLocked(existing.ID, p.AttackID, p.ActionID, p.ResponseName, p.DelayMinutes)
 		r.recomputeDelayLocked(existing.ID)
 		r.appendEventLocked(existing.ID, store.BGPEventDelayCancelled, &aid, "new attack attached during delay")
-		return store.BGPAttachResult{AnnouncementID: existing.ID, NeedAnnounce: false}, nil
+		return store.BGPAttachResult{AnnouncementID: existing.ID, Gen: existing.Gen, NeedAnnounce: false}, nil
 	case "withdrawn", "failed":
+		liveResidual := 0
+		for i := range r.attacks {
+			row := &r.attacks[i]
+			if row.AnnouncementID != existing.ID || row.AttackID == p.AttackID || row.DetachedAt != nil {
+				continue
+			}
+			if r.liveAttack(row.AttackID) {
+				liveResidual++
+			} else {
+				now := time.Now()
+				row.DetachedAt = &now
+			}
+		}
 		existing.Status = "announcing"
-		existing.Refcount = 1
+		existing.Gen++
+		existing.Refcount = 1 + liveResidual
 		existing.AnnouncedAt = time.Now()
 		existing.WithdrawnAt = nil
 		existing.DelayStartedAt = nil
@@ -1214,7 +1759,7 @@ func (r *mockBGPAnnouncementRepo) Attach(_ context.Context, p store.BGPAttachPar
 		r.upsertAttackLocked(existing.ID, p.AttackID, p.ActionID, p.ResponseName, p.DelayMinutes)
 		r.recomputeDelayLocked(existing.ID)
 		r.appendEventLocked(existing.ID, store.BGPEventAttackAttached, &aid, "resurrect")
-		return store.BGPAttachResult{AnnouncementID: existing.ID, NeedAnnounce: true}, nil
+		return store.BGPAttachResult{AnnouncementID: existing.ID, Gen: existing.Gen, NeedAnnounce: true}, nil
 	}
 	return store.BGPAttachResult{}, fmt.Errorf("cannot attach to announcement %d in status %s", existing.ID, existing.Status)
 }
@@ -1239,7 +1784,7 @@ func (r *mockBGPAnnouncementRepo) Detach(_ context.Context, attackID int, prefix
 		}
 	}
 	if !detached {
-		return store.BGPDetachResult{AnnouncementID: existing.ID}, nil
+		return store.BGPDetachResult{AnnouncementID: existing.ID, Gen: existing.Gen}, nil
 	}
 	if existing.Refcount > 0 {
 		existing.Refcount--
@@ -1247,40 +1792,46 @@ func (r *mockBGPAnnouncementRepo) Detach(_ context.Context, attackID int, prefix
 	r.recomputeDelayLocked(existing.ID)
 	r.appendEventLocked(existing.ID, store.BGPEventAttackDetached, &aid, fmt.Sprintf("refcount=%d", existing.Refcount))
 
-	result := store.BGPDetachResult{AnnouncementID: existing.ID, RefcountAfter: existing.Refcount}
+	result := store.BGPDetachResult{AnnouncementID: existing.ID, Gen: existing.Gen, RefcountAfter: existing.Refcount}
 	if existing.Refcount > 0 {
 		return result, nil
 	}
 	if existing.DelayMinutes > 0 {
-		existing.Status = "delayed"
-		now := time.Now()
-		existing.DelayStartedAt = &now
+		if existing.Status == "active" || existing.Status == "announcing" {
+			existing.Status = "delayed"
+			now := time.Now()
+			existing.DelayStartedAt = &now
+		}
 		r.appendEventLocked(existing.ID, store.BGPEventDelayStarted, &aid, fmt.Sprintf("delay_minutes=%d", existing.DelayMinutes))
 		result.Delayed = true
 		result.DelayMinutes = existing.DelayMinutes
 		return result, nil
 	}
-	existing.Status = "withdrawing"
+	if existing.Status == "active" || existing.Status == "announcing" || existing.Status == "delayed" {
+		existing.Status = "withdrawing"
+	}
 	result.NeedWithdraw = true
 	return result, nil
 }
 
-func (r *mockBGPAnnouncementRepo) MarkAnnounced(_ context.Context, id int) error {
+func (r *mockBGPAnnouncementRepo) MarkAnnounced(_ context.Context, id int, gen int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if a := r.findByIDLocked(id); a != nil && a.Status == "announcing" {
+	if a := r.findByIDLocked(id); a != nil && a.Gen == gen && a.Status == "announcing" {
 		a.Status = "active"
+	} else {
+		return store.ErrStaleAnnouncement
 	}
 	r.appendEventLocked(id, store.BGPEventAnnounced, nil, "vtysh announce succeeded")
 	return nil
 }
 
-func (r *mockBGPAnnouncementRepo) MarkWithdrawing(_ context.Context, id int) (bool, error) {
+func (r *mockBGPAnnouncementRepo) MarkWithdrawing(_ context.Context, id int, gen int) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if a := r.findByIDLocked(id); a != nil {
+	if a := r.findByIDLocked(id); a != nil && a.Gen == gen {
 		switch a.Status {
-		case "active", "delayed":
+		case "delayed":
 			a.Status = "withdrawing"
 			return true, nil
 		}
@@ -1288,26 +1839,72 @@ func (r *mockBGPAnnouncementRepo) MarkWithdrawing(_ context.Context, id int) (bo
 	return false, nil
 }
 
-func (r *mockBGPAnnouncementRepo) MarkWithdrawn(_ context.Context, id int) error {
+func (r *mockBGPAnnouncementRepo) ClaimWithdrawing(_ context.Context, id, gen int) (int, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if a := r.findByIDLocked(id); a != nil {
+	if a := r.findByIDLocked(id); a != nil && a.Gen == gen && a.Status == "withdrawing" {
+		a.Gen++
+		return a.Gen, true, nil
+	}
+	return 0, false, nil
+}
+
+func (r *mockBGPAnnouncementRepo) ClaimFailedWithdraw(_ context.Context, id, gen int) (int, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a := r.findByIDLocked(id)
+	if a == nil || a.Gen != gen || a.Status != "failed" || a.Refcount != 0 {
+		return 0, false, nil
+	}
+	for _, attachment := range r.attacks {
+		if attachment.AnnouncementID == id && attachment.DetachedAt == nil {
+			return 0, false, nil
+		}
+	}
+	a.Status = "withdrawing"
+	a.Gen++
+	r.appendEventLocked(id, "withdraw_retry_claimed", nil, fmt.Sprintf("generation %d -> %d", gen, a.Gen))
+	return a.Gen, true, nil
+}
+
+func (r *mockBGPAnnouncementRepo) CountLiveByConnector(_ context.Context, connectorID int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, a := range r.announcements {
+		if a.ConnectorID != connectorID {
+			continue
+		}
+		switch a.Status {
+		case "announcing", "active", "delayed", "withdrawing", "failed", "orphan":
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (r *mockBGPAnnouncementRepo) MarkWithdrawn(_ context.Context, id int, gen int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a := r.findByIDLocked(id); a != nil && a.Gen == gen && (a.Status == "withdrawing" || a.Status == "delayed" || a.Status == "failed") {
 		a.Status = "withdrawn"
 		now := time.Now()
 		a.WithdrawnAt = &now
+	} else {
+		return store.ErrStaleAnnouncement
 	}
 	r.appendEventLocked(id, store.BGPEventWithdrawn, nil, "vtysh withdraw succeeded")
 	return nil
 }
 
-func (r *mockBGPAnnouncementRepo) MarkFailedAnnounce(_ context.Context, id int, errMsg string) error {
+func (r *mockBGPAnnouncementRepo) MarkFailedAnnounce(_ context.Context, id int, gen int, errMsg string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a := r.findByIDLocked(id)
-	if a == nil {
-		return nil
+	if a == nil || a.Gen != gen || (a.Status != "announcing" && a.Status != "active" && a.Status != "delayed" && a.Status != "withdrawing") {
+		return store.ErrStaleAnnouncement
 	}
-	if a.Refcount == 1 {
+	if a.Status == "announcing" && a.Refcount == 1 && a.Gen == 0 {
 		// safe delete — drop row + attacks + events
 		idx := -1
 		for i := range r.announcements {
@@ -1342,34 +1939,44 @@ func (r *mockBGPAnnouncementRepo) MarkFailedAnnounce(_ context.Context, id int, 
 	return nil
 }
 
-func (r *mockBGPAnnouncementRepo) MarkFailedWithdraw(_ context.Context, id int, errMsg string) error {
+func (r *mockBGPAnnouncementRepo) MarkFailedWithdraw(_ context.Context, id int, gen int, errMsg string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if a := r.findByIDLocked(id); a != nil {
+	if a := r.findByIDLocked(id); a != nil && a.Gen == gen && (a.Status == "withdrawing" || a.Status == "delayed" || a.Status == "failed") {
 		a.Status = "failed"
 		a.ErrorMessage = errMsg
+	} else {
+		return store.ErrStaleAnnouncement
 	}
 	r.appendEventLocked(id, store.BGPEventWithdrawFailed, nil, errMsg)
 	return nil
 }
 
-func (r *mockBGPAnnouncementRepo) ForceWithdraw(_ context.Context, id int) error {
+func (r *mockBGPAnnouncementRepo) ForceWithdraw(_ context.Context, id int) ([]store.BGPAnnouncementAttack, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a := r.findByIDLocked(id)
-	if a == nil || a.Status == "withdrawn" || a.Status == "dismissed" {
-		return nil
+	if a == nil {
+		return nil, 0, nil
+	}
+	if a.Status == "withdrawn" || a.Status == "dismissed" {
+		return nil, a.Gen, nil
 	}
 	a.Status = "withdrawing"
+	a.Gen++
 	a.Refcount = 0
+	var detached []store.BGPAnnouncementAttack
 	now := time.Now()
 	for i := range r.attacks {
 		if r.attacks[i].AnnouncementID == id && r.attacks[i].DetachedAt == nil {
 			r.attacks[i].DetachedAt = &now
+			cp := r.attacks[i]
+			cp.ActionID = snapshotPointer(cp.ActionID)
+			detached = append(detached, cp)
 		}
 	}
 	r.appendEventLocked(id, store.BGPEventAttackDetached, nil, "force withdraw by operator")
-	return nil
+	return detached, a.Gen, nil
 }
 
 func (r *mockBGPAnnouncementRepo) Dismiss(_ context.Context, id int) error {
@@ -1422,7 +2029,7 @@ func (r *mockBGPAnnouncementRepo) UpsertOrphan(_ context.Context, prefix, routeM
 		if a.Prefix == prefix && a.RouteMap == routeMap && a.ConnectorID == connectorID {
 			if a.Status == "withdrawn" {
 				a.Status = status
-				a.Refcount = 0
+				a.Gen++
 				r.appendEventLocked(a.ID, store.BGPEventOrphanDetected, nil,
 					"bootstrap scan marked "+prefix+" route-map="+routeMap+" as "+status)
 				return true, nil
@@ -1439,6 +2046,8 @@ func (r *mockBGPAnnouncementRepo) UpsertOrphan(_ context.Context, prefix, routeM
 		ConnectorID: connectorID,
 		Status:      status,
 		Refcount:    0,
+		AnnouncedAt: time.Now(),
+		CreatedAt:   time.Now(),
 	})
 	r.appendEventLocked(r.nextAnnID, store.BGPEventOrphanDetected, nil,
 		"bootstrap scan marked "+prefix+" route-map="+routeMap+" as "+status)
@@ -1454,6 +2063,7 @@ func (r *mockBGPAnnouncementRepo) ListDismissed(_ context.Context) ([]store.BGPA
 			out = append(out, a)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AnnouncedAt.After(out[j].AnnouncedAt) })
 	return out, nil
 }
 
@@ -1467,6 +2077,7 @@ func (r *mockBGPAnnouncementRepo) ListActive(_ context.Context) ([]store.BGPAnno
 			out = append(out, a)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AnnouncedAt.After(out[j].AnnouncedAt) })
 	return out, nil
 }
 
@@ -1479,6 +2090,7 @@ func (r *mockBGPAnnouncementRepo) ListByStatus(_ context.Context, status string)
 			out = append(out, a)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AnnouncedAt.After(out[j].AnnouncedAt) })
 	return out, nil
 }
 
@@ -1491,6 +2103,7 @@ func (r *mockBGPAnnouncementRepo) ListAttacks(_ context.Context, announcementID 
 			out = append(out, a)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AttachedAt.After(out[j].AttachedAt) })
 	return out, nil
 }
 
@@ -1503,6 +2116,7 @@ func (r *mockBGPAnnouncementRepo) ListAttachmentsForAttack(_ context.Context, at
 			out = append(out, a)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].AttachedAt.Before(out[j].AttachedAt) })
 	return out, nil
 }
 
@@ -1522,6 +2136,9 @@ func (r *mockBGPAnnouncementRepo) ListEvents(_ context.Context, announcementID i
 			out = append(out, e)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt) || (out[i].CreatedAt.Equal(out[j].CreatedAt) && out[i].ID < out[j].ID)
+	})
 	return out, nil
 }
 
@@ -1529,76 +2146,193 @@ func (r *mockBGPAnnouncementRepo) ListEvents(_ context.Context, announcementID i
 
 type stubNodeRepo struct{}
 
-func (stubNodeRepo) List(_ context.Context) ([]store.Node, error)                            { return nil, nil }
-func (stubNodeRepo) Get(_ context.Context, _ string) (*store.Node, error)                    { return nil, errors.New("not implemented") }
-func (stubNodeRepo) Create(_ context.Context, _ *store.Node) error                           { return nil }
-func (stubNodeRepo) Update(_ context.Context, _ *store.Node) error                           { return nil }
-func (stubNodeRepo) Delete(_ context.Context, _ string) error                                { return nil }
-func (stubNodeRepo) UpdateMode(_ context.Context, _, _ string) error                         { return nil }
-func (stubNodeRepo) UpdateDeliveryVersionCurrent(_ context.Context, _ string, _ int64) error { return nil }
-func (stubNodeRepo) UpdateACK(_ context.Context, _ string, _ int64) error                    { return nil }
+func (stubNodeRepo) List(_ context.Context) ([]store.Node, error) { return nil, nil }
+func (stubNodeRepo) Get(_ context.Context, _ string) (*store.Node, error) {
+	return nil, errors.New("not implemented")
+}
+func (stubNodeRepo) Create(_ context.Context, _ *store.Node) error   { return nil }
+func (stubNodeRepo) Update(_ context.Context, _ *store.Node) error   { return nil }
+func (stubNodeRepo) Delete(_ context.Context, _ string) error        { return nil }
+func (stubNodeRepo) UpdateMode(_ context.Context, _, _ string) error { return nil }
+func (stubNodeRepo) UpdateDeliveryVersionCurrent(_ context.Context, _ string, _ int64) error {
+	return nil
+}
+func (stubNodeRepo) UpdateACK(_ context.Context, _ string, _ int64) error { return nil }
+
+func (stubNodeRepo) MarkConfigFailed(_ context.Context, _ string, _ int64) error { return nil }
 
 type stubPrefixRepo struct{}
 
-func (stubPrefixRepo) List(_ context.Context) ([]store.WatchPrefix, error)         { return nil, nil }
-func (stubPrefixRepo) Count(_ context.Context) (int, error)                        { return 0, nil }
-func (stubPrefixRepo) Get(_ context.Context, _ int) (*store.WatchPrefix, error)    { return nil, errors.New("not implemented") }
+func (stubPrefixRepo) List(_ context.Context) ([]store.WatchPrefix, error) { return nil, nil }
+func (stubPrefixRepo) Count(_ context.Context) (int, error)                { return 0, nil }
+func (stubPrefixRepo) Get(_ context.Context, _ int) (*store.WatchPrefix, error) {
+	return nil, errors.New("not implemented")
+}
 func (stubPrefixRepo) Create(_ context.Context, _ *store.WatchPrefix) (int, error) { return 0, nil }
 func (stubPrefixRepo) Update(_ context.Context, _ *store.WatchPrefix) error        { return nil }
 func (stubPrefixRepo) Delete(_ context.Context, _ int) error                       { return nil }
 func (stubPrefixRepo) ListTree(_ context.Context) ([]store.WatchPrefix, error)     { return nil, nil }
 
-type stubThresholdTemplateRepo struct{}
+// Minimal stored fixtures for the response_id foreign-key contract.
+type stubThresholdTemplateRepo struct {
+	mu      sync.Mutex
+	records map[int]store.ThresholdTemplate
+	nextID  int
+}
 
-func (stubThresholdTemplateRepo) List(_ context.Context) ([]store.ThresholdTemplate, error) {
+func (*stubThresholdTemplateRepo) List(_ context.Context) ([]store.ThresholdTemplate, error) {
 	return nil, nil
 }
-func (stubThresholdTemplateRepo) Get(_ context.Context, _ int) (*store.ThresholdTemplate, error) {
-	return nil, errors.New("not implemented")
+func (r *stubThresholdTemplateRepo) Get(_ context.Context, id int) (*store.ThresholdTemplate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.records[id]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	// postgres/template.go: templateRepo.Get does not select the aggregate counts.
+	return &store.ThresholdTemplate{
+		ID: v.ID, Name: v.Name, Description: v.Description,
+		ResponseID: snapshotPointer(v.ResponseID), CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
+	}, nil
 }
-func (stubThresholdTemplateRepo) Create(_ context.Context, _ *store.ThresholdTemplate) (int, error) {
-	return 0, nil
+
+func (r *stubThresholdTemplateRepo) clearResponseID(responseID int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, v := range r.records {
+		if v.ResponseID != nil && *v.ResponseID == responseID {
+			v.ResponseID = nil
+			r.records[id] = v
+		}
+	}
 }
-func (stubThresholdTemplateRepo) Update(_ context.Context, _ *store.ThresholdTemplate) error {
+
+func (r *stubThresholdTemplateRepo) countByResponse(responseID int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, v := range r.records {
+		if v.ResponseID != nil && *v.ResponseID == responseID {
+			count++
+		}
+	}
+	return count
+}
+func (r *stubThresholdTemplateRepo) Create(_ context.Context, v *store.ThresholdTemplate) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.records == nil {
+		r.records = make(map[int]store.ThresholdTemplate)
+	}
+	r.nextID++
+	// postgres/template.go: templateRepo.Create writes only these three columns.
+	// Both timestamp defaults use the same transaction time in postgres.go:migrations.
+	now := time.Now()
+	cp := store.ThresholdTemplate{
+		ID: r.nextID, Name: v.Name, Description: v.Description,
+		ResponseID: snapshotPointer(v.ResponseID), CreatedAt: now, UpdatedAt: now,
+	}
+	r.records[cp.ID] = cp
+	return cp.ID, nil
+}
+func (*stubThresholdTemplateRepo) Update(_ context.Context, _ *store.ThresholdTemplate) error {
 	return nil
 }
-func (stubThresholdTemplateRepo) Delete(_ context.Context, _ int) error { return nil }
-func (stubThresholdTemplateRepo) Duplicate(_ context.Context, _ int, _ string) (int, error) {
+func (*stubThresholdTemplateRepo) Delete(_ context.Context, _ int) error { return nil }
+func (*stubThresholdTemplateRepo) Duplicate(_ context.Context, _ int, _ string) (int, error) {
 	return 0, nil
 }
-func (stubThresholdTemplateRepo) ListRules(_ context.Context, _ int) ([]store.Threshold, error) {
+func (*stubThresholdTemplateRepo) ListRules(_ context.Context, _ int) ([]store.Threshold, error) {
 	return nil, nil
 }
-func (stubThresholdTemplateRepo) ListPrefixesUsing(_ context.Context, _ int) ([]store.WatchPrefix, error) {
+func (*stubThresholdTemplateRepo) ListPrefixesUsing(_ context.Context, _ int) ([]store.WatchPrefix, error) {
 	return nil, nil
 }
 
-type stubThresholdRepo struct{}
+// Minimal stored fixtures for the response_id foreign-key contract.
+type stubThresholdRepo struct {
+	mu      sync.Mutex
+	records map[int]store.Threshold
+	nextID  int
+}
 
-func (stubThresholdRepo) List(_ context.Context) ([]store.Threshold, error)                { return nil, nil }
-func (stubThresholdRepo) Count(_ context.Context) (int, error)                             { return 0, nil }
-func (stubThresholdRepo) ListByPrefix(_ context.Context, _ int) ([]store.Threshold, error) { return nil, nil }
-func (stubThresholdRepo) Get(_ context.Context, _ int) (*store.Threshold, error)           { return nil, errors.New("not implemented") }
-func (stubThresholdRepo) Create(_ context.Context, _ *store.Threshold) (int, error)        { return 0, nil }
-func (stubThresholdRepo) Update(_ context.Context, _ *store.Threshold) error               { return nil }
-func (stubThresholdRepo) Delete(_ context.Context, _ int) error                            { return nil }
+// snapshotThreshold isolates every nullable business field on both storage boundaries.
+// store.Threshold has no slice fields; time.Time values are immutable value copies.
+func snapshotThreshold(v store.Threshold) store.Threshold {
+	v.TemplateID = snapshotPointer(v.TemplateID)
+	v.PrefixID = snapshotPointer(v.PrefixID)
+	v.ResponseID = snapshotPointer(v.ResponseID)
+	return v
+}
+
+func (*stubThresholdRepo) List(_ context.Context) ([]store.Threshold, error) { return nil, nil }
+func (*stubThresholdRepo) Count(_ context.Context) (int, error)              { return 0, nil }
+func (*stubThresholdRepo) ListByPrefix(_ context.Context, _ int) ([]store.Threshold, error) {
+	return nil, nil
+}
+func (r *stubThresholdRepo) Get(_ context.Context, id int) (*store.Threshold, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.records[id]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	v = snapshotThreshold(v)
+	return &v, nil
+}
+
+func (r *stubThresholdRepo) clearResponseID(responseID int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, v := range r.records {
+		if v.ResponseID != nil && *v.ResponseID == responseID {
+			v.ResponseID = nil
+			r.records[id] = v
+		}
+	}
+}
+func (r *stubThresholdRepo) Create(_ context.Context, v *store.Threshold) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.records == nil {
+		r.records = make(map[int]store.Threshold)
+	}
+	r.nextID++
+	cp := snapshotThreshold(*v)
+	cp.ID = r.nextID
+	cp.CreatedAt = time.Now()
+	r.records[cp.ID] = cp
+	return cp.ID, nil
+}
+func (*stubThresholdRepo) Update(_ context.Context, _ *store.Threshold) error { return nil }
+func (*stubThresholdRepo) Delete(_ context.Context, _ int) error              { return nil }
 
 type stubUserRepo struct{}
 
-func (stubUserRepo) List(_ context.Context) ([]store.User, error)                   { return nil, nil }
-func (stubUserRepo) Get(_ context.Context, _ int) (*store.User, error)              { return nil, errors.New("not implemented") }
-func (stubUserRepo) GetByUsername(_ context.Context, _ string) (*store.User, error) { return nil, errors.New("not implemented") }
-func (stubUserRepo) Create(_ context.Context, _ *store.User) (int, error)           { return 0, nil }
-func (stubUserRepo) Update(_ context.Context, _ *store.User) error                  { return nil }
-func (stubUserRepo) Delete(_ context.Context, _ int) error                          { return nil }
+func (stubUserRepo) List(_ context.Context) ([]store.User, error) { return nil, nil }
+func (stubUserRepo) Get(_ context.Context, id int) (*store.User, error) {
+	if id == 1 {
+		return &store.User{ID: 1, Username: "testuser", Role: "admin", Enabled: true, UpdatedAt: testUserUpdatedAt}, nil
+	}
+	return nil, fmt.Errorf("user %d: %w", id, pgx.ErrNoRows)
+}
+func (stubUserRepo) GetByUsername(_ context.Context, _ string) (*store.User, error) {
+	return nil, errors.New("not implemented")
+}
+func (stubUserRepo) Create(_ context.Context, _ *store.User) (int, error) { return 0, nil }
+func (stubUserRepo) Update(_ context.Context, _ *store.User) error        { return nil }
+func (stubUserRepo) Delete(_ context.Context, _ int) error                { return nil }
 
 type stubWebhookRepo struct{}
 
-func (stubWebhookRepo) List(_ context.Context) ([]store.Webhook, error)          { return nil, nil }
-func (stubWebhookRepo) Get(_ context.Context, _ int) (*store.Webhook, error)     { return nil, errors.New("not implemented") }
-func (stubWebhookRepo) Create(_ context.Context, _ *store.Webhook) (int, error)  { return 0, nil }
-func (stubWebhookRepo) Update(_ context.Context, _ *store.Webhook) error         { return nil }
-func (stubWebhookRepo) Delete(_ context.Context, _ int) error                    { return nil }
+func (stubWebhookRepo) List(_ context.Context) ([]store.Webhook, error) { return nil, nil }
+func (stubWebhookRepo) Get(_ context.Context, _ int) (*store.Webhook, error) {
+	return nil, errors.New("not implemented")
+}
+func (stubWebhookRepo) Create(_ context.Context, _ *store.Webhook) (int, error) { return 0, nil }
+func (stubWebhookRepo) Update(_ context.Context, _ *store.Webhook) error        { return nil }
+func (stubWebhookRepo) Delete(_ context.Context, _ int) error                   { return nil }
 
 type stubAuditLogRepo struct{}
 
@@ -1659,11 +2393,17 @@ func (stubWebhookConnectorRepo) Delete(_ context.Context, _ int) error { return 
 
 type stubShellConnectorRepo struct{}
 
-func (stubShellConnectorRepo) List(_ context.Context) ([]store.ShellConnector, error)          { return nil, nil }
-func (stubShellConnectorRepo) Get(_ context.Context, _ int) (*store.ShellConnector, error)     { return nil, errors.New("not implemented") }
-func (stubShellConnectorRepo) Create(_ context.Context, _ *store.ShellConnector) (int, error)  { return 0, nil }
-func (stubShellConnectorRepo) Update(_ context.Context, _ *store.ShellConnector) error         { return nil }
-func (stubShellConnectorRepo) Delete(_ context.Context, _ int) error                           { return nil }
+func (stubShellConnectorRepo) List(_ context.Context) ([]store.ShellConnector, error) {
+	return nil, nil
+}
+func (stubShellConnectorRepo) Get(_ context.Context, _ int) (*store.ShellConnector, error) {
+	return nil, errors.New("not implemented")
+}
+func (stubShellConnectorRepo) Create(_ context.Context, _ *store.ShellConnector) (int, error) {
+	return 0, nil
+}
+func (stubShellConnectorRepo) Update(_ context.Context, _ *store.ShellConnector) error { return nil }
+func (stubShellConnectorRepo) Delete(_ context.Context, _ int) error                   { return nil }
 
 type stubFlowLogRepo struct{}
 
@@ -1677,16 +2417,54 @@ func (stubFlowLogRepo) QueryBySrcIP(_ context.Context, _ store.FlowLogFilter) ([
 
 type stubFlowListenerRepo struct{}
 
-func (stubFlowListenerRepo) List(_ context.Context, _ string) ([]store.FlowListener, error)      { return nil, nil }
-func (stubFlowListenerRepo) Get(_ context.Context, _ int) (*store.FlowListener, error)           { return nil, errors.New("not implemented") }
-func (stubFlowListenerRepo) Create(_ context.Context, _ *store.FlowListener) (int, error)        { return 0, nil }
-func (stubFlowListenerRepo) Update(_ context.Context, _ *store.FlowListener) error               { return nil }
-func (stubFlowListenerRepo) Delete(_ context.Context, _ int) error                               { return nil }
+func (stubFlowListenerRepo) List(_ context.Context, _ string) ([]store.FlowListener, error) {
+	return nil, nil
+}
+func (stubFlowListenerRepo) Get(_ context.Context, _ int) (*store.FlowListener, error) {
+	return nil, errors.New("not implemented")
+}
+func (stubFlowListenerRepo) Create(_ context.Context, _ *store.FlowListener) (int, error) {
+	return 0, nil
+}
+func (stubFlowListenerRepo) Update(_ context.Context, _ *store.FlowListener) error { return nil }
+func (stubFlowListenerRepo) Delete(_ context.Context, _ int) error                 { return nil }
 
 type stubFlowSourceRepo struct{}
 
-func (stubFlowSourceRepo) List(_ context.Context, _ int) ([]store.FlowSource, error)      { return nil, nil }
-func (stubFlowSourceRepo) Get(_ context.Context, _ int) (*store.FlowSource, error)        { return nil, errors.New("not implemented") }
-func (stubFlowSourceRepo) Create(_ context.Context, _ *store.FlowSource) (int, error)     { return 0, nil }
-func (stubFlowSourceRepo) Update(_ context.Context, _ *store.FlowSource) error            { return nil }
-func (stubFlowSourceRepo) Delete(_ context.Context, _ int) error                          { return nil }
+func (stubFlowSourceRepo) List(_ context.Context, _ int) ([]store.FlowSource, error) { return nil, nil }
+func (stubFlowSourceRepo) Get(_ context.Context, _ int) (*store.FlowSource, error) {
+	return nil, errors.New("not implemented")
+}
+func (stubFlowSourceRepo) Create(_ context.Context, _ *store.FlowSource) (int, error) { return 0, nil }
+func (stubFlowSourceRepo) Update(_ context.Context, _ *store.FlowSource) error        { return nil }
+func (stubFlowSourceRepo) Delete(_ context.Context, _ int) error                      { return nil }
+
+func (r *mockXDropActiveRuleRepo) CountLiveByConnector(_ context.Context, id int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, row := range r.records {
+		if row.ConnectorID == id && (row.Status == "active" || row.Status == "delayed" || row.Status == "withdrawing" || row.Status == "failed") {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// mockDstIPWithin mirrors `dst_ip <<= $n::inet`: the attack target lies inside the searched IP or network.
+func mockDstIPWithin(target, search string) bool {
+	t, okT := mockParseInet(target)
+	f, okF := mockParseInet(search)
+	return okT && okF && f.Bits() <= t.Bits() && f.Masked().Contains(t.Addr())
+}
+
+func mockParseInet(value string) (netip.Prefix, bool) {
+	if p, err := netip.ParsePrefix(value); err == nil {
+		return p, true
+	}
+	a, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(a, a.BitLen()), true
+}

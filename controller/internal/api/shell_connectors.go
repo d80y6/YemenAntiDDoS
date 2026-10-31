@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/littlewolf9527/xsight/controller/internal/action"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
 
@@ -16,7 +17,7 @@ func listShellConnectors(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		connectors, err := deps.Store.ShellConnectors().List(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, connectors)
@@ -46,10 +47,14 @@ func createShellConnector(deps Dependencies) gin.HandlerFunc {
 			req.TimeoutMs = 30000
 		}
 		req.Enabled = true
+		if err := action.ValidateTemplateVars("default_args", req.DefaultArgs); err != nil {
+			errResponse(c, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		id, err := deps.Store.ShellConnectors().Create(c, &req)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		req.ID = id
@@ -78,18 +83,30 @@ func updateShellConnector(deps Dependencies) gin.HandlerFunc {
 			errResponse(c, http.StatusNotFound, "shell connector not found")
 			return
 		}
-		var req store.ShellConnector
+		req := *old
 		if err := c.ShouldBindJSON(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		if req.Command != "" && !strings.HasPrefix(req.Command, "/") {
+		if req.Name == "" {
+			errResponse(c, http.StatusBadRequest, "name is required")
+			return
+		}
+		if req.Command == "" {
+			errResponse(c, http.StatusBadRequest, "command is required")
+			return
+		}
+		if !strings.HasPrefix(req.Command, "/") {
 			errResponse(c, http.StatusBadRequest, "command must be an absolute path (start with /)")
+			return
+		}
+		if err := action.ValidateTemplateVars("default_args", req.DefaultArgs); err != nil {
+			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
 		req.ID = id
 		if err := deps.Store.ShellConnectors().Update(c, &req); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "shell_connector", strconv.Itoa(id), "update", makeDiff(old, req))
@@ -103,7 +120,7 @@ func deleteShellConnector(deps Dependencies) gin.HandlerFunc {
 		// Check if any action references this shell connector (fail closed on error)
 		count, err := deps.Store.Responses().CountActionsByShellConnector(c, id)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, "failed to check connector usage: "+err.Error())
+			dbError(c, "failed to check connector usage: ", err)
 			return
 		}
 		if count > 0 {
@@ -113,7 +130,7 @@ func deleteShellConnector(deps Dependencies) gin.HandlerFunc {
 		}
 		old, _ := deps.Store.ShellConnectors().Get(c, id)
 		if err := deps.Store.ShellConnectors().Delete(c, id); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		publishAfterChange(c, deps, "shell_connector", strconv.Itoa(id), "delete", makeDiff(old, nil))

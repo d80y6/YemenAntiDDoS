@@ -2,14 +2,29 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
 
 type attackRepo struct{ pool *pgxpool.Pool }
+
+func (r *attackRepo) LiveIDs(ctx context.Context, ids []int) (map[int]bool, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id FROM attacks WHERE id = ANY($1) AND ended_at IS NULL`, ids)
+	if err != nil {
+		return nil, err
+	}
+	values, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	live := make(map[int]bool, len(values))
+	for _, id := range values {
+		live[id] = true
+	}
+	return live, err
+}
 
 const attackCols = `id, dst_ip::TEXT, prefix_id, direction, decoder_family,
 		attack_type, severity, confidence, peak_pps, peak_bps,
@@ -47,6 +62,16 @@ func buildAttackWhere(f store.AttackFilter) (string, []any) {
 		args = append(args, *f.TimeTo)
 		argN++
 	}
+	if f.DstIP != "" {
+		conds = append(conds, fmt.Sprintf("dst_ip <<= $%d::inet", argN))
+		args = append(args, f.DstIP)
+		argN++
+	}
+	if f.EndedAfter != nil {
+		conds = append(conds, fmt.Sprintf("(ended_at IS NULL OR ended_at >= $%d)", argN))
+		args = append(args, *f.EndedAfter)
+		argN++
+	}
 
 	where := ""
 	if len(conds) > 0 {
@@ -62,6 +87,15 @@ func (r *attackRepo) Count(ctx context.Context, f store.AttackFilter) (int, erro
 	return count, err
 }
 
+func attackListOrder(sort string) string {
+	switch sort {
+	case "peak_pps":
+		return "peak_pps DESC, started_at DESC, id DESC"
+	default:
+		return "started_at DESC, id DESC"
+	}
+}
+
 func (r *attackRepo) List(ctx context.Context, f store.AttackFilter) ([]store.Attack, error) {
 	where, args := buildAttackWhere(f)
 
@@ -70,8 +104,8 @@ func (r *attackRepo) List(ctx context.Context, f store.AttackFilter) ([]store.At
 		limit = f.Limit
 	}
 
-	q := fmt.Sprintf(`SELECT %s FROM attacks%s ORDER BY started_at DESC LIMIT %d OFFSET %d`,
-		attackCols, where, limit, f.Offset)
+	q := fmt.Sprintf(`SELECT %s FROM attacks%s ORDER BY %s LIMIT %d OFFSET %d`,
+		attackCols, where, attackListOrder(f.Sort), limit, f.Offset)
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -96,8 +130,25 @@ func (r *attackRepo) Get(ctx context.Context, id int) (*store.Attack, error) {
 }
 
 func (r *attackRepo) Create(ctx context.Context, a *store.Attack) (int, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	key := fmt.Sprintf("%s|%s|%s|%d", a.DstIP, a.Direction, a.DecoderFamily, a.StartedAt.UnixMicro())
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+		return 0, err
+	}
 	var id int
-	err := r.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx, `SELECT id FROM attacks WHERE dst_ip=$1::inet AND direction=$2 AND decoder_family=$3 AND started_at=$4 AND ended_at IS NULL`,
+		a.DstIP, a.Direction, a.DecoderFamily, a.StartedAt).Scan(&id)
+	if err == nil {
+		return id, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	err = tx.QueryRow(ctx,
 		`INSERT INTO attacks (dst_ip, prefix_id, direction, decoder_family,
 							  attack_type, severity, confidence, peak_pps, peak_bps,
 							  reason_codes, node_sources, response_id, threshold_rule_id, started_at,
@@ -108,14 +159,17 @@ func (r *attackRepo) Create(ctx context.Context, a *store.Attack) (int, error) {
 		a.AttackType, a.Severity, a.Confidence, a.PeakPPS, a.PeakBPS,
 		a.ReasonCodes, a.NodeSources, a.ResponseID, a.ThresholdRuleID, a.StartedAt,
 		a.TemplateName, a.RuleSummary).Scan(&id)
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit(ctx)
 }
 
 func (r *attackRepo) Update(ctx context.Context, a *store.Attack) error {
 	_, err := r.pool.Exec(ctx,
 		`UPDATE attacks SET attack_type=$1, severity=$2, confidence=$3,
 						   peak_pps=$4, peak_bps=$5, reason_codes=$6,
-						   node_sources=$7, response_id=$8, ended_at=$9
+						   node_sources=$7, response_id=(SELECT id FROM responses WHERE id=$8), ended_at=$9
 		 WHERE id=$10`,
 		a.AttackType, a.Severity, a.Confidence,
 		a.PeakPPS, a.PeakBPS, a.ReasonCodes,
@@ -132,6 +186,16 @@ func (r *attackRepo) ListActive(ctx context.Context, limit int) ([]store.Attack,
 	}
 	rows, err := r.pool.Query(ctx,
 		fmt.Sprintf(`SELECT %s FROM attacks WHERE ended_at IS NULL ORDER BY peak_pps DESC LIMIT $1`, attackCols), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAttacks(rows)
+}
+
+func (r *attackRepo) ListAllActive(ctx context.Context) ([]store.Attack, error) {
+	rows, err := r.pool.Query(ctx,
+		fmt.Sprintf(`SELECT %s FROM attacks WHERE ended_at IS NULL ORDER BY id`, attackCols))
 	if err != nil {
 		return nil, err
 	}

@@ -100,83 +100,22 @@ func TestRecovery_ActiveAttack_NoPanic(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// U26: RecoverBGPRoutes — expired attack, no withdrawal yet
-//
-// Attack has ended; BGP route was injected but never withdrawn.
-// RecoverBGPRoutes should detect the stale route and attempt withdrawal.
-// Since vtysh is /usr/bin/false the attempt fails gracefully.
+// U26 / T1: CleanupEndedAttachments withdraws an ended attack with no prior withdrawal.
+// The fixture seeds the announcement and attachment, records real fake-vtysh
+// arguments, and checks both sides of the asynchronous connector barrier.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestRecovery_ExpiredNoWithdraw_AttemptsCleanup(t *testing.T) {
-	ms := NewMockStore()
-	conn := defaultBGPConnector(1)
-	ms.bgpConnectors.connectors = append(ms.bgpConnectors.connectors, conn)
-
-	now := time.Now()
-	// Expired attack
-	endedAt := now.Add(-5 * time.Minute)
-	atk := store.Attack{
-		ID:        101,
-		DstIP:     "10.101.0.1",
-		StartedAt: now.Add(-30 * time.Minute),
-		EndedAt:   &endedAt,
-	}
-	// Put in both active (empty) and expired list
-	ms.attacks.expiredAttacks = append(ms.attacks.expiredAttacks, atk)
-
-	ms.actionExecLog.logs = append(ms.actionExecLog.logs,
-		bgpOnDetectedLog(101, 2, conn.ID, 1, "10.101.0.1/32|RTBH", now.Add(-29*time.Minute)),
-	)
-	// No on_expired log — route is stale
-
-	ctx := context.Background()
-	action.RecoverBGPRoutes(ctx, ms)
-	// Completes without panic — withdrawal attempt is made but fails gracefully.
-}
+// T1: startup cleanup must detach and withdraw, including async boundary assertions.
+func TestRecovery_ExpiredNoWithdraw_AttemptsCleanup(t *testing.T) { fzWithdraw(t, "") }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// U27: RecoverBGPRoutes — expired attack, stale route should be cleaned up
-//
-// Same as U26 but we explicitly verify that the function processed the expired
-// attack list.  We use a poisoned connector path (/nonexistent/vtysh) to
-// simulate the environment; function must still complete without panic.
+// U27 / T1: CleanupEndedAttachments removes the stale ended-attack attachment.
+// The successful fake process and state/metric assertions replace the old
+// nonexistent executable and no-assertion smoke test.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestRecovery_ExpiredStale_AttemptsCleanup(t *testing.T) {
-	ms := NewMockStore()
-
-	// Use a deliberately missing path to simulate "scheduled_for in the past"
-	conn := store.BGPConnector{
-		ID:            2,
-		Name:          "test-bgp-2",
-		VtyshPath:     "/nonexistent/vtysh",
-		BGPASN:        65002,
-		AddressFamily: "ipv4 unicast",
-		Enabled:       true,
-	}
-	ms.bgpConnectors.connectors = append(ms.bgpConnectors.connectors, conn)
-
-	now := time.Now()
-	// Attack ended 1 hour ago
-	endedAt := now.Add(-1 * time.Hour)
-	atk := store.Attack{
-		ID:        102,
-		DstIP:     "10.102.0.1",
-		StartedAt: now.Add(-2 * time.Hour),
-		EndedAt:   &endedAt,
-	}
-	ms.attacks.expiredAttacks = append(ms.attacks.expiredAttacks, atk)
-
-	// on_detected success (injected 2 hours ago)
-	ms.actionExecLog.logs = append(ms.actionExecLog.logs,
-		bgpOnDetectedLog(102, 3, conn.ID, 1, "10.102.0.1/32|RTBH", now.Add(-2*time.Hour)),
-	)
-	// No on_expired log (route is stale; delay has long since elapsed)
-
-	ctx := context.Background()
-	action.RecoverBGPRoutes(ctx, ms)
-	// Function must complete; vtysh call will fail but is caught by log.Printf.
-}
+// T1: startup cleanup must detach and withdraw, including async boundary assertions.
+func TestRecovery_ExpiredStale_AttemptsCleanup(t *testing.T) { fzWithdraw(t, "") }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // U28: RecoverBGPRoutes — already-withdrawn route must NOT trigger re-withdrawal
@@ -212,7 +151,7 @@ func TestRecovery_AlreadyWithdrawn_Skips(t *testing.T) {
 		bgpOnExpiredLog(103, 4, conn.ID, 2, "10.103.0.1/32|RTBH", now.Add(-2*time.Hour+1*time.Minute)),
 	)
 
-	logCountBefore := len(ms.actionExecLog.logs)
+	logCountBefore := len(ms.actionExecLog.snapshotLogs())
 
 	ctx := context.Background()
 	action.RecoverBGPRoutes(ctx, ms)
@@ -220,7 +159,7 @@ func TestRecovery_AlreadyWithdrawn_Skips(t *testing.T) {
 	// RecoverBGPRoutes does not write logs — the log count must not increase.
 	// (If the route was not skipped, runVtysh would be called; but because it IS
 	// skipped, no side-effects occur beyond possibly logging to stdout.)
-	logCountAfter := len(ms.actionExecLog.logs)
+	logCountAfter := len(ms.actionExecLog.snapshotLogs())
 	if logCountAfter != logCountBefore {
 		t.Errorf("expected log count to stay at %d, got %d (recovery must skip already-withdrawn routes)",
 			logCountBefore, logCountAfter)

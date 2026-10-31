@@ -105,8 +105,8 @@ func TestSanitizeXDropPayload_Anomaly(t *testing.T) {
 	for _, dec := range anomalyDecoders {
 		t.Run(dec, func(t *testing.T) {
 			inputJSON := fmt.Sprintf(
-				`{"dst_ip":"192.0.2.1","protocol":"tcp","decoder":%q,"dst_port":80,"src_port":443,"tcp_flags":"SYN,!ACK"}`,
-				dec,
+				`{"dst_ip":"192.0.2.1","protocol":"tcp","match_anomaly":%d,"dst_port":80,"src_port":443,"tcp_flags":"SYN,!ACK"}`,
+				xdropAnomalyBit(dec),
 			)
 			out := sanitizeXDropPayloadForDecoder([]byte(inputJSON), dec)
 
@@ -121,8 +121,8 @@ func TestSanitizeXDropPayload_Anomaly(t *testing.T) {
 				}
 			}
 
-			if m["decoder"] != dec {
-				t.Errorf("[%s] decoder field should be preserved as %q, got %v", dec, dec, m["decoder"])
+			if m["match_anomaly"] != float64(xdropAnomalyBit(dec)) {
+				t.Errorf("[%s] decoder field should be preserved as %q, got %v", dec, dec, m["match_anomaly"])
 			}
 			if m["dst_ip"] != "192.0.2.1" {
 				t.Errorf("[%s] dst_ip should be preserved", dec)

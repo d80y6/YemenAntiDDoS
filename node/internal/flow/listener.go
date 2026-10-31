@@ -60,7 +60,7 @@ type Listener struct {
 	// Metrics
 	UnknownExporter atomic.Int64
 	DecodeErrors    atomic.Int64
-	RecordsDecoded     atomic.Int64
+	RecordsDecoded  atomic.Int64
 	TemplateMisses  atomic.Int64
 
 	stopCh chan struct{}
@@ -194,7 +194,9 @@ func (t *xsightTransport) Send(key, data []byte) error {
 type protoFormat struct{}
 
 func (f *protoFormat) Format(data interface{}) ([]byte, []byte, error) {
-	if msg, ok := data.(interface{ GetFlowMessage() *producerpb.ProtoProducerMessage }); ok {
+	if msg, ok := data.(interface {
+		GetFlowMessage() *producerpb.ProtoProducerMessage
+	}); ok {
 		fm := msg.GetFlowMessage()
 		b, err := proto.Marshal(&fm.FlowMessage)
 		return nil, b, err

@@ -112,7 +112,7 @@ func (p *Publisher) Publish(ctx context.Context, auditUserID *int, entityType, e
 		}
 		if err := p.pusher.SendConfigPush(nodeID, nodeConfig, uint64(newVersion)); err != nil {
 			log.Printf("configpub: push to %s failed: %v", nodeID, err)
-			// Mark as pending/failed
+			// Node never received it: stays pending (failed is written only from the node's failure ACK)
 			ctxTO, cancel := context.WithTimeout(ctx, 5*time.Second)
 			_ = p.store.Nodes().UpdateDeliveryVersionCurrent(ctxTO, nodeID, newVersion)
 			cancel()
@@ -192,7 +192,7 @@ func (p *Publisher) buildWatchConfig(ctx context.Context) (*pb.WatchConfig, erro
 		// 0.0.0.0/0 is a virtual global prefix — do NOT push to BPF trie.
 		// It would match every packet, breaking per-prefix granularity.
 		// Controller feeds global_stats into its ring instead.
-		if pf.Prefix == "0.0.0.0/0" {
+		if pf.Prefix == "0.0.0.0/0" || pf.Prefix == "::/0" {
 			continue
 		}
 		_, ipnet, err := net.ParseCIDR(pf.Prefix)
@@ -210,7 +210,10 @@ func (p *Publisher) buildWatchConfig(ctx context.Context) (*pb.WatchConfig, erro
 	// Load aggregated hard thresholds: find the lowest per-IP pps/bps threshold
 	// across all templates and per-prefix overrides. This gives the Node a
 	// sensible CriticalEvent trigger without needing per-prefix granularity.
-	allThresholds, _ := p.store.Thresholds().List(ctx)
+	allThresholds, err := p.store.Thresholds().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load thresholds: %w", err)
+	}
 	var minPPS, minBPS int64
 	for _, th := range allThresholds {
 		if !th.Enabled || th.Comparison != "over" || th.Domain != "internal_ip" {

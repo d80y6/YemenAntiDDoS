@@ -93,7 +93,7 @@ func (r *statsRepo) BulkInsert(ctx context.Context, points []store.StatPoint) er
 	columns := []string{
 		"time", "node_id", "dst_ip", "prefix", "direction",
 		"pps", "bps", "tcp_pps", "tcp_syn_pps", "udp_pps", "icmp_pps", "frag_pps",
-		"tcp_bps", "udp_bps", "icmp_bps", "frag_bps",
+		"tcp_bps", "udp_bps", "icmp_bps", "frag_bps", "tcp_syn_bps",
 		"extra_decoder_pps", "extra_decoder_bps",
 	}
 
@@ -109,7 +109,7 @@ func (r *statsRepo) BulkInsert(ctx context.Context, points []store.StatPoint) er
 			p.Time, p.NodeID, p.DstIP, p.Prefix, dir,
 			p.PPS, p.BPS,
 			p.DecoderPPS[decoder.TCP], p.DecoderPPS[decoder.TCPSyn], p.DecoderPPS[decoder.UDP], p.DecoderPPS[decoder.ICMP], p.DecoderPPS[decoder.Frag],
-			p.DecoderBPS[decoder.TCP], p.DecoderBPS[decoder.UDP], p.DecoderBPS[decoder.ICMP], p.DecoderBPS[decoder.Frag],
+			p.DecoderBPS[decoder.TCP], p.DecoderBPS[decoder.UDP], p.DecoderBPS[decoder.ICMP], p.DecoderBPS[decoder.Frag], p.DecoderBPS[decoder.TCPSyn],
 			extraPPS, extraBPS,
 		}
 	}
@@ -130,7 +130,7 @@ func (r *statsRepo) QueryTimeseries(ctx context.Context, filter store.Timeseries
 	// 1H view (5min resolution, ≤1H range): use raw for realtime data (no cagg delay).
 	// 6H/24H view (5min/1h resolution, >1H range): use cagg for performance.
 	useCagg := false
-	if filter.Resolution != "5s" {
+	if filter.DstIP == "" && filter.Resolution != "5s" {
 		timeRange := time.Since(filter.From)
 		if timeRange > 90*time.Minute { // >1.5H → use cagg (covers 6H and 24H views)
 			useCagg = true
@@ -201,56 +201,16 @@ func (r *statsRepo) queryTimeseriesFromCagg(ctx context.Context, filter store.Ti
 	//
 	// Extras pack as JSONB at SELECT time so scanTimeseries can use one scan path regardless
 	// of whether data came from raw ts_stats or CAGG.
-	extraPPSSQL := `'{}'::jsonb`
-	extraBPSSQL := `'{}'::jsonb`
+	// Outer extras columns appear only with IncludeExtras; otherwise scanTimeseries scans 13 columns.
+	extraCols := ""
 	if filter.IncludeExtras {
+		res := "5min"
 		if filter.Resolution == "1h" {
-			extraPPSSQL = `jsonb_strip_nulls(jsonb_build_object(
-				'tcp_ack',      NULLIF(avg(total_tcp_ack_pps)::INT,      0),
-				'tcp_rst',      NULLIF(avg(total_tcp_rst_pps)::INT,      0),
-				'tcp_fin',      NULLIF(avg(total_tcp_fin_pps)::INT,      0),
-				'gre',          NULLIF(avg(total_gre_pps)::INT,          0),
-				'esp',          NULLIF(avg(total_esp_pps)::INT,          0),
-				'igmp',         NULLIF(avg(total_igmp_pps)::INT,         0),
-				'ip_other',     NULLIF(avg(total_ip_other_pps)::INT,     0),
-				'bad_fragment', NULLIF(avg(total_bad_fragment_pps)::INT, 0),
-				'invalid',      NULLIF(avg(total_invalid_pps)::INT,      0)
-			))`
-			extraBPSSQL = `jsonb_strip_nulls(jsonb_build_object(
-				'tcp_ack',      NULLIF(avg(total_tcp_ack_bps)::BIGINT,      0),
-				'tcp_rst',      NULLIF(avg(total_tcp_rst_bps)::BIGINT,      0),
-				'tcp_fin',      NULLIF(avg(total_tcp_fin_bps)::BIGINT,      0),
-				'gre',          NULLIF(avg(total_gre_bps)::BIGINT,          0),
-				'esp',          NULLIF(avg(total_esp_bps)::BIGINT,          0),
-				'igmp',         NULLIF(avg(total_igmp_bps)::BIGINT,         0),
-				'ip_other',     NULLIF(avg(total_ip_other_bps)::BIGINT,     0),
-				'bad_fragment', NULLIF(avg(total_bad_fragment_bps)::BIGINT, 0),
-				'invalid',      NULLIF(avg(total_invalid_bps)::BIGINT,      0)
-			))`
-		} else {
-			extraPPSSQL = `jsonb_strip_nulls(jsonb_build_object(
-				'tcp_ack',      NULLIF(sum(avg_tcp_ack_pps)::INT,      0),
-				'tcp_rst',      NULLIF(sum(avg_tcp_rst_pps)::INT,      0),
-				'tcp_fin',      NULLIF(sum(avg_tcp_fin_pps)::INT,      0),
-				'gre',          NULLIF(sum(avg_gre_pps)::INT,          0),
-				'esp',          NULLIF(sum(avg_esp_pps)::INT,          0),
-				'igmp',         NULLIF(sum(avg_igmp_pps)::INT,         0),
-				'ip_other',     NULLIF(sum(avg_ip_other_pps)::INT,     0),
-				'bad_fragment', NULLIF(sum(avg_bad_fragment_pps)::INT, 0),
-				'invalid',      NULLIF(sum(avg_invalid_pps)::INT,      0)
-			))`
-			extraBPSSQL = `jsonb_strip_nulls(jsonb_build_object(
-				'tcp_ack',      NULLIF(sum(avg_tcp_ack_bps)::BIGINT,      0),
-				'tcp_rst',      NULLIF(sum(avg_tcp_rst_bps)::BIGINT,      0),
-				'tcp_fin',      NULLIF(sum(avg_tcp_fin_bps)::BIGINT,      0),
-				'gre',          NULLIF(sum(avg_gre_bps)::BIGINT,          0),
-				'esp',          NULLIF(sum(avg_esp_bps)::BIGINT,          0),
-				'igmp',         NULLIF(sum(avg_igmp_bps)::BIGINT,         0),
-				'ip_other',     NULLIF(sum(avg_ip_other_bps)::BIGINT,     0),
-				'bad_fragment', NULLIF(sum(avg_bad_fragment_bps)::BIGINT, 0),
-				'invalid',      NULLIF(sum(avg_invalid_bps)::BIGINT,      0)
-			))`
+			res = "1h"
 		}
+		extraCols = fmt.Sprintf(`,
+				   %s AS extra_decoder_pps,
+				   %s AS extra_decoder_bps`, caggExtraJSON(extraDecoderNames(), res, "pps"), caggExtraJSON(extraDecoderNames(), res, "bps"))
 	}
 
 	var q string
@@ -268,8 +228,7 @@ func (r *statsRepo) queryTimeseriesFromCagg(ctx context.Context, filter store.Ti
 				   avg(total_udp_bps)::BIGINT AS udp_bps,
 				   avg(total_icmp_bps)::BIGINT AS icmp_bps,
 				   avg(total_frag_bps)::BIGINT AS frag_bps,
-				   %s AS extra_decoder_pps,
-				   %s AS extra_decoder_bps
+				   avg(total_tcp_syn_bps)::BIGINT AS tcp_syn_bps%s
 			FROM (
 				SELECT bucket,
 					   sum(avg_pps) AS total_pps,
@@ -283,30 +242,15 @@ func (r *statsRepo) queryTimeseriesFromCagg(ctx context.Context, filter store.Ti
 					   sum(avg_udp_bps) AS total_udp_bps,
 					   sum(avg_icmp_bps) AS total_icmp_bps,
 					   sum(avg_frag_bps) AS total_frag_bps,
-					   sum(avg_tcp_ack_pps)      AS total_tcp_ack_pps,
-					   sum(avg_tcp_rst_pps)      AS total_tcp_rst_pps,
-					   sum(avg_tcp_fin_pps)      AS total_tcp_fin_pps,
-					   sum(avg_gre_pps)          AS total_gre_pps,
-					   sum(avg_esp_pps)          AS total_esp_pps,
-					   sum(avg_igmp_pps)         AS total_igmp_pps,
-					   sum(avg_ip_other_pps)     AS total_ip_other_pps,
-					   sum(avg_bad_fragment_pps) AS total_bad_fragment_pps,
-					   sum(avg_invalid_pps)      AS total_invalid_pps,
-					   sum(avg_tcp_ack_bps)      AS total_tcp_ack_bps,
-					   sum(avg_tcp_rst_bps)      AS total_tcp_rst_bps,
-					   sum(avg_tcp_fin_bps)      AS total_tcp_fin_bps,
-					   sum(avg_gre_bps)          AS total_gre_bps,
-					   sum(avg_esp_bps)          AS total_esp_bps,
-					   sum(avg_igmp_bps)         AS total_igmp_bps,
-					   sum(avg_ip_other_bps)     AS total_ip_other_bps,
-					   sum(avg_bad_fragment_bps) AS total_bad_fragment_bps,
-					   sum(avg_invalid_bps)      AS total_invalid_bps
+					   sum(avg_tcp_syn_bps) AS total_tcp_syn_bps,
+					   %s,
+					   %s
 				FROM ts_stats_5min%s
 				GROUP BY bucket
 			) sub
 			GROUP BY ts
 			ORDER BY ts
-			LIMIT %d`, extraPPSSQL, extraBPSSQL, where, limit)
+			LIMIT %d`, extraCols, caggExtraTotals(extraDecoderNames(), "pps"), caggExtraTotals(extraDecoderNames(), "bps"), where, limit)
 	} else {
 		// 5min — direct read, sum across child prefixes
 		q = fmt.Sprintf(`
@@ -322,12 +266,11 @@ func (r *statsRepo) queryTimeseriesFromCagg(ctx context.Context, filter store.Ti
 				   sum(avg_udp_bps)::BIGINT AS udp_bps,
 				   sum(avg_icmp_bps)::BIGINT AS icmp_bps,
 				   sum(avg_frag_bps)::BIGINT AS frag_bps,
-				   %s AS extra_decoder_pps,
-				   %s AS extra_decoder_bps
+				   sum(avg_tcp_syn_bps)::BIGINT AS tcp_syn_bps%s
 			FROM ts_stats_5min%s
 			GROUP BY bucket
 			ORDER BY bucket
-			LIMIT %d`, extraPPSSQL, extraBPSSQL, where, limit)
+			LIMIT %d`, extraCols, where, limit)
 	}
 
 	return r.scanTimeseries(ctx, q, args, filter.IncludeExtras)
@@ -369,7 +312,13 @@ func (r *statsRepo) queryTimeseriesFromRaw(ctx context.Context, filter store.Tim
 		args = append(args, filter.NodeID)
 		argN++
 	}
-	conds = append(conds, "dst_ip IS NULL")
+	if filter.DstIP != "" {
+		conds = append(conds, fmt.Sprintf("dst_ip = $%d::inet", argN))
+		args = append(args, filter.DstIP)
+		argN++
+	} else {
+		conds = append(conds, "dst_ip IS NULL")
+	}
 
 	// Direction filter: receives (default), sends, or both (no filter)
 	dir := filter.Direction
@@ -428,32 +377,13 @@ func (r *statsRepo) queryTimeseriesFromRaw(ctx context.Context, filter store.Tim
 					   sum(udp_bps)::BIGINT AS udp_bps,
 					   sum(icmp_bps)::BIGINT AS icmp_bps,
 					   sum(frag_bps)::BIGINT AS frag_bps,
-					   jsonb_strip_nulls(jsonb_build_object(
-					       'tcp_ack',      NULLIF(sum((extra_decoder_pps->>'tcp_ack')::int),      0),
-					       'tcp_rst',      NULLIF(sum((extra_decoder_pps->>'tcp_rst')::int),      0),
-					       'tcp_fin',      NULLIF(sum((extra_decoder_pps->>'tcp_fin')::int),      0),
-					       'gre',          NULLIF(sum((extra_decoder_pps->>'gre')::int),          0),
-					       'esp',          NULLIF(sum((extra_decoder_pps->>'esp')::int),          0),
-					       'igmp',         NULLIF(sum((extra_decoder_pps->>'igmp')::int),         0),
-					       'ip_other',     NULLIF(sum((extra_decoder_pps->>'ip_other')::int),     0),
-					       'bad_fragment', NULLIF(sum((extra_decoder_pps->>'bad_fragment')::int), 0),
-					       'invalid',      NULLIF(sum((extra_decoder_pps->>'invalid')::int),      0)
-					   )) AS extra_decoder_pps,
-					   jsonb_strip_nulls(jsonb_build_object(
-					       'tcp_ack',      NULLIF(sum((extra_decoder_bps->>'tcp_ack')::bigint),      0),
-					       'tcp_rst',      NULLIF(sum((extra_decoder_bps->>'tcp_rst')::bigint),      0),
-					       'tcp_fin',      NULLIF(sum((extra_decoder_bps->>'tcp_fin')::bigint),      0),
-					       'gre',          NULLIF(sum((extra_decoder_bps->>'gre')::bigint),          0),
-					       'esp',          NULLIF(sum((extra_decoder_bps->>'esp')::bigint),          0),
-					       'igmp',         NULLIF(sum((extra_decoder_bps->>'igmp')::bigint),         0),
-					       'ip_other',     NULLIF(sum((extra_decoder_bps->>'ip_other')::bigint),     0),
-					       'bad_fragment', NULLIF(sum((extra_decoder_bps->>'bad_fragment')::bigint), 0),
-					       'invalid',      NULLIF(sum((extra_decoder_bps->>'invalid')::bigint),      0)
-					   )) AS extra_decoder_bps
+					   sum(tcp_syn_bps)::BIGINT AS tcp_syn_bps,
+					   %s AS extra_decoder_pps,
+					   %s AS extra_decoder_bps
 				FROM ts_stats%s
 				GROUP BY bucket
 				ORDER BY bucket
-				LIMIT %d`, where, limit)
+				LIMIT %d`, rawExtraJSON(extraDecoderNames(), "5s", "pps"), rawExtraJSON(extraDecoderNames(), "5s", "bps"), where, limit)
 		} else {
 			q = fmt.Sprintf(`
 				SELECT time_bucket('5 seconds', time) AS bucket,
@@ -467,7 +397,8 @@ func (r *statsRepo) queryTimeseriesFromRaw(ctx context.Context, filter store.Tim
 					   sum(tcp_bps)::BIGINT AS tcp_bps,
 					   sum(udp_bps)::BIGINT AS udp_bps,
 					   sum(icmp_bps)::BIGINT AS icmp_bps,
-					   sum(frag_bps)::BIGINT AS frag_bps
+					   sum(frag_bps)::BIGINT AS frag_bps,
+					   sum(tcp_syn_bps)::BIGINT AS tcp_syn_bps
 				FROM ts_stats%s
 				GROUP BY bucket
 				ORDER BY bucket
@@ -489,28 +420,9 @@ func (r *statsRepo) queryTimeseriesFromRaw(ctx context.Context, filter store.Tim
 					   avg(s_udp_bps)::BIGINT AS udp_bps,
 					   avg(s_icmp_bps)::BIGINT AS icmp_bps,
 					   avg(s_frag_bps)::BIGINT AS frag_bps,
-					   jsonb_strip_nulls(jsonb_build_object(
-					       'tcp_ack',      NULLIF(avg(s_tcp_ack)::INT,      0),
-					       'tcp_rst',      NULLIF(avg(s_tcp_rst)::INT,      0),
-					       'tcp_fin',      NULLIF(avg(s_tcp_fin)::INT,      0),
-					       'gre',          NULLIF(avg(s_gre)::INT,          0),
-					       'esp',          NULLIF(avg(s_esp)::INT,          0),
-					       'igmp',         NULLIF(avg(s_igmp)::INT,         0),
-					       'ip_other',     NULLIF(avg(s_ip_other)::INT,     0),
-					       'bad_fragment', NULLIF(avg(s_bad_fragment)::INT, 0),
-					       'invalid',      NULLIF(avg(s_invalid)::INT,      0)
-					   )) AS extra_decoder_pps,
-					   jsonb_strip_nulls(jsonb_build_object(
-					       'tcp_ack',      NULLIF(avg(s_tcp_ack_b)::BIGINT,      0),
-					       'tcp_rst',      NULLIF(avg(s_tcp_rst_b)::BIGINT,      0),
-					       'tcp_fin',      NULLIF(avg(s_tcp_fin_b)::BIGINT,      0),
-					       'gre',          NULLIF(avg(s_gre_b)::BIGINT,          0),
-					       'esp',          NULLIF(avg(s_esp_b)::BIGINT,          0),
-					       'igmp',         NULLIF(avg(s_igmp_b)::BIGINT,         0),
-					       'ip_other',     NULLIF(avg(s_ip_other_b)::BIGINT,     0),
-					       'bad_fragment', NULLIF(avg(s_bad_fragment_b)::BIGINT, 0),
-					       'invalid',      NULLIF(avg(s_invalid_b)::BIGINT,      0)
-					   )) AS extra_decoder_bps
+					   avg(s_tcp_syn_bps)::BIGINT AS tcp_syn_bps,
+					   %s AS extra_decoder_pps,
+					   %s AS extra_decoder_bps
 				FROM (
 					SELECT time_bucket('%s', time) AS bucket,
 						   time,
@@ -525,30 +437,15 @@ func (r *statsRepo) queryTimeseriesFromRaw(ctx context.Context, filter store.Tim
 						   sum(udp_bps) AS s_udp_bps,
 						   sum(icmp_bps) AS s_icmp_bps,
 						   sum(frag_bps) AS s_frag_bps,
-						   sum(COALESCE((extra_decoder_pps->>'tcp_ack')::int, 0))      AS s_tcp_ack,
-						   sum(COALESCE((extra_decoder_pps->>'tcp_rst')::int, 0))      AS s_tcp_rst,
-						   sum(COALESCE((extra_decoder_pps->>'tcp_fin')::int, 0))      AS s_tcp_fin,
-						   sum(COALESCE((extra_decoder_pps->>'gre')::int, 0))          AS s_gre,
-						   sum(COALESCE((extra_decoder_pps->>'esp')::int, 0))          AS s_esp,
-						   sum(COALESCE((extra_decoder_pps->>'igmp')::int, 0))         AS s_igmp,
-						   sum(COALESCE((extra_decoder_pps->>'ip_other')::int, 0))     AS s_ip_other,
-						   sum(COALESCE((extra_decoder_pps->>'bad_fragment')::int, 0)) AS s_bad_fragment,
-						   sum(COALESCE((extra_decoder_pps->>'invalid')::int, 0))      AS s_invalid,
-						   sum(COALESCE((extra_decoder_bps->>'tcp_ack')::bigint, 0))      AS s_tcp_ack_b,
-						   sum(COALESCE((extra_decoder_bps->>'tcp_rst')::bigint, 0))      AS s_tcp_rst_b,
-						   sum(COALESCE((extra_decoder_bps->>'tcp_fin')::bigint, 0))      AS s_tcp_fin_b,
-						   sum(COALESCE((extra_decoder_bps->>'gre')::bigint, 0))          AS s_gre_b,
-						   sum(COALESCE((extra_decoder_bps->>'esp')::bigint, 0))          AS s_esp_b,
-						   sum(COALESCE((extra_decoder_bps->>'igmp')::bigint, 0))         AS s_igmp_b,
-						   sum(COALESCE((extra_decoder_bps->>'ip_other')::bigint, 0))     AS s_ip_other_b,
-						   sum(COALESCE((extra_decoder_bps->>'bad_fragment')::bigint, 0)) AS s_bad_fragment_b,
-						   sum(COALESCE((extra_decoder_bps->>'invalid')::bigint, 0))      AS s_invalid_b
+						   sum(tcp_syn_bps) AS s_tcp_syn_bps,
+						   %s,
+						   %s
 					FROM ts_stats%s
 					GROUP BY bucket, time
 				) sub
 				GROUP BY bucket
 				ORDER BY bucket
-				LIMIT %d`, bucket, where, limit)
+				LIMIT %d`, rawExtraJSON(extraDecoderNames(), filter.Resolution, "pps"), rawExtraJSON(extraDecoderNames(), filter.Resolution, "bps"), bucket, rawExtraTotals(extraDecoderNames(), "pps"), rawExtraTotals(extraDecoderNames(), "bps"), where, limit)
 		} else {
 			q = fmt.Sprintf(`
 				SELECT bucket,
@@ -562,7 +459,8 @@ func (r *statsRepo) queryTimeseriesFromRaw(ctx context.Context, filter store.Tim
 					   avg(s_tcp_bps)::BIGINT AS tcp_bps,
 					   avg(s_udp_bps)::BIGINT AS udp_bps,
 					   avg(s_icmp_bps)::BIGINT AS icmp_bps,
-					   avg(s_frag_bps)::BIGINT AS frag_bps
+					   avg(s_frag_bps)::BIGINT AS frag_bps,
+					   avg(s_tcp_syn_bps)::BIGINT AS tcp_syn_bps
 				FROM (
 					SELECT time_bucket('%s', time) AS bucket,
 						   time,
@@ -576,7 +474,8 @@ func (r *statsRepo) queryTimeseriesFromRaw(ctx context.Context, filter store.Tim
 						   sum(tcp_bps) AS s_tcp_bps,
 						   sum(udp_bps) AS s_udp_bps,
 						   sum(icmp_bps) AS s_icmp_bps,
-						   sum(frag_bps) AS s_frag_bps
+						   sum(frag_bps) AS s_frag_bps,
+						   sum(tcp_syn_bps) AS s_tcp_syn_bps
 					FROM ts_stats%s
 					GROUP BY bucket, time
 				) sub
@@ -609,7 +508,7 @@ func clampLimit(v int) int {
 
 // scanTimeseries executes the query and scans into TimeseriesPoint slice.
 // withExtras controls whether the query returns extra_decoder_pps/bps JSONB columns
-// at the end of SELECT; when false (current chart queries), only the 12 standard fields
+// at the end of SELECT; when false (current chart queries), only the 13 standard fields
 // are scanned. JSONB scanning path reserved for future dedicated extras-access API.
 func (r *statsRepo) scanTimeseries(ctx context.Context, q string, args []any, withExtras bool) ([]store.TimeseriesPoint, error) {
 	rows, err := r.pool.Query(ctx, q, args...)
@@ -626,7 +525,7 @@ func (r *statsRepo) scanTimeseries(ctx context.Context, q string, args []any, wi
 			if err := rows.Scan(
 				&p.Time, &p.PPS, &p.BPS,
 				&p.TCPPPS, &p.TCPSynPPS, &p.UDPPPS, &p.ICMPPPS, &p.FragPPS,
-				&p.TCPBPS, &p.UDPBPS, &p.ICMPBPS, &p.FragBPS,
+				&p.TCPBPS, &p.UDPBPS, &p.ICMPBPS, &p.FragBPS, &p.TCPSynBPS,
 				&extraPPSRaw, &extraBPSRaw,
 			); err != nil {
 				return nil, err
@@ -641,7 +540,7 @@ func (r *statsRepo) scanTimeseries(ctx context.Context, q string, args []any, wi
 			if err := rows.Scan(
 				&p.Time, &p.PPS, &p.BPS,
 				&p.TCPPPS, &p.TCPSynPPS, &p.UDPPPS, &p.ICMPPPS, &p.FragPPS,
-				&p.TCPBPS, &p.UDPBPS, &p.ICMPBPS, &p.FragBPS,
+				&p.TCPBPS, &p.UDPBPS, &p.ICMPBPS, &p.FragBPS, &p.TCPSynBPS,
 			); err != nil {
 				return nil, err
 			}
@@ -651,7 +550,7 @@ func (r *statsRepo) scanTimeseries(ctx context.Context, q string, args []any, wi
 	return points, rows.Err()
 }
 
-// QueryHourP95 computes P95 for a closed hour window [start, end).
+// QueryHourP95 computes P95 for a closed hour window [start, end), using inbound (receives) points only.
 // Returns per-(node_id, prefix) results. Used by dynamic detection profile engine.
 func (r *statsRepo) QueryHourP95(ctx context.Context, start, end time.Time, minPoints int) ([]store.P95Result, error) {
 	rows, err := r.pool.Query(ctx,
@@ -660,7 +559,7 @@ func (r *statsRepo) QueryHourP95(ctx context.Context, start, end time.Time, minP
 				percentile_disc(0.95) WITHIN GROUP (ORDER BY bps)::BIGINT AS p95_bps,
 				count(*) AS data_points
 		 FROM ts_stats
-		 WHERE dst_ip IS NULL AND time >= $1 AND time < $2
+		 WHERE dst_ip IS NULL AND direction = 'receives' AND time >= $1 AND time < $2
 		 GROUP BY node_id, prefix
 		 HAVING count(*) >= $3`, start, end, minPoints)
 	if err != nil {
@@ -670,7 +569,7 @@ func (r *statsRepo) QueryHourP95(ctx context.Context, start, end time.Time, minP
 	return scanP95Results(rows)
 }
 
-// QueryWindowP95 computes P95 for a rolling window [end-duration, end).
+// QueryWindowP95 computes P95 for a rolling window [end-duration, end), using inbound (receives) points only.
 // Returns per-(node_id, prefix) results. Used by baseline recommendation calculator.
 func (r *statsRepo) QueryWindowP95(ctx context.Context, end time.Time, duration time.Duration, minPoints int) ([]store.P95Result, error) {
 	start := end.Add(-duration)
@@ -680,7 +579,7 @@ func (r *statsRepo) QueryWindowP95(ctx context.Context, end time.Time, duration 
 				percentile_disc(0.95) WITHIN GROUP (ORDER BY bps)::BIGINT AS p95_bps,
 				count(*) AS data_points
 		 FROM ts_stats
-		 WHERE dst_ip IS NULL AND time >= $1 AND time < $2
+		 WHERE dst_ip IS NULL AND direction = 'receives' AND time >= $1 AND time < $2
 		 GROUP BY node_id, prefix
 		 HAVING count(*) >= $3`, start, end, minPoints)
 	if err != nil {

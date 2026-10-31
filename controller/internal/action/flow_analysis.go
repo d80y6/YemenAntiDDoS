@@ -1,6 +1,5 @@
 // Package action — flow_analysis.go aggregates flow_logs data for dynamic
 // response parameters ({top_src_ips}, {dominant_src_port}, etc.)
-//
 package action
 
 import (
@@ -18,15 +17,25 @@ import (
 
 // FlowAnalysis holds aggregated flow data for response dynamic parameters.
 type FlowAnalysis struct {
-	TopSrcIPs          []string // top-5 source IPs by packets
-	TopSrcPorts        []int    // top-5 source ports
-	TopDstPorts        []int    // top-5 destination ports
-	DominantSrcPort    int      // highest-packet source port
-	DominantSrcPortPct int      // percentage (0-100)
-	DominantDstPort    int      // highest-packet destination port
-	DominantDstPortPct int      // percentage (0-100)
-	UniqueSrcIPs       int      // count of distinct source IPs
-	FlowSummaryJSON    string   // JSON array of top flows
+	TopSrcIPs          []string    // top-5 source IPs by packets
+	TopSrcIPPct        int         // percentage of packets from the top source IP
+	SamplePackets      uint64      // packets summed over the filtered flow samples
+	TopSrcPorts        []int       // top-5 source ports
+	TopDstPorts        []int       // top-5 destination ports
+	SrcPortRank        []PortCount // top-8 nonzero source ports for XDrop T2
+	DstPortRank        []PortCount // top-8 nonzero destination ports for XDrop T2
+	DominantSrcPort    int         // highest-packet source port
+	DominantSrcPortPct int         // percentage (0-100)
+	DominantDstPort    int         // highest-packet destination port
+	DominantDstPortPct int         // percentage (0-100)
+	UniqueSrcIPs       int         // count of distinct source IPs
+	FlowSummaryJSON    string      // JSON array of top flows
+}
+
+// PortCount keeps packet weights for the independent XDrop port ranking.
+type PortCount struct {
+	Port    int
+	Packets uint64
 }
 
 type kv struct {
@@ -47,6 +56,15 @@ func analyzeFlows(ctx context.Context, s store.Store, attack *store.Attack) *Flo
 		To:    to,
 		Limit: 10000,
 	}
+	spec := xdropDecoderSpec[attack.DecoderFamily]
+	protocol := spec.ProtocolV4
+	if xdropAddressFamily(attack.DstIP) == 6 {
+		protocol = spec.ProtocolV6
+	}
+	if protocol != 0 {
+		filter.Protocols = []int{protocol}
+	}
+	filter.TCPFlagsAll, filter.TCPFlagsNone = spec.TCPFlagsAll, spec.TCPFlagsNone
 	// Outbound attacks: DstIP is the internal source IP — query by src_ip instead
 	var flows []store.FlowLog
 	var err error
@@ -56,6 +74,21 @@ func analyzeFlows(ctx context.Context, s store.Store, attack *store.Attack) *Flo
 		flows, err = s.FlowLogs().QueryByDstIP(ctx, filter)
 	}
 	if err != nil || len(flows) == 0 {
+		return nil
+	}
+
+	filtered := make([]store.FlowLog, 0, len(flows))
+	for _, flow := range flows {
+		if protocol != 0 && flow.Protocol != protocol {
+			continue
+		}
+		if flow.TCPFlags&int(filter.TCPFlagsAll) != int(filter.TCPFlagsAll) || flow.TCPFlags&int(filter.TCPFlagsNone) != 0 {
+			continue
+		}
+		filtered = append(filtered, flow)
+	}
+	flows = filtered
+	if len(flows) == 0 {
 		return nil
 	}
 
@@ -77,7 +110,13 @@ func analyzeFlows(ctx context.Context, s store.Store, attack *store.Attack) *Flo
 	topDstPorts := topN(dstPortMap, 5)
 
 	a := &FlowAnalysis{
-		UniqueSrcIPs: len(srcIPMap),
+		UniqueSrcIPs:  len(srcIPMap),
+		SamplePackets: uint64(totalPackets),
+		SrcPortRank:   xdropPortRank(srcPortMap),
+		DstPortRank:   xdropPortRank(dstPortMap),
+	}
+	if len(topSrcIPs) > 0 && totalPackets > 0 {
+		a.TopSrcIPPct = int(topSrcIPs[0].Count * 100 / totalPackets)
 	}
 
 	for _, v := range topSrcIPs {
@@ -140,6 +179,27 @@ func analyzeFlows(ctx context.Context, s store.Store, attack *store.Attack) *Flo
 	}
 
 	return a
+}
+
+func xdropPortRank(m map[string]int64) []PortCount {
+	items := make([]PortCount, 0, len(m))
+	for key, packets := range m {
+		port, err := strconv.Atoi(key)
+		if err != nil || port == 0 {
+			continue
+		}
+		items = append(items, PortCount{Port: port, Packets: uint64(packets)})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Packets == items[j].Packets {
+			return items[i].Port < items[j].Port
+		}
+		return items[i].Packets > items[j].Packets
+	})
+	if len(items) > 8 {
+		items = items[:8]
+	}
+	return items
 }
 
 func topN(m map[string]int64, n int) []kv {

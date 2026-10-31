@@ -2,7 +2,6 @@
 // that persists the last valid Controller-delivered configuration.
 //
 // Path: /var/lib/xsight/<node_id>/last_config.json
-//
 package config
 
 import (
@@ -42,11 +41,11 @@ type SnapshotFlowSource struct {
 
 // Snapshot is the persisted Controller config.
 type Snapshot struct {
-	WatchPrefixes          []SnapshotPrefix        `json:"watch_prefixes"`
-	HardThresholds         SnapshotThresholds      `json:"hard_thresholds"`
-	FlowListeners          []SnapshotFlowListener  `json:"flow_listeners,omitempty"` // v3.0
-	DeliveryVersionApplied uint64                  `json:"delivery_version_applied"`
-	Timestamp              time.Time               `json:"timestamp"`
+	WatchPrefixes          []SnapshotPrefix       `json:"watch_prefixes"`
+	HardThresholds         SnapshotThresholds     `json:"hard_thresholds"`
+	FlowListeners          []SnapshotFlowListener `json:"flow_listeners,omitempty"` // v3.0
+	DeliveryVersionApplied uint64                 `json:"delivery_version_applied"`
+	Timestamp              time.Time              `json:"timestamp"`
 }
 
 // SnapshotPath returns the snapshot file path for a given node_id.

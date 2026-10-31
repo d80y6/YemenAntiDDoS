@@ -16,8 +16,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/littlewolf9527/xsight/controller/internal/action"
@@ -89,8 +91,7 @@ func TestXDropActiveRules_MarkWithdrawing_FromDelayed(t *testing.T) {
 	}
 }
 
-// Terminal states (withdrawn/failed) must not allow further transitions
-// via MarkWithdrawing — the row is done.
+// Withdrawn is terminal; failed real rules remain eligible for withdrawal.
 func TestXDropActiveRules_MarkWithdrawing_FromTerminalStates(t *testing.T) {
 	ms := NewMockStore()
 	ctx := context.Background()
@@ -111,8 +112,8 @@ func TestXDropActiveRules_MarkWithdrawing_FromTerminalStates(t *testing.T) {
 	})
 	ms.XDropActiveRules().MarkFailed(ctx, 1, 4, 3, "bad", "test")
 	ok, _ = ms.XDropActiveRules().MarkWithdrawing(ctx, 1, 4, 3, "bad")
-	if ok {
-		t.Error("MarkWithdrawing from failed must return false")
+	if !ok {
+		t.Error("MarkWithdrawing from failed must return true")
 	}
 }
 
@@ -153,16 +154,17 @@ func TestXDropActiveRules_ListActive_FiltersByStatus(t *testing.T) {
 func TestReconcile_XDropWithdrawing_RetriesAndCompletes(t *testing.T) {
 	var deletes int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertLegacyV3Delete(t, r)
 		if r.Method == http.MethodDelete {
 			atomic.AddInt32(&deletes, 1)
 		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	ms := NewMockStore()
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 5, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	// Seed a row stuck in withdrawing — the "crashed mid-DELETE" scenario.
 	ms.XDropActiveRules().Upsert(context.Background(), &store.XDropActiveRule{
@@ -197,46 +199,63 @@ func TestReconcile_XDropWithdrawing_RetriesAndCompletes(t *testing.T) {
 	t.Errorf("row did not converge to withdrawn; got %+v", rules)
 }
 
-// 404 during reconcile DELETE is idempotent success — still → withdrawn.
+// Only 204 confirms release; 404 indicates a route/configuration failure.
 func TestReconcile_XDropWithdrawing_404IsIdempotentSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound) // rule already gone on remote
-	}))
-	defer srv.Close()
-
-	ms := NewMockStore()
-	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
-	})
-	ms.XDropActiveRules().Upsert(context.Background(), &store.XDropActiveRule{
-		AttackID: 201, ActionID: 51, ConnectorID: 5, ExternalRuleID: "gone-rule", Status: "withdrawing",
-	})
-
-	eng := action.NewEngine(ms, "auto")
-	eng.ReconcileOnStartup(context.Background())
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		rules, _ := ms.XDropActiveRules().ListByAttack(context.Background(), 201)
-		if len(rules) > 0 && rules[0].Status == "withdrawn" {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	for _, code := range []int{404, 204} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := dao4HTTP(t)
+				d.setStatus(code)
+				d.handler = func(r *http.Request) int {
+					if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/rules/gone-rule" || r.URL.Query().Get("claim_ref") != "a201.x51" {
+						t.Errorf("wrong release identity: method=%s path=%s claim_ref=%q", r.Method, r.URL.Path, r.URL.Query().Get("claim_ref"))
+					}
+					if r.Header.Get("Authorization") != "Bearer "+legacyV3Key {
+						t.Error("missing v3 bearer")
+					}
+					return code
+				}
+				ms := NewMockStore()
+				ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{ID: 5, Name: "test-xdrop", APIURL: "http://192.0.2.20/api/v1", APIKey: legacyV3Key, Enabled: true})
+				ms.XDropActiveRules().Upsert(context.Background(), &store.XDropActiveRule{AttackID: 201, ActionID: 51, ConnectorID: 5, ExternalRuleID: "gone-rule", Status: "withdrawing"})
+				action.NewEngine(ms, "auto").ReconcileOnStartup(context.Background())
+				synctest.Wait()
+				dao4WantCount(t, d, 1)
+				rows, _ := ms.XDropActiveRules().ListByAttack(context.Background(), 201)
+				want := "failed"
+				if code == 204 {
+					want = "withdrawn"
+				}
+				if len(rows) != 1 || rows[0].Status != want {
+					t.Fatalf("HTTP %d: %+v", code, rows)
+				}
+				if code == 404 {
+					found := false
+					for _, l := range ms.actionExecLog.snapshotLogs() {
+						if strings.Contains(l.ErrorMessage, "DELETE route not found; check connector API URL") {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatal("missing DELETE route diagnosis")
+					}
+				}
+			})
+		})
 	}
-	rules, _ := ms.XDropActiveRules().ListByAttack(context.Background(), 201)
-	t.Errorf("404 reconcile should collapse to withdrawn (idempotent); got %+v", rules)
 }
 
 // Server 500 during reconcile → row transitions to failed, visible in Mitigations.
 func TestReconcile_XDropWithdrawing_ServerError_MarksFailed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertLegacyV3Delete(t, r)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
 	ms := NewMockStore()
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 5, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	ms.XDropActiveRules().Upsert(context.Background(), &store.XDropActiveRule{
 		AttackID: 202, ActionID: 52, ConnectorID: 5, ExternalRuleID: "bad-rule", Status: "withdrawing",
@@ -267,7 +286,8 @@ func TestReconcile_XDropWithdrawing_ServerError_MarksFailed(t *testing.T) {
 func TestForceUnblock_UpdatesXDropActiveRulesTable(t *testing.T) {
 	// Stand up a fake xDrop that accepts DELETE so ForceRemove succeeds.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		assertLegacyV3Delete(t, r)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
@@ -282,7 +302,7 @@ func TestForceUnblock_UpdatesXDropActiveRulesTable(t *testing.T) {
 		ID: actionID, ResponseID: 1, ActionType: "xdrop",
 	})
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 7, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 7, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	ms.xdropActiveRules.Upsert(context.Background(), &store.XDropActiveRule{
 		AttackID: 500, ActionID: actionID, ConnectorID: 7, ExternalRuleID: "rule-to-force",
@@ -424,8 +444,8 @@ func TestXDropDelayed_PersistFailureMarksFailed(t *testing.T) {
 //
 // Setup:
 //   - Response contains two actions:
-//       action 41 = xdrop on_detected (already executed — seeded log)
-//       action 42 = xdrop on_expired unblock, UnblockDelayMinutes=5
+//     action 41 = xdrop on_detected (already executed — seeded log)
+//     action 42 = xdrop on_expired unblock, UnblockDelayMinutes=5
 //   - Rule "r-multi" was created by action 41
 //   - Fire expired event → action 42's unblock picks up r-multi from logs
 //   - Owning action of r-multi = 41, not 42 (the firing action)
@@ -433,6 +453,7 @@ func TestXDropDelayed_PersistFailureMarksFailed(t *testing.T) {
 // All three persistence sites must carry action_id=41 for r-multi.
 func TestDelayedUnblock_FullPath_AllTablesAgreeOnRuleActionID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertLegacyV3Delete(t, r)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -475,7 +496,7 @@ func TestDelayedUnblock_FullPath_AllTablesAgreeOnRuleActionID(t *testing.T) {
 	// xDrop connector pointed at test server
 	connID := 7
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: connID, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: connID, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	// Seed prior on_detected success log — action 41 created rule "r-multi"
 	ms.actionExecLog.logs = append(ms.actionExecLog.logs, store.ActionExecutionLog{
@@ -494,7 +515,7 @@ func TestDelayedUnblock_FullPath_AllTablesAgreeOnRuleActionID(t *testing.T) {
 	eng.HandleEvent(tracker.AttackEvent{
 		Type:   "expired",
 		DBID:   1000,
-		Attack: &ms.attacks.attacks[0],
+		Attack: &ms.attacks.snapshotAttacks()[0],
 	})
 
 	// Wait for async dispatch goroutine to complete scheduling
@@ -557,16 +578,17 @@ func TestDelayedUnblock_FullPath_AllTablesAgreeOnRuleActionID(t *testing.T) {
 func TestReconcile_ScheduledActions_ExecutingRetried(t *testing.T) {
 	var deletes int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertLegacyV3Delete(t, r)
 		if r.Method == http.MethodDelete {
 			atomic.AddInt32(&deletes, 1)
 		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	ms := NewMockStore()
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 5, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	// Seed a scheduled_action row stuck in 'executing' — the PR-3 leftover
 	// scenario where the process crashed between MarkExecuting and Complete.

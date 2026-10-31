@@ -44,8 +44,8 @@ func TestCheckRuleParity(t *testing.T) {
 		{ThresholdID: 8, PrefixID: 10, Decoder: "icmp", Unit: "pps", Comparison: "over", Value: 1000, Domain: "internal_ip"},
 		{ThresholdID: 9, PrefixID: 10, Decoder: "fragment", Unit: "pps", Comparison: "over", Value: 200, Domain: "internal_ip"},
 		{ThresholdID: 10, PrefixID: 10, Decoder: "unknown", Unit: "pps", Comparison: "over", Value: 0, Domain: "internal_ip"},
-		{ThresholdID: 11, PrefixID: 10, Decoder: "tcp", Unit: "pct", Comparison: "over", Value: 50, Domain: "internal_ip"},    // 30000/50000*100=60% > 50%
-		{ThresholdID: 12, PrefixID: 10, Decoder: "udp", Unit: "pct", Comparison: "over", Value: 40, Domain: "internal_ip"},    // 15000/50000*100=30% < 40%
+		{ThresholdID: 11, PrefixID: 10, Decoder: "tcp", Unit: "pct", Comparison: "over", Value: 50, Domain: "internal_ip"}, // 30000/50000*100=60% > 50%
+		{ThresholdID: 12, PrefixID: 10, Decoder: "udp", Unit: "pct", Comparison: "over", Value: 40, Domain: "internal_ip"}, // 15000/50000*100=30% < 40%
 	}
 
 	ip := net.ParseIP("10.0.0.1")
@@ -83,15 +83,15 @@ func TestEvaluateRule(t *testing.T) {
 	dp := ring.DataPoint{
 		PPS:        1000,
 		BPS:        8000,
-		DecoderPPS: [decoder.MaxDecoders]int32{500, 0, 300},  // TCP=500, UDP=300
+		DecoderPPS: [decoder.MaxDecoders]int32{500, 0, 300},   // TCP=500, UDP=300
 		DecoderBPS: [decoder.MaxDecoders]int64{4000, 0, 2400}, // TCP=4000, UDP=2400
 	}
 
 	tests := []struct {
-		name     string
-		rule     engine.ResolvedThreshold
-		wantVal  int64
-		wantHit  bool
+		name    string
+		rule    engine.ResolvedThreshold
+		wantVal int64
+		wantHit bool
 	}{
 		{"ip pps over hit", engine.ResolvedThreshold{Decoder: "ip", Unit: "pps", Comparison: "over", Value: 500}, 1000, true},
 		{"ip pps over miss", engine.ResolvedThreshold{Decoder: "ip", Unit: "pps", Comparison: "over", Value: 2000}, 1000, false},
@@ -103,10 +103,10 @@ func TestEvaluateRule(t *testing.T) {
 		{"unknown decoder skip", engine.ResolvedThreshold{Decoder: "xyz", Unit: "pps", Comparison: "over", Value: 0}, -1, false},
 		// Percentage threshold tests
 		{"tcp pct over hit", engine.ResolvedThreshold{Decoder: "tcp", Unit: "pct", Comparison: "over", Value: 40}, 50, true},   // 500/1000*100 = 50% > 40%
-		{"tcp pct over miss", engine.ResolvedThreshold{Decoder: "tcp", Unit: "pct", Comparison: "over", Value: 60}, 50, false},  // 50% < 60%
-		{"udp pct over hit", engine.ResolvedThreshold{Decoder: "udp", Unit: "pct", Comparison: "over", Value: 20}, 30, true},    // 300/1000*100 = 30% > 20%
-		{"udp pct under hit", engine.ResolvedThreshold{Decoder: "udp", Unit: "pct", Comparison: "under", Value: 50}, 30, true},  // 30% < 50%
-		{"ip pct always 100", engine.ResolvedThreshold{Decoder: "ip", Unit: "pct", Comparison: "over", Value: 99}, 100, true},   // ip pct = 1000/1000*100 = 100%
+		{"tcp pct over miss", engine.ResolvedThreshold{Decoder: "tcp", Unit: "pct", Comparison: "over", Value: 60}, 50, false}, // 50% < 60%
+		{"udp pct over hit", engine.ResolvedThreshold{Decoder: "udp", Unit: "pct", Comparison: "over", Value: 20}, 30, true},   // 300/1000*100 = 30% > 20%
+		{"udp pct under hit", engine.ResolvedThreshold{Decoder: "udp", Unit: "pct", Comparison: "under", Value: 50}, 30, true}, // 30% < 50%
+		{"ip pct always 100", engine.ResolvedThreshold{Decoder: "ip", Unit: "pct", Comparison: "over", Value: 99}, 100, true},  // ip pct = 1000/1000*100 = 100%
 	}
 
 	for _, tt := range tests {

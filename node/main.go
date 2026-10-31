@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -79,16 +80,16 @@ func main() {
 	}
 	defer mgr.Close()
 
+	// Apply shared BPF settings before attaching; interfaces are validated identical.
+	if err := mgr.ApplyInterfaceConfig(primaryIface.Mode, primaryIface.SampleBytes, primaryIface.UpstreamSampleRate); err != nil {
+		log.Fatalf("Failed to apply BPF config: %v", err)
+	}
+
 	for _, iface := range cfg.Interfaces {
 		log.Printf("attaching XDP to %s (mode=%s)", iface.Name, iface.Mode)
 		if err := mgr.AttachXDP(iface.Name); err != nil {
 			log.Fatalf("Failed to attach XDP to %s: %v", iface.Name, err)
 		}
-	}
-
-	// Apply BPF config from first interface (single-NIC MVP; per-NIC isolation deferred)
-	if err := mgr.ApplyInterfaceConfig(primaryIface.Mode, primaryIface.SampleBytes, primaryIface.UpstreamSampleRate); err != nil {
-		log.Fatalf("Failed to apply BPF config: %v", err)
 	}
 
 	// P6: Load snapshot → init BPF maps (don't wait for Controller)
@@ -220,7 +221,7 @@ func main() {
 
 	// Parallel parse pipeline: reader → N workers → aggregator
 	// workers=1 bypasses channels (identical to old single-threaded path)
-	pool := sampler.NewWorkerPool(cfg.ParseWorkers, flowTable, batcher)
+	pool := sampler.NewWorkerPool(cfg.ParseWorkers, flowTable, batcher, primaryIface.Mode == "erspan")
 	log.Printf("sampler: starting with %d parse workers", pool.Workers())
 	go pool.Start(s)
 
@@ -265,15 +266,8 @@ func main() {
 		switch sig {
 		case syscall.SIGHUP:
 			log.Println("SIGHUP received — reloading config")
-			newCfg, err := config.Load(*configPath)
-			if err != nil {
-				log.Printf("Config reload failed: %v (keeping old config)", err)
-				continue
-			}
-			cfg = newCfg
-			pi := cfg.Interfaces[0]
-			if err := mgr.ApplyInterfaceConfig(pi.Mode, pi.SampleBytes, pi.UpstreamSampleRate); err != nil {
-				log.Printf("Failed to apply reloaded config: %v", err)
+			if err := reloadConfig(*configPath, primaryIface.Mode, mgr.ApplyInterfaceConfig, coll.SetUpstreamRate); err != nil {
+				logConfigReloadError(err)
 				continue
 			}
 			log.Println("Config reloaded and applied successfully")
@@ -285,6 +279,37 @@ func main() {
 			os.Exit(0)
 		}
 	}
+}
+
+var errReloadApply = errors.New("apply reloaded config")
+
+func logConfigReloadError(err error) {
+	if errors.Is(err, errReloadApply) {
+		log.Printf("Config reload failed: %v (BPF may be partially updated; upstream rate unchanged)", err)
+	} else {
+		log.Printf("Config reload failed: %v (keeping running config)", err)
+	}
+}
+
+func reloadConfig(path, runningMode string, apply func(mode string, sampleBytes, upstreamRate uint32) error, setUpstreamRate func(uint32)) error {
+	newCfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if newCfg.IsFlowMode() || len(newCfg.Interfaces) == 0 {
+		return errors.New("mode or interfaces change requires restart")
+	}
+	for i, iface := range newCfg.Interfaces {
+		if iface.Mode != runningMode {
+			return fmt.Errorf("interfaces[%d].mode %q differs from running mode %q: mode change requires restart", i, iface.Mode, runningMode)
+		}
+	}
+	pi := newCfg.Interfaces[0]
+	if err := apply(pi.Mode, pi.SampleBytes, pi.UpstreamSampleRate); err != nil {
+		return fmt.Errorf("%w: %w", errReloadApply, err)
+	}
+	setUpstreamRate(pi.UpstreamSampleRate)
+	return nil
 }
 
 // prefixBytesToIP converts proto prefix bytes to IP string.

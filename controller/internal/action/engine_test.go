@@ -258,12 +258,12 @@ func TestAttackDomain(t *testing.T) {
 		dstIP string
 		want  string
 	}{
-		{"10.0.0.1", "internal_ip"},            // bare IP (in-memory)
-		{"198.51.100.5/32", "internal_ip"},      // postgres inet::TEXT IPv4
-		{"2001:db8::1/128", "internal_ip"},      // postgres inet::TEXT IPv6
-		{"10.0.0.0/24", "subnet"},               // subnet attack
-		{"2001:db8::/32", "subnet"},             // IPv6 subnet
-		{"192.168.0.0/16", "subnet"},            // large CIDR
+		{"10.0.0.1", "internal_ip"},        // bare IP (in-memory)
+		{"198.51.100.5/32", "internal_ip"}, // postgres inet::TEXT IPv4
+		{"2001:db8::1/128", "internal_ip"}, // postgres inet::TEXT IPv6
+		{"10.0.0.0/24", "subnet"},          // subnet attack
+		{"2001:db8::/32", "subnet"},        // IPv6 subnet
+		{"192.168.0.0/16", "subnet"},       // large CIDR
 	}
 	for _, tt := range tests {
 		if got := attackDomain(tt.dstIP); got != tt.want {

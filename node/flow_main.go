@@ -145,6 +145,7 @@ func runFlowMode(cfg *config.Config) {
 		Mode:           "flow",
 	}, flowReports, applyConfig)
 	rpt.SetDeliveryVersion(initialDeliveryVersion)
+	rpt.SetHeartbeat(func() *pb.StatsReport { return aggregator.Heartbeat(cfg.NodeID, "flow", 1) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

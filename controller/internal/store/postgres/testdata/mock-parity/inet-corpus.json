@@ -1,0 +1,217 @@
+[
+ {
+  "input": "192.0.2.1",
+  "go_valid": true,
+  "pg_text": "192.0.2.1/32"
+ },
+ {
+  "input": "198.51.100.254",
+  "go_valid": true,
+  "pg_text": "198.51.100.254/32"
+ },
+ {
+  "input": "203.0.113.0",
+  "go_valid": true,
+  "pg_text": "203.0.113.0/32"
+ },
+ {
+  "input": "192.0.2.255",
+  "go_valid": true,
+  "pg_text": "192.0.2.255/32"
+ },
+ {
+  "input": "0.0.0.0",
+  "go_valid": true,
+  "pg_text": "0.0.0.0/32"
+ },
+ {
+  "input": "255.255.255.255",
+  "go_valid": true,
+  "pg_text": "255.255.255.255/32"
+ },
+ {
+  "input": "127.0.0.1",
+  "go_valid": true,
+  "pg_text": "127.0.0.1/32"
+ },
+ {
+  "input": "2001:db8::1",
+  "go_valid": true,
+  "pg_text": "2001:db8::1/128"
+ },
+ {
+  "input": "2001:DB8::1",
+  "go_valid": true,
+  "pg_text": "2001:db8::1/128"
+ },
+ {
+  "input": "2001:db8:0:0:0:0:0:1",
+  "go_valid": true,
+  "pg_text": "2001:db8::1/128"
+ },
+ {
+  "input": "2001:0db8::0001",
+  "go_valid": true,
+  "pg_text": "2001:db8::1/128"
+ },
+ {
+  "input": "2001:db8::",
+  "go_valid": true,
+  "pg_text": "2001:db8::/128"
+ },
+ {
+  "input": "2001:db8:0:1::1",
+  "go_valid": true,
+  "pg_text": "2001:db8:0:1::1/128"
+ },
+ {
+  "input": "2001:db8:1:0:0:0:0:1",
+  "go_valid": true,
+  "pg_text": "2001:db8:1::1/128"
+ },
+ {
+  "input": "2001:db8:0:0:1:0:0:1",
+  "go_valid": true,
+  "pg_text": "2001:db8::1:0:0:1/128"
+ },
+ {
+  "input": "2001:db8::1:0:0:1",
+  "go_valid": true,
+  "pg_text": "2001:db8::1:0:0:1/128"
+ },
+ {
+  "input": "2001:db8:0:0:1::1",
+  "go_valid": true,
+  "pg_text": "2001:db8::1:0:0:1/128"
+ },
+ {
+  "input": "::ffff:192.0.2.1",
+  "go_valid": true,
+  "pg_text": "::ffff:192.0.2.1/128"
+ },
+ {
+  "input": "::FFFF:192.0.2.1",
+  "go_valid": true,
+  "pg_text": "::ffff:192.0.2.1/128"
+ },
+ {
+  "input": "0:0:0:0:0:ffff:192.0.2.1",
+  "go_valid": true,
+  "pg_text": "::ffff:192.0.2.1/128"
+ },
+ {
+  "input": "::192.0.2.1",
+  "go_valid": true,
+  "pg_text": "::192.0.2.1/128"
+ },
+ {
+  "input": "2001:db8::192.0.2.1",
+  "go_valid": true,
+  "pg_text": "2001:db8::c000:201/128"
+ },
+ {
+  "input": "::1",
+  "go_valid": true,
+  "pg_text": "::1/128"
+ },
+ {
+  "input": "::",
+  "go_valid": true,
+  "pg_text": "::/128"
+ },
+ {
+  "input": "fe80::1",
+  "go_valid": true,
+  "pg_text": "fe80::1/128"
+ },
+ {
+  "input": "2001:db8:a:b:c:d:e:f",
+  "go_valid": true,
+  "pg_text": "2001:db8:a:b:c:d:e:f/128"
+ },
+ {
+  "input": "2001:0DB8:000A:000B:000C:000D:000E:000F",
+  "go_valid": true,
+  "pg_text": "2001:db8:a:b:c:d:e:f/128"
+ },
+ {
+  "input": "192.0.2.1/32",
+  "go_valid": false,
+  "pg_text": "192.0.2.1/32"
+ },
+ {
+  "input": "2001:db8::1/128",
+  "go_valid": false,
+  "pg_text": "2001:db8::1/128"
+ },
+ {
+  "input": "192.0.2.01",
+  "go_valid": false,
+  "pg_text": "192.0.2.1/32"
+ },
+ {
+  "input": "192.0.2",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "192.0.2.256",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "2001:db8:::1",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "2001:db8::1%eth0",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "2001:db8::g",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "::ffff:192.0.2.01",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "192.0.2.1.5",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "192.0.2.1 ",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "2001:db8:0:0:0:0:0:0:1",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "[2001:db8::1]",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "0x7f.0.0.1",
+  "go_valid": false,
+  "pg_text": null
+ },
+ {
+  "input": "::ffff:0:192.0.2.1",
+  "go_valid": true,
+  "pg_text": "::ffff:0:c000:201/128"
+ }
+]

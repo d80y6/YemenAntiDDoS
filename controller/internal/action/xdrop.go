@@ -7,49 +7,28 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 	"github.com/littlewolf9527/xsight/shared/decoder"
 )
 
-// xDropCompatibleDecoders is the set of xSight decoder_family values that
-// are allowed to produce xDrop rules. xDrop v2.6.1 supports three dispatch
-// paths on top of its 33-combo BPF lookup:
-//
-//   - Protocol + (optional) 5-tuple → L4 standard decoders (tcp/udp/icmp) +
-//     other IP protocols (gre/esp/igmp). fragment collapses to protocol=all.
-//   - Protocol=tcp + tcp_flags specialization → TCP flag family
-//     (tcp_syn/tcp_ack/tcp_rst/tcp_fin). tcp_flags is a single (mask,value)
-//     pair; each decoder has a canonical pattern (see tcpFlagDecoderMap).
-//   - decoder field → anomaly family (bad_fragment/invalid). xdrop
-//     Controller translates to match_anomaly bitmap internally; protocol
-//     is wildcard. See xdrop docs/v2.6.1-deploy-summary.md.
-//
-// Exclusions:
-//
-//   - `ip`: L3 aggregate "any IP protocol". xDrop can only express this
-//     as protocol=all, which combined with absent flow-derived port fields
-//     (common when source is diffuse) degrades into a silent full-prefix
-//     blackhole. Use BGP null-route for L3 aggregates.
-//   - `ip_other`: operator-declared "none of tcp/udp/icmp/fragment/gre/
-//     esp/igmp" — collapses to a useless full-wildcard xDrop rule with no
-//     meaningful 5-tuple constraint. BGP null-route is the correct layer.
-//
-// fragment inclusion rationale: fragment floods are a clear attack signal
-// by construction; dropping broadly at the xDrop layer is an acceptable
-// response. fragment → `all` in the xDrop payload is a semantic downgrade
-// but not a silent one because operators who configure a fragment-decoder
-// threshold have already accepted the aggressive drop intent.
-//
-// Maintenance: to extend support to a new decoder, update this map + the
-// protocol mapping in decoderToXDropProtocol (or isAnomalyDecoder if the
-// decoder goes through xdrop's `decoder` field) + UI help text + roadmap
-// compatibility matrix.
+const dbOperationTimeout = 5 * time.Second
+
+func overrideKey(actionID, connectorID int, ruleID string) string {
+	return fmt.Sprintf("%d:%d:%s", actionID, connectorID, ruleID)
+}
+
+// xDropCompatibleDecoders keeps the existing dispatch eligibility table.
+// ADR-0004 #8: ip/ip_other have no faithful protocol mapping and remain
+// excluded. IPv4 fragments use an explicit fragment condition; IPv6 keeps
+// protocol=all. New protocol and sample-filter mappings live in xdropDecoderSpec.
 var xDropCompatibleDecoders = map[string]bool{
 	// L4 standard
 	"tcp":      true,
@@ -66,10 +45,7 @@ var xDropCompatibleDecoders = map[string]bool{
 	"gre":  true,
 	"esp":  true,
 	"igmp": true,
-	// Anomaly family (v1.3 / xdrop v2.6.1) — dispatched via `decoder`
-	// field, translated to match_anomaly bitmap by xdrop Controller.
-	// Drop-only: xdrop 400-rejects rate_limit + anomaly (see
-	// SkipReasonXDropAnomalyRequiresDrop engine.go gate).
+	// Anomaly families use v3 match_anomaly; drop and rate_limit are allowed.
 	"bad_fragment": true,
 	"invalid":      true,
 	// "ip" / "ip_other" intentionally excluded — see doc comment above.
@@ -83,49 +59,19 @@ func IsXDropCompatibleDecoder(decoder string) bool {
 	return xDropCompatibleDecoders[decoder]
 }
 
-// isAnomalyRateLimitBody reports whether a final xdrop request body would
-// violate xdrop v2.6.1's anomaly-drop-only contract. True when the attack
-// decoder is anomaly (bad_fragment/invalid) AND the payload's top-level
-// `action` field is "rate_limit". Used by the late dispatch gate in
-// executeXDrop to catch custom payloads that set action=rate_limit even
-// when act.XDropAction=filter_l4. See codex v1.3.x audit P2.
-//
-// Malformed / unparseable bodies return false (non-JSON or JSON without
-// an `action` string) — those paths are handled by the downstream
-// rate_limit sanity check, which still fires and fails the dispatch.
-func isAnomalyRateLimitBody(body []byte, decoder string) bool {
-	if !isAnomalyDecoder(decoder) {
-		return false
-	}
-	var check map[string]any
-	if json.Unmarshal(body, &check) != nil {
-		return false
-	}
-	a, _ := check["action"].(string)
-	return a == "rate_limit"
-}
-
-// isAnomalyDecoder reports whether the decoder is an xdrop v2.6.1 anomaly
-// family member. Anomaly decoders have distinct dispatch semantics:
-//   - routed through xdrop's `decoder` field (not protocol)
-//   - translated to match_anomaly bitmap by xdrop Controller
-//   - drop-only (xdrop 400-rejects action=rate_limit + anomaly)
-//   - IPv6 bad_fragment rejected by xdrop (scope guard, v1.3 limitation);
-//     invalid allowed on both IPv4 and IPv6
-//
-// Used both by the default payload builder (to set Decoder field instead
-// of Protocol) and by the engine dispatch gate (to fail-fast on
-// action=rate_limit combos).
+// isAnomalyDecoder identifies families matched by v3 anomaly bits.
+// IPv6 bad_fragment is rejected by v3, not by a local dispatch gate.
 func isAnomalyDecoder(decoder string) bool {
 	return decoder == "bad_fragment" || decoder == "invalid"
 }
 
 // tcpFlagDecoderMap maps TCP-flag family decoders to their canonical
 // tcp_flags pattern. Patterns chosen to minimize false positives:
-//   tcp_syn → "SYN,!ACK": pure SYN (handshake opener), excludes SYN+ACK
-//   tcp_ack → "ACK,!SYN": ACK-flood / established traffic, excludes handshake
-//   tcp_rst → "RST":       connection reset flood
-//   tcp_fin → "FIN":       half-open close flood
+//
+//	tcp_syn → "SYN,!ACK": pure SYN (handshake opener), excludes SYN+ACK
+//	tcp_ack → "ACK,!SYN": ACK-flood / established traffic, excludes handshake
+//	tcp_rst → "RST":       connection reset flood
+//	tcp_fin → "FIN":       half-open close flood
 //
 // Used by both the default payload builder and injectTcpFlags (custom
 // payload path).
@@ -136,61 +82,17 @@ var tcpFlagDecoderMap = map[string]string{
 	"tcp_fin": "FIN",
 }
 
-// specializeXDropDecoder mutates payload in place to add the fields that
-// depend on the attack's decoder_family, per the three xdrop dispatch
-// paths described on xDropCompatibleDecoders:
-//
-//   Anomaly (bad_fragment/invalid): set `decoder` field; xdrop Controller
-//     translates to match_anomaly bitmap. Protocol stays wildcard.
-//   TCP-flag family (tcp_syn/tcp_ack/tcp_rst/tcp_fin): protocol=tcp +
-//     canonical tcp_flags pattern from tcpFlagDecoderMap.
-//   Other IP protocols (gre/esp/igmp): set protocol only.
-//   tcp / udp / icmp / fragment / unknown: leave untouched. xdrop accepts
-//     an absent protocol as wildcard which is fine when dst_ip is set;
-//     keeping these branches empty preserves v1.2 behavior.
-//
-// Called by the default payload builder in executeXDrop. Exported
-// (lowercase within-package) so xdrop_flags_test.go can exercise the
-// switch directly without duplicating the logic.
+// specializeXDropDecoder pins protocol to the attack per ADR-0004.
 func specializeXDropDecoder(payload *xdropRuleRequest, decoder string) {
-	switch {
-	case isAnomalyDecoder(decoder):
-		payload.Decoder = decoder
-	case tcpFlagDecoderMap[decoder] != "":
-		payload.Protocol = "tcp"
-		flags := tcpFlagDecoderMap[decoder]
+	payload.Protocol, _ = expectedXDropProtocol(decoder, xdropAddressFamily(payload.DstIP+payload.DstCIDR))
+	payload.MatchAnomaly = xdropAnomalyBit(decoder)
+	if flags := tcpFlagDecoderMap[decoder]; flags != "" {
 		payload.TcpFlags = &flags
-	case decoder == "gre", decoder == "esp", decoder == "igmp":
-		payload.Protocol = decoder
 	}
 }
 
-// specializeXDropDecoderBody is the custom-payload counterpart of
-// specializeXDropDecoder. Auto-fills dispatch-specific fields in an
-// already-expanded custom payload body if the operator didn't specify
-// them — parallel to how injectTcpFlags auto-fills tcp_flags for TCP-flag-
-// family attacks. Runs AFTER normalizeXDropProtocol + injectTcpFlags
-// so it observes the final payload shape.
-//
-// Rules (idempotent, operator-supplied fields preserved):
-//
-//   anomaly attack (bad_fragment/invalid) + `decoder` absent → inject
-//     decoder=<family>. Also strips `protocol` if it still holds the
-//     anomaly decoder name (defense-in-depth; normalize usually clears
-//     this but a bare `"protocol":"bad_fragment"` in a payload that
-//     skipped normalize — e.g. via a future test harness — would still
-//     land here).
-//   gre/esp/igmp attack + `protocol` absent → inject protocol=<family>.
-//   TCP-flag family: handled by injectTcpFlags already — pass-through.
-//   tcp/udp/icmp/fragment: no auto-fill (operator-authored custom
-//     payloads are the spec; absent fields mean wildcard which is the
-//     operator's prerogative, preserves v1.2 behavior).
-//
-// Without this function, gre/esp/igmp custom payloads that omit protocol
-// would dispatch as wildcard rules (silent semantic downgrade), and
-// anomaly custom payloads that omit `decoder` would hit xdrop's 400
-// (no decoder-bit means no match_anomaly → xdrop rejects as "not an
-// anomaly rule on v2.6.1 path").
+// specializeXDropDecoderBody fills anomaly bits and missing IP protocols.
+// finalizeXDropV3Body subsequently pins protocol to the attack.
 func specializeXDropDecoderBody(body []byte, attack *store.Attack) []byte {
 	decoderName := attack.DecoderFamily
 	dc := decoder.GetDispatchClass(decoderName)
@@ -204,8 +106,12 @@ func specializeXDropDecoderBody(body []byte, attack *store.Attack) []byte {
 		return body
 	}
 	if isAnomaly {
-		if _, has := m["decoder"]; !has {
-			m["decoder"] = decoderName
+		if _, has := m["match_anomaly"]; !has {
+			name, _ := m["decoder"].(string)
+			if name == "" {
+				name = decoderName
+			}
+			m["match_anomaly"] = xdropAnomalyBit(name)
 		}
 		if proto, _ := m["protocol"].(string); isAnomalyDecoder(proto) {
 			delete(m, "protocol")
@@ -321,25 +227,21 @@ func CloseSyntheticXDropRuleLocal(
 }
 
 // xdropRuleRequest is the default request body sent to xDrop API.
-// Matches xDrop's RuleRequest format — any field left empty/zero is treated as wildcard.
+// Empty optional fields are omitted; finalize adds the v3 claim identity.
 type xdropRuleRequest struct {
-	DstIP    string  `json:"dst_ip,omitempty"`
-	DstCIDR  string  `json:"dst_cidr,omitempty"` // v1.3: subnet-scope rule (carpet bombing)
-	SrcIP    string  `json:"src_ip,omitempty"`
-	SrcCIDR  string  `json:"src_cidr,omitempty"`
-	DstPort  int     `json:"dst_port,omitempty"`
-	SrcPort  int     `json:"src_port,omitempty"`
-	Protocol string  `json:"protocol,omitempty"`
-	TcpFlags *string `json:"tcp_flags,omitempty"` // e.g. "SYN,!ACK"; requires protocol=tcp
-	// Decoder (xdrop v2.6.1): set ONLY for anomaly decoders
-	// (bad_fragment / invalid). xdrop Controller translates to
-	// match_anomaly bitmap and protocol becomes wildcard. Non-anomaly
-	// decoders MUST leave this field empty and use Protocol + TcpFlags.
-	Decoder   string `json:"decoder,omitempty"`
-	Action    string `json:"action"`               // "drop" or "rate_limit"
-	RateLimit int    `json:"rate_limit,omitempty"` // PPS, required if action=rate_limit
-	Source    string `json:"source"`               // "xsight"
-	Comment   string `json:"comment,omitempty"`
+	DstIP        string  `json:"dst_ip,omitempty"`
+	DstCIDR      string  `json:"dst_cidr,omitempty"` // v1.3: subnet-scope rule (carpet bombing)
+	SrcIP        string  `json:"src_ip,omitempty"`
+	SrcCIDR      string  `json:"src_cidr,omitempty"`
+	DstPort      int     `json:"dst_port,omitempty"`
+	SrcPort      int     `json:"src_port,omitempty"`
+	Protocol     string  `json:"protocol,omitempty"`
+	TcpFlags     *string `json:"tcp_flags,omitempty"` // e.g. "SYN,!ACK"; requires protocol=tcp
+	MatchAnomaly int     `json:"match_anomaly,omitempty"`
+	Fragment     string  `json:"fragment,omitempty"`
+	Action       string  `json:"action"`               // "drop" or "rate_limit"
+	RateLimit    int     `json:"rate_limit,omitempty"` // PPS, required if action=rate_limit
+	Comment      string  `json:"comment,omitempty"`
 }
 
 // splitIPOrCIDR separates "10.0.0.1" vs "10.0.0.0/24".
@@ -380,20 +282,37 @@ func executeXDrop(
 	fa *FlowAnalysis,
 	engine *Engine, // nil-safe: if non-nil, used to schedule per-artifact cancelable delays
 ) (*store.ActionExecutionLog, error) {
+	skipLog := func(reason, message string) *store.ActionExecutionLog {
+		row := &store.ActionExecutionLog{
+			AttackID:     attackDBID,
+			ActionID:     action.ID,
+			ResponseName: responseName,
+			ActionType:   "xdrop",
+			TriggerPhase: triggerPhase,
+			Status:       "skipped",
+			ErrorMessage: message,
+			ExecutedAt:   time.Now(),
+		}
+		recordSkip(row, reason)
+		return row
+	}
 	xdropAction := action.XDropAction
 	if xdropAction == "" {
-		return nil, fmt.Errorf("xdrop action type is empty")
+		log.Printf("action: xdrop action %d skipped: xdrop action type is empty", action.ID)
+		return skipLog(SkipReasonIncompleteConfig, "xdrop action type is empty"), nil
 	}
 
 	// Resolve target connectors: action-specific targets first, fall back to all enabled
 	connectors, err := s.XDropTargets().List(ctx, action.ID)
 	if err != nil {
-		return nil, fmt.Errorf("list xdrop targets for action %d: %w", action.ID, err)
+		err = fmt.Errorf("list xdrop targets for action %d: %w", action.ID, err)
+		return skipLog(SkipReasonConnectorLookupFailed, err.Error()), err
 	}
 	if len(connectors) == 0 {
 		connectors, err = s.XDropConnectors().ListEnabled(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list enabled xdrop connectors: %w", err)
+			err = fmt.Errorf("list enabled xdrop connectors: %w", err)
+			return skipLog(SkipReasonConnectorLookupFailed, err.Error()), err
 		}
 	}
 	if len(connectors) == 0 {
@@ -407,12 +326,44 @@ func executeXDrop(
 			ErrorMessage: "no xdrop connectors available",
 			ExecutedAt:   time.Now(),
 		}
-		return execLog, fmt.Errorf("no xdrop connectors available")
+		recordSkip(execLog, SkipReasonNoConnector)
+		log.Printf("action: xdrop action %d skipped: no xdrop connectors available", action.ID)
+		return execLog, nil
+	}
+
+	// Filter after target resolution so an explicitly disabled target set
+	// cannot fall through to global connectors or payload validation.
+	if xdropAction != "unblock" {
+		enabled := make([]store.XDropConnector, 0, len(connectors))
+		for _, conn := range connectors {
+			if !conn.Enabled {
+				entry := skipLog(SkipReasonConnectorDisabled, "connector disabled")
+				connID := conn.ID
+				entry.ConnectorID, entry.ConnectorName = &connID, conn.Name
+				if _, err := writeExecLog(s, entry); err != nil {
+					xdropStateWriteFailure("xdrop_exec_log", err)
+				}
+				continue
+			}
+			enabled = append(enabled, conn)
+		}
+		connectors = enabled
+		if len(connectors) == 0 {
+			return nil, nil
+		}
 	}
 
 	// Build request body
 	var body []byte
+	var shapeHints, itemHints []string
+	var bodies [][]byte
 	if len(action.XDropCustomPayload) > 0 && string(action.XDropCustomPayload) != "null" {
+		// Preserve narrowing permissions before expanding the template. Invalid
+		// template JSON keeps the legacy behavior with no narrowing permissions.
+		var tpl map[string]any
+		if json.Unmarshal(action.XDropCustomPayload, &tpl) != nil {
+			tpl = nil
+		}
 		// Use custom payload with {var} expansion
 		expanded := expandParams(string(action.XDropCustomPayload), attack, eventType, prefixStr, fa)
 		// Fix JSON types: port and rate_limit fields must be integers, not strings.
@@ -441,6 +392,20 @@ func executeXDrop(
 		// last so it catches any stray fields from expandParams or
 		// fixPayloadTypes that the earlier steps did not remove.
 		body = sanitizeXDropPayloadForDecoder(body, attack.DecoderFamily)
+		var shaped map[string]any
+		if json.Unmarshal(body, &shaped) == nil && shaped != nil {
+			var shapedBodies []map[string]any
+			shapedBodies, shapeHints, itemHints = shapeXDropBodies(tpl, shaped, fa, attack, attack.DecoderFamily, xdropAction == "rate_limit", func(id int) (*store.Threshold, error) {
+				return s.Thresholds().Get(ctx, id)
+			})
+			for _, shapedBody := range shapedBodies {
+				itemBody, err := json.Marshal(shapedBody)
+				if err != nil {
+					return nil, fmt.Errorf("marshal shaped xdrop payload: %w", err)
+				}
+				bodies = append(bodies, itemBody)
+			}
+		}
 	} else {
 		// Default payload: dst_ip drop/rate_limit based on xdrop_action.
 		// v1.3 Phase 1c.1: subnet-scope attacks (carpet bombing) use dst_cidr
@@ -454,7 +419,6 @@ func executeXDrop(
 			DstIP:   dstIP,
 			DstCIDR: dstCIDR,
 			Action:  actionStr,
-			Source:  "xsight",
 			Comment: fmt.Sprintf("attack #%d %s", attack.ID, attack.AttackType),
 		}
 		specializeXDropDecoder(&payload, attack.DecoderFamily)
@@ -468,64 +432,56 @@ func executeXDrop(
 		body = sanitizeXDropPayloadForDecoder(body, attack.DecoderFamily)
 	}
 
-	// Late anomaly fail-fast: the engine.go gate catches XDropAction=rate_limit
-	// + anomaly decoder combos when the action record is used directly. But a
-	// custom payload can inject `"action":"rate_limit"` in its JSON body even
-	// when act.XDropAction == "filter_l4" (operator mismatch). Check the
-	// final body here to catch that case with the same skip_reason —
-	// dispatch-time fail-fast on real body semantics, not just on the action
-	// record. See codex v1.3.x audit P2.
-	if isAnomalyRateLimitBody(body, attack.DecoderFamily) {
-		// Caller (engine.go xdrop branch) persists the returned execLog via
-		// ActionExecLog().Create — we must NOT write it ourselves here, or
-		// both rows + both status="skipped" counter increments would land
-		// (see codex v1.3.x re-audit finding). RecordSkip IS ours to call
-		// because the caller doesn't know the skip_reason.
-		skipLog := &store.ActionExecutionLog{
-			AttackID:     attackDBID,
-			ActionID:     action.ID,
-			ResponseName: responseName,
-			ActionType:   "xdrop",
-			TriggerPhase: triggerPhase,
-			Status:       "skipped",
-			SkipReason:   SkipReasonXDropAnomalyRequiresDrop,
-			ErrorMessage: fmt.Sprintf(
-				"decoder=%s + body action=rate_limit unsupported (xdrop v2.6.1 anomaly rules are drop-only); custom payload overrides XDropAction",
-				attack.DecoderFamily),
-			RequestBody: truncateStr(string(body), 1024),
-			ExecutedAt:  time.Now(),
-		}
-		metrics.RecordSkip(SkipReasonXDropAnomalyRequiresDrop)
-		return skipLog, nil
+	if len(bodies) == 0 {
+		bodies = [][]byte{body}
 	}
-
-	// Runtime sanity: rate_limit action must have a positive rate_limit in the payload.
-	// API validation should prevent this, but guard against malformed DB rows.
-	//
-	// v1.3.4: previously returned (nil, err), which caused the caller to skip
-	// writing an action_execution_log row — operator saw nothing in UI/timeline
-	// despite the dispatch being rejected. Now returns a populated failed log
-	// so the reason is visible in the execution history.
-	if xdropAction == "rate_limit" {
+	type dispatchItem struct {
+		body  []byte
+		hints []string
+	}
+	var items []dispatchItem
+	var rejected []*store.ActionExecutionLog
+	for i, raw := range bodies {
+		body, finalizeHints := finalizeXDropV3Body(raw, attack, xdropClaimRef(attackDBID, action.ID))
+		hints := append([]string(nil), shapeHints...)
+		if len(itemHints) > 0 {
+			hints = append(hints, itemHints[i])
+		}
+		hints = append(hints, finalizeHints...)
+		// Runtime sanity: every final rate_limit action needs a rate in the v3 range.
+		// API validation should prevent this, but guard against malformed DB rows.
+		//
+		// v1.3.4: previously returned (nil, err), which caused the caller to skip
+		// writing an action_execution_log row — operator saw nothing in UI/timeline
+		// despite the dispatch being rejected. Now returns a populated failed log
+		// so the reason is visible in the execution history.
 		var check map[string]any
 		if json.Unmarshal(body, &check) == nil {
-			rl, _ := check["rate_limit"].(float64)
-			if rl <= 0 {
-				errMsg := "xdrop rate_limit action has no valid rate_limit value in payload"
-				failLog := &store.ActionExecutionLog{
-					AttackID:     attackDBID,
-					ActionID:     action.ID,
-					ResponseName: responseName,
-					ActionType:   "xdrop",
-					TriggerPhase: triggerPhase,
-					Status:       "failed",
-					ErrorMessage: errMsg,
-					RequestBody:  truncateStr(string(body), 1024),
-					ExecutedAt:   time.Now(),
+			if xdropAction == "rate_limit" || check["action"] == "rate_limit" {
+				rl, _ := check["rate_limit"].(float64)
+				if rl <= 0 || rl > 4294967295 {
+					errMsg := "xdrop rate_limit action has no valid rate_limit value in payload"
+					failLog := &store.ActionExecutionLog{
+						AttackID:     attackDBID,
+						ActionID:     action.ID,
+						ResponseName: responseName,
+						ActionType:   "xdrop",
+						TriggerPhase: triggerPhase,
+						Status:       "failed",
+						ErrorMessage: strings.Join(append([]string{errMsg}, hints...), "; "),
+						RequestBody:  truncateStr(string(body), 1024),
+						ExecutedAt:   time.Now(),
+					}
+					if len(bodies) == 1 {
+						return failLog, fmt.Errorf("%s", errMsg)
+					}
+					rejected = append(rejected, failLog)
+					continue
 				}
-				return failLog, fmt.Errorf("%s", errMsg)
 			}
 		}
+
+		items = append(items, dispatchItem{body: body, hints: hints})
 	}
 
 	// For "unblock" action, we need the external rule ID from a previous execution
@@ -534,20 +490,31 @@ func executeXDrop(
 		httpMethod = "DELETE"
 	}
 
-	// Execute against each connector; return log for the last one (or first failure)
+	// Execute the selected items on each connector, then commit its failures.
 	var lastLog *store.ActionExecutionLog
+	overrideFiltered := false
 	for _, conn := range connectors {
+		if len(items) == 0 {
+			continue
+		}
 		connID := conn.ID // capture for pointer
-		execLog := &store.ActionExecutionLog{
-			AttackID:      attackDBID,
-			ActionID:      action.ID,
-			ResponseName:  responseName,
-			ActionType:    "xdrop",
-			ConnectorName: conn.Name,
-			ConnectorID:   &connID,
-			TriggerPhase:  triggerPhase,
-			RequestBody:   truncateStr(string(body), 1024),
-			ExecutedAt:    time.Now(),
+
+		if xdropAction != "unblock" {
+			overrides, err := s.ManualOverrides().ListByAttack(ctx, attackDBID)
+			if err != nil {
+				log.Printf("action: xdrop create override lookup: %v", err)
+			}
+			blocked := false
+			for _, override := range overrides {
+				if override.ActionID == action.ID && override.ConnectorID == conn.ID {
+					blocked = true
+					break
+				}
+			}
+			if blocked {
+				writeSkipLog(ctx, s, attackDBID, action, responseName, conn.Name, SkipReasonManualOverride, "")
+				continue
+			}
 		}
 
 		apiURL := strings.TrimRight(conn.APIURL, "/") + "/rules"
@@ -559,29 +526,49 @@ func executeXDrop(
 		}
 		client := &http.Client{Timeout: timeout}
 
-		// For unblock, look up ALL external rule IDs from prior xdrop actions on this attack.
+		// For unblock, select owned artifacts from xdrop_active_rules.
 		// Each rule may have a different unblock_delay_minutes from its originating on_detected action.
 		// Rules with delay=0 are deleted immediately; rules with delay>0 are scheduled for later deletion.
-		// NOTE: delayed deletions are best-effort in-process timers — lost on controller restart.
+		// NOTE: ScheduleDelay persists delayed deletions; RecoverScheduledActions re-arms them at startup.
+		// Persistence failure calls MarkFailed and starts no goroutine; that status write may also fail.
+		// Calls without an Engine use a local Engine to preserve the same withdrawal contract.
 		if xdropAction == "unblock" {
-			allRules, err := s.ActionExecLog().FindExternalRulesWithActions(ctx, attackDBID)
+			execLog := &store.ActionExecutionLog{
+				AttackID:      attackDBID,
+				ActionID:      action.ID,
+				ResponseName:  responseName,
+				ActionType:    "xdrop",
+				ConnectorName: conn.Name,
+				ConnectorID:   &connID,
+				TriggerPhase:  triggerPhase,
+				ErrorMessage:  strings.Join(items[0].hints, "; "),
+				RequestBody:   truncateStr(string(items[0].body), 1024),
+				ExecutedAt:    time.Now(),
+			}
+			allRules, err := s.XDropActiveRules().ListByAttack(ctx, attackDBID)
 			if err != nil || len(allRules) == 0 {
-				execLog.Status = "failed"
-				execLog.ErrorMessage = "no external_rule_ids found for unblock"
+				execLog.Status = "skipped"
+				execLog.ErrorMessage = "no active, delayed or failed rules to unblock"
+				if err != nil {
+					execLog.Status = "failed"
+					execLog.ErrorMessage = fmt.Sprintf("list xdrop_active_rules: %v", err)
+				} else {
+					recordSkip(execLog, SkipReasonNoRulesToUnblock)
+				}
 				lastLog = execLog
-				if _, err := s.ActionExecLog().Create(ctx, execLog); err != nil {
-					log.Printf("action: create action_execution_log: %v", err)
+				if _, err := writeExecLog(s, execLog); err != nil {
+					xdropStateWriteFailure("xdrop_exec_log", err)
 				}
 				continue
 			}
 
 			// Filter: only delete rules that were created on THIS connector.
 			// Prevents cross-connector deletion when multiple xDrop connectors are used.
-			// ConnectorID=0 means legacy record without connector tracking — allow on any connector (backward compat).
 			var rulesWithActions []store.RuleWithAction
 			for _, ra := range allRules {
-				if ra.ConnectorID == 0 || ra.ConnectorID == conn.ID {
-					rulesWithActions = append(rulesWithActions, ra)
+				if ra.ConnectorID == conn.ID && (ra.Status == "active" || ra.Status == "delayed" || ra.Status == "failed") {
+					// Synthetic IDs share the recovery and withdrawal helper below.
+					rulesWithActions = append(rulesWithActions, store.RuleWithAction{RuleID: ra.ExternalRuleID, ActionID: ra.ActionID, ConnectorID: ra.ConnectorID})
 				}
 			}
 			if len(rulesWithActions) == 0 {
@@ -603,12 +590,13 @@ func executeXDrop(
 			}
 			overrideSet := make(map[string]bool, len(overrides))
 			for _, o := range overrides {
-				overrideSet[fmt.Sprintf("%d:%d:%s", o.ActionID, o.ConnectorID, o.ExternalRuleID)] = true
+				overrideSet[overrideKey(o.ActionID, o.ConnectorID, o.ExternalRuleID)] = true
 			}
 			var filteredRules []store.RuleWithAction
 			for _, ra := range rulesWithActions {
-				key := fmt.Sprintf("%d:%d:%s", ra.ActionID, conn.ID, ra.RuleID)
+				key := overrideKey(ra.ActionID, conn.ID, ra.RuleID)
 				if overrideSet[key] {
+					overrideFiltered = true
 					log.Printf("action: xdrop unblock skipping rule %s (manual override, attack=%d action=%d)", ra.RuleID, attackDBID, ra.ActionID)
 					continue
 				}
@@ -630,498 +618,277 @@ func executeXDrop(
 			}
 
 			// Group rules by delay
-			immediateRules := []string{}
+			immediateRules := []store.RuleWithAction{}
 			type delayedRule struct {
-				ruleID string
-				delay  time.Duration
+				rule  store.RuleWithAction
+				delay time.Duration
 			}
 			var delayedRules []delayedRule
 			for _, ra := range rulesWithActions {
 				delay := actionDelays[ra.ActionID]
 				if delay <= 0 {
-					immediateRules = append(immediateRules, ra.RuleID)
+					immediateRules = append(immediateRules, ra)
 				} else {
-					delayedRules = append(delayedRules, delayedRule{ra.RuleID, time.Duration(delay) * time.Minute})
+					delayedRules = append(delayedRules, delayedRule{ra, time.Duration(delay) * time.Minute})
 				}
 			}
 
-			// Delete immediate rules now — write per-rule exec log so Mitigations can match
-			deleted := 0
+			// All automatic withdrawals share the Engine's business-key lock.
+			if engine == nil {
+				engine = NewEngine(s, "auto")
+			}
+			deleted, skipped := 0, 0
+			deferred := map[string]int{}
 			var lastErr string
-			for _, ruleID := range immediateRules {
-				// v1.2 PR-4: transition active→withdrawing before side effect.
-				// If the row has already moved to withdrawing/withdrawn/failed
-				// (another goroutine got there first, or a force-remove landed),
-				// MarkWithdrawing returns false and we skip this artifact.
-				actionIDForRule := action.ID
-				for _, ra := range rulesWithActions {
-					if ra.RuleID == ruleID {
-						actionIDForRule = ra.ActionID
-						break
-					}
-				}
-				if ok, _ := s.XDropActiveRules().MarkWithdrawing(ctx, attackDBID, actionIDForRule, connID, ruleID); !ok {
-					// Row not in active/delayed — either no row (legacy) or already
-					// past this transition. Proceed anyway for backward compat with
-					// rules that predate PR-4 bootstrap.
-					log.Printf("action: xdrop unblock rule %s not in active state (proceeding, attack=%d)", ruleID, attackDBID)
-				}
-
-				// Synthetic "failed-create-*" IDs never made it onto the xDrop
-				// node, so DELETE would pointlessly 404. Skip the HTTP call and
-				// close the row locally — this also cleans up failed rows in
-				// the state table instead of letting them linger.
-				if isSyntheticFailedXDropRuleID(ruleID) {
+			for _, ra := range immediateRules {
+				sa := store.ScheduledAction{ActionType: "xdrop_unblock", AttackID: attackDBID, ActionID: ra.ActionID, ConnectorID: connID, ExternalRuleID: ra.RuleID}
+				result := engine.withdrawXDropRule(ctx, sa, "normal", triggerPhase)
+				switch result {
+				case "withdrawn":
 					deleted++
-					CloseSyntheticXDropRuleLocal(ctx, s, nil, attackDBID, actionIDForRule, connID, conn.Name, triggerPhase, ruleID, 0)
-					continue
-				}
-
-				delURL := apiURL + "/" + ruleID
-				req, err := http.NewRequestWithContext(ctx, "DELETE", delURL, nil)
-				if err != nil {
-					lastErr = fmt.Sprintf("create request: %v", err)
-					s.ActionExecLog().Create(ctx, &store.ActionExecutionLog{
-						AttackID: attackDBID, ActionID: actionIDForRule, ActionType: "xdrop",
-						ConnectorName: conn.Name, ConnectorID: &connID, TriggerPhase: triggerPhase,
-						ExternalRuleID: ruleID, Status: "failed", ErrorMessage: lastErr, ExecutedAt: time.Now(),
-					})
-					s.XDropActiveRules().MarkFailed(ctx, attackDBID, actionIDForRule, connID, ruleID, lastErr)
-					continue
-				}
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("User-Agent", "xsight-controller/1.0")
-				if conn.APIKey != "" {
-					req.Header.Set("X-API-Key", conn.APIKey)
-				}
-				resp, err := client.Do(req)
-				if err != nil {
-					lastErr = fmt.Sprintf("DELETE %s: %v", delURL, err)
-					s.ActionExecLog().Create(ctx, &store.ActionExecutionLog{
-						AttackID: attackDBID, ActionID: actionIDForRule, ActionType: "xdrop",
-						ConnectorName: conn.Name, ConnectorID: &connID, TriggerPhase: triggerPhase,
-						ExternalRuleID: ruleID, Status: "failed", ErrorMessage: lastErr, ExecutedAt: time.Now(),
-					})
-					s.XDropActiveRules().MarkFailed(ctx, attackDBID, actionIDForRule, connID, ruleID, lastErr)
-					continue
-				}
-				resp.Body.Close()
-				if resp.StatusCode < 400 || resp.StatusCode == 404 {
-					// Success or 404 (rule already gone) — treat as idempotent success
-					deleted++
-					status := "success"
-					errMsg := ""
-					if resp.StatusCode == 404 {
-						errMsg = "idempotent: rule already deleted"
-						log.Printf("action: xdrop unblock rule %s already gone (404, attack=%d)", ruleID, attackDBID)
+				case "failed", "state_write_error", "list_error":
+					lastErr = result
+				default:
+					skipped++
+					switch result {
+					case "backoff":
+						deferred["backoff"]++
+					case "skipped_connector":
+						deferred["connector_disabled"]++
+					case "busy", "cancelled":
+						deferred["busy"]++
+					case "skipped_claimed":
+						deferred["claimed"]++
 					}
-					ruleLog := &store.ActionExecutionLog{
-						AttackID:       attackDBID,
-						ActionID:       actionIDForRule,
-						ActionType:     "xdrop",
-						ConnectorName:  conn.Name,
-						ConnectorID:    &connID,
-						TriggerPhase:   triggerPhase,
-						ExternalRuleID: ruleID,
-						Status:         status,
-						ErrorMessage:   errMsg,
-						ExecutedAt:     time.Now(),
-					}
-					if _, err := s.ActionExecLog().Create(ctx, ruleLog); err != nil {
-						log.Printf("action: create per-rule unblock log: %v", err)
-					}
-					s.XDropActiveRules().MarkWithdrawn(ctx, attackDBID, actionIDForRule, connID, ruleID)
-				} else {
-					lastErr = fmt.Sprintf("DELETE %s: HTTP %d", delURL, resp.StatusCode)
-					// Write per-rule failed log with full business key
-					failLog := &store.ActionExecutionLog{
-						AttackID:       attackDBID,
-						ActionID:       actionIDForRule,
-						ActionType:     "xdrop",
-						ConnectorName:  conn.Name,
-						ConnectorID:    &connID,
-						TriggerPhase:   triggerPhase,
-						ExternalRuleID: ruleID,
-						Status:         "failed",
-						ErrorMessage:   fmt.Sprintf("HTTP %d", resp.StatusCode),
-						ExecutedAt:     time.Now(),
-					}
-					if _, err := s.ActionExecLog().Create(ctx, failLog); err != nil {
-						log.Printf("action: create per-rule failed log: %v", err)
-					}
-					s.XDropActiveRules().MarkFailed(ctx, attackDBID, actionIDForRule, connID, ruleID, fmt.Sprintf("HTTP %d", resp.StatusCode))
 				}
 			}
-
-			// Schedule delayed rule deletions — write "scheduled" log entries for Mitigations UI
+			scheduled, scheduleFailed := 0, false
 			for _, dr := range delayedRules {
-				scheduledFor := time.Now().Add(dr.delay)
-				// Resolve the action_id for THIS rule (may differ from the
-				// enclosing action when rules came from multiple actions).
-				ruleActionID := action.ID
-				for _, ra := range rulesWithActions {
-					if ra.RuleID == dr.ruleID {
-						ruleActionID = ra.ActionID
-						break
-					}
+				sa := store.ScheduledAction{ActionType: "xdrop_unblock", AttackID: attackDBID, ActionID: dr.rule.ActionID, ConnectorID: connID, ExternalRuleID: dr.rule.RuleID, ScheduledFor: time.Now().Add(dr.delay)}
+				persisted, err := engine.scheduleXDrop(ctx, sa, triggerPhase, responseName)
+				if persisted {
+					scheduled++
 				}
-				// v1.2 PR-4 P2 fix: persist the schedule FIRST, before mutating
-				// xdrop_active_rules. If persistence fails we must not put the
-				// rule into the authoritative `delayed` state — that would leave
-				// it permanently stuck in Mitigations UI with no recovery path
-				// (ReconcileOnStartup only scans scheduled_actions/withdrawing,
-				// never xdrop_active_rules.delayed alone).
-				var schedID int
-				var cancelCtx context.Context
-				var persistErr error
-				if engine != nil {
-					id, cctx, perr := engine.ScheduleDelay(ctx, "xdrop_unblock", attackDBID, ruleActionID, connID, dr.ruleID, scheduledFor)
-					if perr != nil {
-						persistErr = perr
-						log.Printf("action: xdrop ScheduleDelay persist failed rule=%s attack=%d action=%d: %v", dr.ruleID, attackDBID, ruleActionID, perr)
-					} else {
-						schedID = id
-						cancelCtx = cctx
-					}
+				if err != nil {
+					scheduleFailed = true
 				}
-				if persistErr != nil {
-					// Schedule did not persist — refuse to pretend the artifact is
-					// in durable delayed state. Mark as failed so operator can see
-					// the broken state in Mitigations and Force Unblock manually.
-					// No goroutine launched: without persistence, a restart mid-delay
-					// would lose the task silently, which is exactly what PR-3/PR-4
-					// are trying to prevent.
-					errMsg := fmt.Sprintf("schedule persist failed: %v", persistErr)
-					s.XDropActiveRules().MarkFailed(ctx, attackDBID, ruleActionID, connID, dr.ruleID, errMsg)
-					failSched := &store.ActionExecutionLog{
-						AttackID:       attackDBID,
-						ActionID:       ruleActionID,
-						ActionType:     "xdrop",
-						TriggerPhase:   triggerPhase,
-						ResponseName:   responseName,
-						ConnectorName:  conn.Name,
-						ConnectorID:    &connID,
-						ExternalRuleID: dr.ruleID,
-						Status:         "failed",
-						ErrorMessage:   errMsg,
-						ExecutedAt:     time.Now(),
-					}
-					if _, err := s.ActionExecLog().Create(ctx, failSched); err != nil {
-						log.Printf("action: create failed schedule log rule=%s: %v", dr.ruleID, err)
-					}
-					continue
-				}
-
-				// Schedule persisted — safe to advertise delayed state.
-				if err := s.XDropActiveRules().MarkDelayed(ctx, attackDBID, ruleActionID, connID, dr.ruleID, int(dr.delay/time.Minute)); err != nil {
-					log.Printf("action: xdrop_active_rules mark delayed rule=%s: %v", dr.ruleID, err)
-				}
-				schedLog := &store.ActionExecutionLog{
-					AttackID:       attackDBID,
-					ActionID:       ruleActionID,
-					ActionType:     "xdrop",
-					TriggerPhase:   triggerPhase,
-					ResponseName:   responseName,
-					ConnectorName:  conn.Name,
-					ConnectorID:    &connID,
-					ExternalRuleID: dr.ruleID,
-					Status:         "scheduled",
-					ErrorMessage:   fmt.Sprintf("delayed unblock in %v", dr.delay),
-					ScheduledFor:   &scheduledFor,
-					ExecutedAt:     time.Now(),
-				}
-				if _, err := s.ActionExecLog().Create(ctx, schedLog); err != nil {
-					log.Printf("action: create scheduled log for rule %s: %v", dr.ruleID, err)
-				}
-				log.Printf("action: scheduling delayed unblock rule %s in %v (attack=%d connector=%d)",
-					dr.ruleID, dr.delay, attackDBID, conn.ID)
-				go func(ruleID string, d time.Duration, connCopy store.XDropConnector, cID int, sid int, cctx context.Context, aID int) {
-					// Per-artifact cancelable delay via Engine
-					if engine != nil && cctx != nil {
-						select {
-						case <-time.After(d):
-							// Race guard before side-effect
-							execGuardCtx, gc := context.WithTimeout(context.Background(), 5*time.Second)
-							ok := engine.MarkExecutingDelay(execGuardCtx, sid)
-							gc()
-							if !ok {
-								log.Printf("action: delayed unblock rule %s skipped attack=%d scheduled_id=%d (no longer pending)", ruleID, attackDBID, sid)
-								return
-							}
-						case <-cctx.Done():
-							log.Printf("action: delayed unblock rule %s cancelled attack=%d scheduled_id=%d", ruleID, attackDBID, sid)
-							return
-						}
-					} else {
-						time.Sleep(d) // legacy fallback
-					}
-					// v1.2 PR-4: transition delayed → withdrawing before side effect
-					markCtx, mc := context.WithTimeout(context.Background(), 5*time.Second)
-					s.XDropActiveRules().MarkWithdrawing(markCtx, attackDBID, aID, cID, ruleID)
-					mc()
-
-					// Synthetic "failed-create-*" IDs never made it onto the
-					// xDrop node. Same contract as the immediate unblock loop:
-					// skip the HTTP DELETE, close the row locally, and mark
-					// the scheduled_action complete. Without this, delayed
-					// unblock would fire a real DELETE against /rules/failed-
-					// create-... which could 4xx/5xx and leak the row into a
-					// spurious failed state. PR-8 audit P1.
-					if isSyntheticFailedXDropRuleID(ruleID) {
-						log.Printf("action: delayed unblock rule %s is synthetic failed-create; no xDrop DELETE needed (attack=%d)", ruleID, attackDBID)
-						localCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						CloseSyntheticXDropRuleLocal(localCtx, s, engine, attackDBID, aID, cID, connCopy.Name, triggerPhase, ruleID, sid)
-						cancel()
-						return
-					}
-
-					delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer delCancel()
-					delURL := strings.TrimRight(connCopy.APIURL, "/") + "/rules/" + ruleID
-					req, err := http.NewRequestWithContext(delCtx, "DELETE", delURL, nil)
-					if err != nil {
-						log.Printf("action: delayed unblock rule %s failed: %v", ruleID, err)
-						errCtx, ec := context.WithTimeout(context.Background(), 5*time.Second)
-						s.ActionExecLog().Create(errCtx, &store.ActionExecutionLog{
-							AttackID: attackDBID, ActionID: aID, ActionType: "xdrop",
-							ConnectorName: connCopy.Name, ConnectorID: &cID, TriggerPhase: triggerPhase,
-							ExternalRuleID: ruleID, Status: "failed", ErrorMessage: fmt.Sprintf("create request: %v", err), ExecutedAt: time.Now(),
-						})
-						s.XDropActiveRules().MarkFailed(errCtx, attackDBID, aID, cID, ruleID, fmt.Sprintf("create request: %v", err))
-						ec()
-						if engine != nil {
-							engine.FailDelay(context.Background(), sid, attackDBID, aID, cID, ruleID, fmt.Sprintf("create request: %v", err))
-						}
-						return
-					}
-					req.Header.Set("Content-Type", "application/json")
-					req.Header.Set("User-Agent", "xsight-controller/1.0")
-					if connCopy.APIKey != "" {
-						req.Header.Set("X-API-Key", connCopy.APIKey)
-					}
-					cl := &http.Client{Timeout: 30 * time.Second}
-					resp, err := cl.Do(req)
-					if err != nil {
-						log.Printf("action: delayed unblock rule %s failed: %v", ruleID, err)
-						errCtx2, ec2 := context.WithTimeout(context.Background(), 5*time.Second)
-						s.ActionExecLog().Create(errCtx2, &store.ActionExecutionLog{
-							AttackID: attackDBID, ActionID: aID, ActionType: "xdrop",
-							ConnectorName: connCopy.Name, ConnectorID: &cID, TriggerPhase: triggerPhase,
-							ExternalRuleID: ruleID, Status: "failed", ErrorMessage: fmt.Sprintf("DELETE: %v", err), ExecutedAt: time.Now(),
-						})
-						s.XDropActiveRules().MarkFailed(errCtx2, attackDBID, aID, cID, ruleID, fmt.Sprintf("DELETE: %v", err))
-						ec2()
-						if engine != nil {
-							engine.FailDelay(context.Background(), sid, attackDBID, aID, cID, ruleID, fmt.Sprintf("DELETE: %v", err))
-						}
-						return
-					}
-					resp.Body.Close()
-					log.Printf("action: delayed unblock rule %s completed (HTTP %d, attack=%d)", ruleID, resp.StatusCode, attackDBID)
-					if resp.StatusCode < 400 || resp.StatusCode == 404 {
-						// Success or 404 (already gone) — idempotent success
-						logStatus := "success"
-						logErr := ""
-						if resp.StatusCode == 404 {
-							logStatus = "success"
-							logErr = "idempotent: rule already deleted"
-							log.Printf("action: delayed unblock rule %s already gone (404, attack=%d)", ruleID, attackDBID)
-						}
-						ruleLog := &store.ActionExecutionLog{
-							AttackID:       attackDBID,
-							ActionID:       aID,
-							ActionType:     "xdrop",
-							ConnectorName:  connCopy.Name,
-							ConnectorID:    &cID,
-							TriggerPhase:   triggerPhase,
-							ExternalRuleID: ruleID,
-							Status:         logStatus,
-							ErrorMessage:   logErr,
-							ExecutedAt:     time.Now(),
-						}
-						logCtx, lc := context.WithTimeout(context.Background(), 5*time.Second)
-						if _, err := s.ActionExecLog().Create(logCtx, ruleLog); err != nil {
-							log.Printf("action: create per-rule delayed unblock log: %v", err)
-						}
-						// v1.2 PR-4: state table withdrawing → withdrawn
-						s.XDropActiveRules().MarkWithdrawn(logCtx, attackDBID, aID, cID, ruleID)
-						lc()
-						// v1.2 PR-3: mark scheduled_action completed
-						if engine != nil {
-							doneCtx, dc := context.WithTimeout(context.Background(), 5*time.Second)
-							engine.CompleteDelay(doneCtx, sid, attackDBID, aID, cID, ruleID)
-							dc()
-						}
-					} else {
-						// Real failure — write per-rule failed log
-						failLog := &store.ActionExecutionLog{
-							AttackID:       attackDBID,
-							ActionID:       aID,
-							ActionType:     "xdrop",
-							ConnectorName:  connCopy.Name,
-							ConnectorID:    &cID,
-							TriggerPhase:   triggerPhase,
-							ExternalRuleID: ruleID,
-							Status:         "failed",
-							ErrorMessage:   fmt.Sprintf("HTTP %d", resp.StatusCode),
-							ExecutedAt:     time.Now(),
-						}
-						logCtx2, lc2 := context.WithTimeout(context.Background(), 5*time.Second)
-						if _, err := s.ActionExecLog().Create(logCtx2, failLog); err != nil {
-							log.Printf("action: create per-rule delayed failed log: %v", err)
-						}
-						// v1.2 PR-4: state table → failed
-						s.XDropActiveRules().MarkFailed(logCtx2, attackDBID, aID, cID, ruleID, fmt.Sprintf("HTTP %d", resp.StatusCode))
-						lc2()
-						// v1.2 PR-3: mark scheduled_action failed
-						if engine != nil {
-							doneCtx, dc := context.WithTimeout(context.Background(), 5*time.Second)
-							engine.FailDelay(doneCtx, sid, attackDBID, aID, cID, ruleID, fmt.Sprintf("HTTP %d", resp.StatusCode))
-							dc()
-						}
-					}
-				}(dr.ruleID, dr.delay, conn, connID, schedID, cancelCtx, ruleActionID)
 			}
 
 			totalRules := len(immediateRules) + len(delayedRules)
 			execLog.DurationMs = int(time.Since(execLog.ExecutedAt).Milliseconds())
-			if deleted == len(immediateRules) {
+			if scheduleFailed {
+				execLog.Status = "failed"
+				execLog.ErrorMessage = xdropScheduleFailure
+			} else if deleted+skipped == len(immediateRules) {
 				execLog.Status = "success"
 			} else if deleted > 0 {
 				execLog.Status = "success"
 				execLog.ErrorMessage = fmt.Sprintf("deleted %d/%d immediate rules, last error: %s", deleted, len(immediateRules), lastErr)
-			} else if len(delayedRules) > 0 {
+			} else if scheduled > 0 {
 				execLog.Status = "success"
-				execLog.ErrorMessage = fmt.Sprintf("0 immediate, %d delayed rules scheduled", len(delayedRules))
+				execLog.ErrorMessage = fmt.Sprintf("0 immediate, %d delayed rules scheduled", scheduled)
 			} else {
 				execLog.Status = "failed"
 				execLog.ErrorMessage = fmt.Sprintf("deleted 0/%d rules: %s", totalRules, lastErr)
 			}
+			if !scheduleFailed && deleted < len(immediateRules) {
+				var parts []string
+				n := 0
+				for _, reason := range []string{"backoff", "connector_disabled", "busy", "claimed"} {
+					if count := deferred[reason]; count > 0 {
+						n += count
+						parts = append(parts, fmt.Sprintf("%s=%d", reason, count))
+					}
+				}
+				if n > 0 {
+					execLog.ErrorMessage = fmt.Sprintf("deferred %d: %s", n, strings.Join(parts, ", "))
+				}
+			}
 			sc := 200
 			execLog.StatusCode = &sc
 			lastLog = execLog
-			if _, err := s.ActionExecLog().Create(ctx, execLog); err != nil {
-				log.Printf("action: create action_execution_log: %v", err)
+			if _, err := writeExecLog(s, execLog); err != nil {
+				xdropStateWriteFailure("xdrop_exec_log", err)
 			}
 			log.Printf("action: xdrop unblock connector %d (%s) immediate=%d/%d delayed=%d attack=%d",
-				conn.ID, conn.Name, deleted, len(immediateRules), len(delayedRules), attackDBID)
+				conn.ID, conn.Name, deleted, len(immediateRules), scheduled, attackDBID)
 			continue // skip the normal single-request path below
 		}
 
-		req, err := http.NewRequestWithContext(ctx, httpMethod, apiURL, bytes.NewReader(body))
-		if err != nil {
-			execLog.Status = "failed"
-			execLog.ErrorMessage = fmt.Sprintf("create request: %v", err)
-			// v1.2 PR-4 bug fix: surface create failures in xdrop_active_rules
-			// via a synthetic rule ID so Mitigations UI shows a failed badge
-			// instead of silently dropping the failure on the floor.
-			if triggerPhase == "on_detected" {
-				execLog.ExternalRuleID = syntheticFailedXDropRuleID(attackDBID, action.ID)
-				s.XDropActiveRules().Upsert(ctx, &store.XDropActiveRule{
-					AttackID: attackDBID, ActionID: action.ID, ConnectorID: conn.ID,
-					ExternalRuleID: execLog.ExternalRuleID,
-					Status:         "failed",
-					ErrorMessage:   execLog.ErrorMessage,
-				})
-			}
-			lastLog = execLog
-			if _, err := s.ActionExecLog().Create(ctx, execLog); err != nil {
-				log.Printf("action: create action_execution_log: %v", err)
-			}
-			continue
+		// Each closure owns its item log and immutable serialized body. Successes
+		// commit immediately; failures commit last so partial success stays retryable.
+		var failures []func(context.Context)
+		deferFailure := func(commit func(context.Context)) {
+			failures = append(failures, commit)
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "xsight-controller/1.0")
-		if conn.APIKey != "" {
-			req.Header.Set("X-API-Key", conn.APIKey)
-		}
-
-		start := time.Now()
-		resp, err := client.Do(req)
-		execLog.DurationMs = int(time.Since(start).Milliseconds())
-
-		if err != nil {
-			execLog.Status = "failed"
-			execLog.ErrorMessage = fmt.Sprintf("HTTP %s %s: %v", httpMethod, apiURL, err)
-			// v1.2 PR-4 bug fix: see above — synthetic ID keeps failed state
-			// visible in Mitigations even when the HTTP layer never completed.
-			if triggerPhase == "on_detected" {
-				execLog.ExternalRuleID = syntheticFailedXDropRuleID(attackDBID, action.ID)
-				s.XDropActiveRules().Upsert(ctx, &store.XDropActiveRule{
-					AttackID: attackDBID, ActionID: action.ID, ConnectorID: conn.ID,
-					ExternalRuleID: execLog.ExternalRuleID,
-					Status:         "failed",
-					ErrorMessage:   execLog.ErrorMessage,
-				})
+		for _, item := range items {
+			body, hints := item.body, item.hints
+			execLog := &store.ActionExecutionLog{
+				AttackID:      attackDBID,
+				ActionID:      action.ID,
+				ResponseName:  responseName,
+				ActionType:    "xdrop",
+				ConnectorName: conn.Name,
+				ConnectorID:   &connID,
+				TriggerPhase:  triggerPhase,
+				ErrorMessage:  strings.Join(hints, "; "),
+				RequestBody:   truncateStr(string(body), 1024),
+				ExecutedAt:    time.Now(),
 			}
-			lastLog = execLog
-			if _, err := s.ActionExecLog().Create(ctx, execLog); err != nil {
-				log.Printf("action: create action_execution_log: %v", err)
-			}
-			continue
-		}
-
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		resp.Body.Close()
-
-		statusCode := resp.StatusCode
-		execLog.StatusCode = &statusCode
-		execLog.ResponseBody = truncateStr(string(respBody), 1024)
-
-		if statusCode >= 400 {
-			execLog.Status = "failed"
-			execLog.ErrorMessage = fmt.Sprintf("HTTP %d: %s", statusCode, string(respBody))
-			// v1.2 PR-4 bug fix: no real rule ID returned on 4xx/5xx — use a
-			// synthetic one so the failure lands in xdrop_active_rules.
-			if triggerPhase == "on_detected" {
-				execLog.ExternalRuleID = syntheticFailedXDropRuleID(attackDBID, action.ID)
-			}
-		} else {
-			execLog.Status = "success"
-			// Try to extract external_rule_id from response
-			var respJSON map[string]any
-			if err := json.Unmarshal(respBody, &respJSON); err == nil {
-				if ruleID, ok := respJSON["id"]; ok {
-					execLog.ExternalRuleID = fmt.Sprintf("%v", ruleID)
-				} else if ruleObj, ok := respJSON["rule"].(map[string]any); ok {
-					if ruleID, ok := ruleObj["id"]; ok {
-						execLog.ExternalRuleID = fmt.Sprintf("%v", ruleID)
+			req, err := http.NewRequestWithContext(ctx, httpMethod, apiURL, bytes.NewReader(body))
+			if err != nil {
+				execLog.Status = "failed"
+				execLog.ErrorMessage = redactXDropError(strings.Join(append([]string{fmt.Sprintf("create request: %v", err)}, hints...), "; "), conn.APIKey)
+				deferFailure(func(ctx context.Context) {
+					// v1.2 PR-4 bug fix: surface create failures in xdrop_active_rules
+					// via a synthetic rule ID so Mitigations UI shows a failed badge
+					// instead of silently dropping the failure on the floor.
+					if xdropAction != "unblock" {
+						execLog.ExternalRuleID = syntheticFailedXDropRuleID(attackDBID, action.ID)
+						s.XDropActiveRules().Upsert(ctx, &store.XDropActiveRule{
+							AttackID: attackDBID, ActionID: action.ID, ConnectorID: conn.ID,
+							ExternalRuleID: execLog.ExternalRuleID,
+							Status:         "failed",
+							ErrorMessage:   execLog.ErrorMessage,
+						})
 					}
-				} else if ruleID, ok := respJSON["rule_id"]; ok {
-					execLog.ExternalRuleID = fmt.Sprintf("%v", ruleID)
+					lastLog = execLog
+					if _, err := s.ActionExecLog().Create(ctx, execLog); err != nil {
+						log.Printf("action: create action_execution_log: %v", err)
+					}
+				})
+				continue
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", "xsight-controller/1.0")
+			SetXDropAuth(req, conn.APIKey)
+
+			start := time.Now()
+			resp, err := client.Do(req)
+			execLog.DurationMs = int(time.Since(start).Milliseconds())
+
+			if err != nil {
+				execLog.Status = "failed"
+				execLog.ErrorMessage = redactXDropError(strings.Join(append([]string{xdropTransportError(httpMethod, err).Error()}, hints...), "; "), conn.APIKey)
+				deferFailure(func(ctx context.Context) {
+					// v1.2 PR-4 bug fix: see above — synthetic ID keeps failed state
+					// visible in Mitigations even when the HTTP layer never completed.
+					if xdropAction != "unblock" {
+						execLog.ExternalRuleID = syntheticFailedXDropRuleID(attackDBID, action.ID)
+						s.XDropActiveRules().Upsert(ctx, &store.XDropActiveRule{
+							AttackID: attackDBID, ActionID: action.ID, ConnectorID: conn.ID,
+							ExternalRuleID: execLog.ExternalRuleID,
+							Status:         "failed",
+							ErrorMessage:   execLog.ErrorMessage,
+						})
+					}
+					if engine == nil {
+						engine = NewEngine(s, "auto")
+					}
+					lastLog = execLog
+					if _, err := s.ActionExecLog().Create(ctx, execLog); err != nil {
+						log.Printf("action: create action_execution_log: %v", err)
+					}
+					engine.xdropAfterCreate(conn, execLog, body)
+				})
+				continue
+			}
+
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+			resp.Body.Close()
+
+			statusCode := resp.StatusCode
+			execLog.StatusCode = &statusCode
+			execLog.ResponseBody = truncateStr(redactXDropError(string(respBody), conn.APIKey), 1024)
+
+			if statusCode >= 400 {
+				execLog.Status = "failed"
+				execLog.ErrorMessage = redactXDropError(strings.Join(append([]string{XDropHTTPError(statusCode, respBody)}, hints...), "; "), conn.APIKey)
+				// v1.2 PR-4 bug fix: no real rule ID returned on 4xx/5xx — use a
+				// synthetic one so the failure lands in xdrop_active_rules.
+				if xdropAction != "unblock" {
+					execLog.ExternalRuleID = syntheticFailedXDropRuleID(attackDBID, action.ID)
+				}
+			} else {
+				var response struct {
+					ID string `json:"id"`
+				}
+				if json.Unmarshal(respBody, &response) == nil && response.ID != "" && (statusCode == 200 || statusCode == 201) {
+					execLog.Status = "success"
+					execLog.ExternalRuleID = response.ID
+				} else {
+					execLog.Status = "failed"
+					execLog.ErrorMessage = strings.Join(append([]string{"v3 created but id missing"}, hints...), "; ")
+					execLog.ExternalRuleID = syntheticFailedXDropRuleID(attackDBID, action.ID)
 				}
 			}
-		}
 
-		// v1.2 PR-4: record xdrop rule state. Written for both success and
-		// failure so Mitigations UI can surface 'failed' state from the table
-		// rather than reverse-engineering from execution log. Failure paths
-		// above populate a synthetic ExternalRuleID — see
-		// syntheticFailedXDropRuleID.
-		if triggerPhase == "on_detected" && execLog.ExternalRuleID != "" {
-			ruleState := &store.XDropActiveRule{
-				AttackID:       attackDBID,
-				ActionID:       action.ID,
-				ConnectorID:    conn.ID,
-				ExternalRuleID: execLog.ExternalRuleID,
-				Status:         "active",
+			commit := func(ctx context.Context) {
+				// v1.2 PR-4: record xdrop rule state. Written for both success and
+				// failure so Mitigations UI can surface 'failed' state from the table
+				// rather than reverse-engineering from execution log. Failure paths
+				// above populate a synthetic ExternalRuleID — see
+				// syntheticFailedXDropRuleID.
+				if xdropAction != "unblock" && execLog.ExternalRuleID != "" {
+					ruleState := &store.XDropActiveRule{
+						AttackID:       attackDBID,
+						ActionID:       action.ID,
+						ConnectorID:    conn.ID,
+						ExternalRuleID: execLog.ExternalRuleID,
+						Status:         "active",
+					}
+					if execLog.Status == "failed" {
+						ruleState.Status = "failed"
+						ruleState.ErrorMessage = execLog.ErrorMessage
+					}
+					if _, err := s.XDropActiveRules().Upsert(ctx, ruleState); err != nil {
+						log.Printf("action: xdrop_active_rules upsert rule=%s: %v", execLog.ExternalRuleID, err)
+					}
+					if engine == nil {
+						engine = NewEngine(s, "auto")
+					}
+				}
+
+				lastLog = execLog
+				if _, err := s.ActionExecLog().Create(ctx, execLog); err != nil {
+					log.Printf("action: create action_execution_log: %v", err)
+				}
+				if xdropAction != "unblock" && execLog.ExternalRuleID != "" {
+					engine.xdropAfterCreate(conn, execLog, body)
+				}
 			}
 			if execLog.Status == "failed" {
-				ruleState.Status = "failed"
-				ruleState.ErrorMessage = execLog.ErrorMessage
+				deferFailure(commit)
+			} else {
+				commit(ctx)
 			}
-			if _, err := s.XDropActiveRules().Upsert(ctx, ruleState); err != nil {
-				log.Printf("action: xdrop_active_rules upsert rule=%s: %v", execLog.ExternalRuleID, err)
-			}
-		}
 
-		lastLog = execLog
-		if _, err := s.ActionExecLog().Create(ctx, execLog); err != nil {
-			log.Printf("action: create action_execution_log: %v", err)
+			log.Printf("action: xdrop %s connector %d (%s) %s attack=%d",
+				xdropAction, conn.ID, conn.Name, execLog.Status, attackDBID)
 		}
+		for _, commit := range failures {
+			dbCtx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
+			commit(dbCtx)
+			cancel()
+		}
+	}
 
-		log.Printf("action: xdrop %s connector %d (%s) %s attack=%d",
-			xdropAction, conn.ID, conn.Name, execLog.Status, attackDBID)
+	// Rate rejections have no connector identity. Write each rejected item once,
+	// after all connectors, using writeExecLog's independent database budget.
+	for _, entry := range rejected {
+		lastLog = entry
+		if _, err := writeExecLog(s, entry); err != nil {
+			xdropStateWriteFailure("xdrop_exec_log", err)
+		}
+	}
+
+	if xdropAction == "unblock" && lastLog == nil {
+		reason, msg := SkipReasonNoRulesToUnblock, "no active, delayed or failed rules to unblock"
+		if overrideFiltered {
+			reason, msg = SkipReasonManualOverride, "all remaining rules were force-removed by operator"
+		}
+		log.Printf("action: xdrop action %d skipped: %s (attack=%d)", action.ID, msg, attackDBID)
+		return skipLog(reason, msg), nil
 	}
 
 	// Return nil for the log since we already persisted per-connector logs
@@ -1252,9 +1019,8 @@ func normalizeXDropProtocol(body []byte) []byte {
 	// protocol set to a non-enum value would be rejected.
 	if isAnomalyDecoder(proto) {
 		delete(m, "protocol")
-		if _, has := m["decoder"]; !has {
-			m["decoder"] = proto
-		}
+		bits, _ := m["match_anomaly"].(float64)
+		m["match_anomaly"] = int(bits) | xdropAnomalyBit(proto)
 		if out, err := json.Marshal(m); err == nil {
 			return out
 		}
@@ -1289,7 +1055,7 @@ func injectTcpFlags(body []byte, attack *store.Attack) []byte {
 	if json.Unmarshal(body, &m) != nil {
 		return body
 	}
-	if _, has := m["tcp_flags"]; !has {
+	if value, has := m["tcp_flags"]; !has || value == "" {
 		m["tcp_flags"] = canonicalFlags
 	}
 	// Always normalize protocol to tcp (covers bare + {decoder}-expanded cases)
@@ -1309,4 +1075,239 @@ func truncateStr(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen]
+}
+
+// SetXDropAuth applies the v3 machine credential shared by action and API callers.
+func SetXDropAuth(req *http.Request, apiKey string) {
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+}
+
+func xdropClaimRef(attackID, actionID int) string {
+	return fmt.Sprintf("a%d.x%d", attackID, actionID)
+}
+
+type xdropDecoderSpecRow struct {
+	ExpectedV4, ExpectedV6    string
+	Pin                       bool
+	ProtocolV4, ProtocolV6    int
+	TCPFlagsAll, TCPFlagsNone uint8
+}
+
+var xdropDecoderSpec = map[string]xdropDecoderSpecRow{
+	"tcp":          {"tcp", "tcp", true, 6, 6, 0, 0},
+	"tcp_syn":      {"tcp", "tcp", true, 6, 6, 2, 16},
+	"tcp_ack":      {"tcp", "tcp", true, 6, 6, 16, 2},
+	"tcp_rst":      {"tcp", "tcp", true, 6, 6, 4, 0},
+	"tcp_fin":      {"tcp", "tcp", true, 6, 6, 1, 0},
+	"udp":          {"udp", "udp", true, 17, 17, 0, 0},
+	"icmp":         {"icmp", "icmpv6", true, 1, 58, 0, 0},
+	"gre":          {"gre", "gre", true, 47, 47, 0, 0},
+	"esp":          {"esp", "esp", true, 50, 50, 0, 0},
+	"igmp":         {"igmp", "igmp", true, 2, 2, 0, 0},
+	"fragment":     {"all", "all", true, 0, 0, 0, 0},
+	"bad_fragment": {"", "", false, 0, 0, 0, 0},
+	"invalid":      {"", "", false, 0, 0, 0, 0},
+}
+
+func expectedXDropProtocol(decoder string, dstFamily int) (string, bool) {
+	spec := xdropDecoderSpec[decoder]
+	if dstFamily == 6 {
+		return spec.ExpectedV6, spec.Pin
+	}
+	return spec.ExpectedV4, spec.Pin
+}
+
+func xdropAddressFamily(address string) int {
+	ip := net.ParseIP(strings.SplitN(address, "/", 2)[0])
+	if ip != nil && ip.To4() == nil {
+		return 6
+	}
+	if ip != nil {
+		return 4
+	}
+	return 0
+}
+
+func xdropAnomalyBit(name string) int {
+	switch name {
+	case "bad_fragment":
+		return 1
+	case "invalid":
+		return 2
+	}
+	return 0
+}
+
+func finalizeXDropV3Body(body []byte, attack *store.Attack, claimRef string) ([]byte, []string) {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil || m == nil {
+		return body, nil
+	}
+	var hints, dropped []string
+	drop := func(key string) {
+		if _, exists := m[key]; exists {
+			delete(m, key)
+			dropped = append(dropped, key)
+		}
+	}
+	proto, pin := expectedXDropProtocol(attack.DecoderFamily, xdropAddressFamily(attack.DstIP))
+	if pin {
+		previous, exists := m["protocol"]
+		if previous != proto {
+			if !exists {
+				previous = "absent"
+			}
+			hints = append(hints, fmt.Sprintf("protocol pinned: %v→%s", previous, proto))
+			m["protocol"] = proto
+		}
+	} else if isAnomalyDecoder(attack.DecoderFamily) {
+		drop("protocol")
+	}
+	if attack.DecoderFamily == "fragment" && xdropAddressFamily(attack.DstIP) == 4 {
+		if value, exists := m["fragment"]; !exists || value == "" {
+			m["fragment"] = "frag"
+		}
+	}
+	if name, ok := m["decoder"].(string); ok && xdropAnomalyBit(name) != 0 {
+		bits, _ := m["match_anomaly"].(float64)
+		m["match_anomaly"] = int(bits) | xdropAnomalyBit(name)
+	}
+	drop("decoder")
+	for _, side := range []string{"dst", "src"} {
+		key, cidrKey := side+"_ip", side+"_cidr"
+		value, _ := m[key].(string)
+		if ip := net.ParseIP(value); ip != nil && (ip.String() == "0.0.0.0" || ip.String() == "::") {
+			drop(key)
+			continue
+		}
+		if strings.Contains(value, "/") {
+			if cidr, _ := m[cidrKey].(string); cidr != "" {
+				drop(key)
+			} else if ip, cidr := splitIPOrCIDR(value); cidr != "" {
+				m[cidrKey] = cidr
+				delete(m, key)
+			} else {
+				m[key] = ip
+			}
+		}
+	}
+	dstCIDR, _ := m["dst_cidr"].(string)
+	srcCIDR, _ := m["src_cidr"].(string)
+	if dstCIDR != "" || srcCIDR != "" {
+		for _, side := range []string{"dst", "src"} {
+			if cidr, _ := m[side+"_cidr"].(string); cidr != "" {
+				continue
+			}
+			key := side + "_ip"
+			value, _ := m[key].(string)
+			if ip := net.ParseIP(value); ip != nil {
+				bits := 128
+				if ip.To4() != nil {
+					bits = 32
+				}
+				m[side+"_cidr"] = fmt.Sprintf("%s/%d", ip.String(), bits)
+				delete(m, key)
+			}
+		}
+	}
+	allowed := " src_ip dst_ip src_cidr dst_cidr src_port dst_port protocol ttl dscp icmp_type icmp_code fragment pkt_len tcp_flags match_anomaly action rate_limit enabled comment claim_ref "
+	for key, value := range m {
+		if value == "" || !strings.Contains(allowed, " "+key+" ") {
+			drop(key)
+		}
+	}
+	m["claim_ref"] = claimRef
+	if len(dropped) > 0 {
+		sort.Strings(dropped)
+		hints = append(hints, "dropped: "+strings.Join(dropped, ", "))
+	}
+	out, _ := json.Marshal(m)
+	return out, hints
+}
+
+// XDropHTTPError preserves the v3 code and field in user-visible failures.
+func XDropHTTPError(status int, body []byte) string {
+	var detail struct{ Code, Field, Message string }
+	if status >= 400 && json.Unmarshal(body, &detail) == nil && detail.Code != "" {
+		field := ""
+		if detail.Field != "" {
+			field = " field=" + detail.Field
+		}
+		return fmt.Sprintf("HTTP %d %s%s: %s", status, detail.Code, field, detail.Message)
+	}
+	return fmt.Sprintf("HTTP %d: %s", status, truncateStr(string(body), 1024))
+}
+
+type XDropDelivery struct {
+	RuleID    string `json:"rule_id"`
+	TargetGen uint64 `json:"target_gen"`
+	Epoch     string `json:"epoch"`
+	Nodes     []struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+		Code  string `json:"code,omitempty"`
+		Error string `json:"error,omitempty"`
+	} `json:"nodes"`
+}
+
+// QueryXDropDelivery returns nil for an absent rule and retries one stale epoch.
+func QueryXDropDelivery(ctx context.Context, conn store.XDropConnector, ruleID string) (*XDropDelivery, error) {
+	timeout := 10 * time.Second
+	if conn.TimeoutMs > 0 {
+		timeout = time.Duration(conn.TimeoutMs) * time.Millisecond
+	}
+	client := &http.Client{Timeout: timeout}
+	get := func(path string) ([]byte, int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(conn.APIURL, "/")+path, nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		SetXDropAuth(req, conn.APIKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		return body, resp.StatusCode, err
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		body, status, err := get("/nodes")
+		if err != nil {
+			return nil, err
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("%s", XDropHTTPError(status, body))
+		}
+		var nodes struct{ Epoch string }
+		if err := json.Unmarshal(body, &nodes); err != nil {
+			return nil, err
+		}
+		if nodes.Epoch == "" {
+			return nil, fmt.Errorf("v3 nodes epoch missing")
+		}
+		body, status, err = get("/rules/" + url.PathEscape(ruleID) + "/delivery?gen=0&epoch=" + url.QueryEscape(nodes.Epoch))
+		if err != nil {
+			return nil, err
+		}
+		var detail struct{ Code string }
+		_ = json.Unmarshal(body, &detail)
+		if status == http.StatusConflict && detail.Code == "gen_epoch_mismatch" && attempt == 0 {
+			continue
+		}
+		if status == http.StatusNotFound {
+			return nil, nil
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("%s", XDropHTTPError(status, body))
+		}
+		var delivery XDropDelivery
+		if err := json.Unmarshal(body, &delivery); err != nil {
+			return nil, err
+		}
+		return &delivery, nil
+	}
+	return nil, fmt.Errorf("gen_epoch_mismatch")
 }

@@ -1,22 +1,22 @@
 # xSight Node configuration
 # Two modes: xdp (default, BPF/XDP mirror) and flow (sFlow/NetFlow/IPFIX receiver)
+# Unknown or misspelled keys are silently ignored, so check spelling carefully.
 
 # ============================================================
 # XDP Mode (default) — BPF/XDP packet capture from mirror port
 # ============================================================
 
-# mode: xdp                       # 'xdp' (default) | 'flow' — v3.0
-node_id: "my-node-01"
+# mode: xdp                       # 'xdp' (default) | 'flow'
+node_id: "my-node-01"             # must be registered on the Controller first (Web UI Nodes page)
 
 interfaces:
+  # All interfaces must have identical mode, sample_bytes and upstream_sample_rate.
+  # Use separate nodes for different settings. Omitted sample_bytes defaults to 256.
+  # ERSPAN outer headers need more capture bytes; sample_bytes: 256 is recommended.
   - name: "eth1"
     mode: "mirror"              # mirror | erspan
     upstream_sample_rate: 1     # 1 = no sampling, 300 = upstream samples 1/300
     sample_bytes: 128           # mirror mode: 128 is enough (range 128-512)
-  - name: "eth2"
-    mode: "erspan"              # XDP auto-detects Type I/II/III
-    upstream_sample_rate: 1
-    sample_bytes: 256           # ERSPAN outer headers need more bytes
 
 bpf:
   max_entries: 1000000          # ip_stats map size (note: prealloc memory)
@@ -25,7 +25,9 @@ controller:
   address: "controller:50051"   # gRPC server address
 
 auth:
-  node_api_key: "CHANGE_ME"    # API key for gRPC auth. Generate with: openssl rand -hex 32
+  # Must equal the API key entered when this node_id was registered on the Controller
+  # (not the Controller's auth.api_key). Generate one with: openssl rand -hex 32
+  node_api_key: "CHANGE_ME"
 
 # Performance tuning (optional, xdp mode only)
 # parse_workers: 4              # parallel packet parse workers (default = NumCPU/2, range 1-16)
@@ -33,7 +35,7 @@ auth:
 
 
 # ============================================================
-# Flow Mode — sFlow/NetFlow/IPFIX receiver (v3.0)
+# Flow Mode — sFlow/NetFlow/IPFIX receiver
 # ============================================================
 # Uncomment below and comment out the xdp config above to use flow mode.
 # Flow listeners and sources are configured via Web UI, not this file.

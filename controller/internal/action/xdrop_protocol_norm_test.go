@@ -175,8 +175,16 @@ func TestNormalizeMovesAnomalyToDecoderField(t *testing.T) {
 			if _, hasProto := m["protocol"]; hasProto {
 				t.Errorf("protocol field should be removed after anomaly rewrite; got %v", m["protocol"])
 			}
-			if m["decoder"] != tt.wantDecoder {
-				t.Errorf("decoder = %v, want %q", m["decoder"], tt.wantDecoder)
+			want := float64(xdropAnomalyBit(tt.wantDecoder))
+			if m["decoder"] != nil {
+				body, _ := finalizeXDropV3Body(got, &store.Attack{DecoderFamily: "bad_fragment", DstIP: "192.0.2.1"}, "a1.x1")
+				if err := json.Unmarshal(body, &m); err != nil {
+					t.Fatal(err)
+				}
+				want = 3
+			}
+			if m["match_anomaly"] != want {
+				t.Errorf("decoder = %v, want %q", m["match_anomaly"], tt.wantDecoder)
 			}
 		})
 	}

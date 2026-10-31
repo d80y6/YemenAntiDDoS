@@ -22,10 +22,10 @@ func TestSpecializeXDropDecoder(t *testing.T) {
 		wantDecoder  string // "" means absent
 	}{
 		// L4 standard
-		{"tcp + drop", "tcp", "filter_l4", "", "", ""},
-		{"udp + drop", "udp", "filter_l4", "", "", ""},
-		{"icmp + drop", "icmp", "filter_l4", "", "", ""},
-		{"fragment + drop", "fragment", "filter_l4", "", "", ""},
+		{"tcp + drop", "tcp", "filter_l4", "", "tcp", ""},
+		{"udp + drop", "udp", "filter_l4", "", "udp", ""},
+		{"icmp + drop", "icmp", "filter_l4", "", "icmp", ""},
+		{"fragment + drop", "fragment", "filter_l4", "", "all", ""},
 		// TCP-flag family
 		{"tcp_syn + drop", "tcp_syn", "filter_l4", "SYN,!ACK", "tcp", ""},
 		{"tcp_syn + rate_limit", "tcp_syn", "rate_limit", "SYN,!ACK", "tcp", ""},
@@ -49,7 +49,7 @@ func TestSpecializeXDropDecoder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			attack := &store.Attack{
 				ID:            999,
-				DstIP:         "10.0.0.1/32",
+				DstIP:         "198.51.100.1/32",
 				DecoderFamily: tt.decoder,
 				AttackType:    "test_flood",
 			}
@@ -61,7 +61,6 @@ func TestSpecializeXDropDecoder(t *testing.T) {
 			payload := xdropRuleRequest{
 				DstIP:   attack.DstIP,
 				Action:  actionStr,
-				Source:  "xsight",
 				Comment: "test",
 			}
 			specializeXDropDecoder(&payload, attack.DecoderFamily)
@@ -102,7 +101,7 @@ func TestSpecializeXDropDecoder(t *testing.T) {
 				}
 			}
 
-			gotDecoder, hasDecoder := m["decoder"]
+			gotDecoder, hasDecoder := m["match_anomaly"]
 			if tt.wantDecoder == "" {
 				if hasDecoder {
 					t.Errorf("decoder should be absent, got %v", gotDecoder)
@@ -110,7 +109,7 @@ func TestSpecializeXDropDecoder(t *testing.T) {
 			} else {
 				if !hasDecoder {
 					t.Errorf("decoder should be %q, got absent", tt.wantDecoder)
-				} else if gotDecoder != tt.wantDecoder {
+				} else if gotDecoder != float64(xdropAnomalyBit(tt.wantDecoder)) {
 					t.Errorf("decoder = %v, want %q", gotDecoder, tt.wantDecoder)
 				}
 			}
@@ -144,79 +143,79 @@ func TestInjectTcpFlags(t *testing.T) {
 		{
 			"tcp_syn injects flags",
 			"tcp_syn",
-			`{"action":"drop","dst_ip":"10.0.0.1","source":"xsight"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1","source":"xsight"}`,
 			"SYN,!ACK", "tcp",
 		},
 		{
 			"tcp_syn respects existing flags but ensures protocol=tcp",
 			"tcp_syn",
-			`{"action":"drop","dst_ip":"10.0.0.1","tcp_flags":"RST"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1","tcp_flags":"RST"}`,
 			"RST", "tcp",
 		},
 		{
 			"udp no injection",
 			"udp",
-			`{"action":"drop","dst_ip":"10.0.0.1"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1"}`,
 			"", "",
 		},
 		{
 			"ip no injection",
 			"ip",
-			`{"action":"drop","dst_ip":"10.0.0.1"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1"}`,
 			"", "",
 		},
 		{
 			"tcp_syn preserves existing protocol",
 			"tcp_syn",
-			`{"action":"drop","dst_ip":"10.0.0.1","protocol":"tcp"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1","protocol":"tcp"}`,
 			"SYN,!ACK", "tcp",
 		},
 		{
 			"tcp_syn fixes protocol=tcp_syn from {decoder} expansion",
 			"tcp_syn",
-			`{"action":"drop","dst_ip":"10.0.0.1","protocol":"tcp_syn"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1","protocol":"tcp_syn"}`,
 			"SYN,!ACK", "tcp",
 		},
 		{
 			"tcp_syn with user tcp_flags but missing protocol ensures protocol=tcp",
 			"tcp_syn",
-			`{"action":"drop","dst_ip":"10.0.0.1","tcp_flags":"RST"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1","tcp_flags":"RST"}`,
 			"RST", "tcp",
 		},
 		{
 			"tcp_ack injects ACK,!SYN",
 			"tcp_ack",
-			`{"action":"drop","dst_ip":"10.0.0.1"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1"}`,
 			"ACK,!SYN", "tcp",
 		},
 		{
 			"tcp_ack fixes protocol=tcp_ack from {decoder} expansion",
 			"tcp_ack",
-			`{"action":"drop","dst_ip":"10.0.0.1","protocol":"tcp_ack"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1","protocol":"tcp_ack"}`,
 			"ACK,!SYN", "tcp",
 		},
 		{
 			"tcp_rst injects RST",
 			"tcp_rst",
-			`{"action":"drop","dst_ip":"10.0.0.1"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1"}`,
 			"RST", "tcp",
 		},
 		{
 			"tcp_fin injects FIN",
 			"tcp_fin",
-			`{"action":"drop","dst_ip":"10.0.0.1"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1"}`,
 			"FIN", "tcp",
 		},
 		{
 			"bad_fragment no tcp_flags injection (anomaly path)",
 			"bad_fragment",
-			`{"action":"drop","dst_ip":"10.0.0.1","decoder":"bad_fragment"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1","decoder":"bad_fragment"}`,
 			"", "",
 		},
 		{
 			"invalid no tcp_flags injection (anomaly path)",
 			"invalid",
-			`{"action":"drop","dst_ip":"10.0.0.1","decoder":"invalid"}`,
+			`{"action":"drop","dst_ip":"198.51.100.1","decoder":"invalid"}`,
 			"", "",
 		},
 	}
@@ -257,11 +256,11 @@ func TestInjectTcpFlags(t *testing.T) {
 
 // TestSpecializeXDropDecoderBody pins the custom-payload auto-fill
 // parallel of specializeXDropDecoder. Covers the 4 shapes:
-//   1. anomaly attack + payload without `decoder` → inject decoder
-//   2. anomaly attack + stale `protocol=<anomaly>` → strip protocol
-//   3. gre/esp/igmp attack + payload without `protocol` → inject protocol
-//   4. pass-through for tcp/udp/icmp/fragment/tcp-flag-family/anomaly-
-//      with-operator-supplied-decoder (idempotent)
+//  1. anomaly attack + payload without `decoder` → inject decoder
+//  2. anomaly attack + stale `protocol=<anomaly>` → strip protocol
+//  3. gre/esp/igmp attack + payload without `protocol` → inject protocol
+//  4. pass-through for tcp/udp/icmp/fragment/tcp-flag-family/anomaly-
+//     with-operator-supplied-decoder (idempotent)
 func TestSpecializeXDropDecoderBody(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -347,12 +346,12 @@ func TestSpecializeXDropDecoderBody(t *testing.T) {
 				t.Fatalf("unmarshal: %v", err)
 			}
 
-			gotDecoder, hasDecoder := m["decoder"]
+			gotDecoder, hasDecoder := m["match_anomaly"]
 			if tt.wantDecoder == "" {
 				if hasDecoder {
 					t.Errorf("decoder should be absent, got %v", gotDecoder)
 				}
-			} else if gotDecoder != tt.wantDecoder {
+			} else if gotDecoder != float64(xdropAnomalyBit(tt.wantDecoder)) {
 				t.Errorf("decoder = %v, want %q", gotDecoder, tt.wantDecoder)
 			}
 
@@ -393,7 +392,12 @@ func TestIsAnomalyRateLimitBody(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isAnomalyRateLimitBody([]byte(tt.body), tt.decoder)
+			// The removed v2 gate is replaced by anomaly-bit mapping; rate_limit
+			// remains intact and is accepted by the v3 dispatch tests (C8).
+			body := specializeXDropDecoderBody([]byte(tt.body), &store.Attack{DecoderFamily: tt.decoder})
+			var parsed map[string]any
+			_ = json.Unmarshal(body, &parsed)
+			got := parsed["action"] == "rate_limit" && parsed["match_anomaly"] != nil
 			if got != tt.want {
 				t.Errorf("isAnomalyRateLimitBody(%q, decoder=%q) = %v, want %v", tt.body, tt.decoder, got, tt.want)
 			}
@@ -432,8 +436,8 @@ func TestCustomPayloadPipeline_AnomalyAutoInjectsDecoder(t *testing.T) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		t.Fatalf("final body not valid JSON: %v", err)
 	}
-	if m["decoder"] != "bad_fragment" {
-		t.Errorf("decoder = %v, want bad_fragment (pipeline should auto-inject)", m["decoder"])
+	if m["match_anomaly"] != float64(1) {
+		t.Errorf("decoder = %v, want bad_fragment (pipeline should auto-inject)", m["match_anomaly"])
 	}
 	if _, has := m["protocol"]; has {
 		t.Errorf("protocol should be absent for anomaly attack, got %v", m["protocol"])
@@ -476,13 +480,13 @@ func TestCustomPayloadWithInjection(t *testing.T) {
 	customPayload := `{"action":"drop","dst_ip":"{dst_ip}","source":"xsight","comment":"attack #{attack_id}"}`
 	attack := &store.Attack{
 		ID:            100,
-		DstIP:         "10.0.0.5/32",
+		DstIP:         "198.51.100.5/32",
 		DecoderFamily: "tcp_syn",
 		AttackType:    "syn_flood",
 	}
 
 	// Simulate the full custom payload path from xdrop.go
-	expanded := expandParams(customPayload, attack, "attack_start", "10.0.0.0/24", nil)
+	expanded := expandParams(customPayload, attack, "attack_start", "198.51.100.0/24", nil)
 	body, err := fixPayloadTypes([]byte(expanded))
 	if err != nil {
 		body = []byte(expanded)
@@ -500,8 +504,8 @@ func TestCustomPayloadWithInjection(t *testing.T) {
 	if m["protocol"] != "tcp" {
 		t.Errorf("protocol = %v, want tcp", m["protocol"])
 	}
-	if m["dst_ip"] != "10.0.0.5/32" {
-		t.Errorf("dst_ip = %v, want 10.0.0.5/32", m["dst_ip"])
+	if m["dst_ip"] != "198.51.100.5/32" {
+		t.Errorf("dst_ip = %v, want 198.51.100.5/32", m["dst_ip"])
 	}
 
 	t.Logf("full path result: %s", string(body))
@@ -512,12 +516,12 @@ func TestNonSynCustomPayload(t *testing.T) {
 	customPayload := `{"action":"drop","dst_ip":"{dst_ip}","source":"xsight"}`
 	attack := &store.Attack{
 		ID:            101,
-		DstIP:         "10.0.0.6/32",
+		DstIP:         "198.51.100.6/32",
 		DecoderFamily: "udp",
 		AttackType:    "udp_flood",
 	}
 
-	expanded := expandParams(customPayload, attack, "attack_start", "10.0.0.0/24", nil)
+	expanded := expandParams(customPayload, attack, "attack_start", "198.51.100.0/24", nil)
 	body, _ := fixPayloadTypes([]byte(expanded))
 	body = injectTcpFlags(body, attack)
 

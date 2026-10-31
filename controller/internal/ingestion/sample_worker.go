@@ -18,16 +18,16 @@ type SampleMetrics struct {
 
 // SampleWorkerPool manages per-Node sample processing channels.
 // Design: per-Node channel (cap 1024), drop oldest when full,
-// 2 workers per Node, max 20 total workers.
-const maxTotalWorkers = 20 // brainstorm: "2 workers per Node, total <= 20"
+// 2 workers per Node within the shared budget, at least 1 for every admitted Node.
+const maxTotalWorkers = 20 // Soft budget; admitted Nodes always get a worker.
 
 type SampleWorkerPool struct {
-	mu           sync.RWMutex
-	channels     map[string]chan *pb.SampleBatch // nodeID → channel
-	Metrics      SampleMetrics
-	wg           sync.WaitGroup
-	handler      SampleHandler
-	workerCount  int // current total workers across all nodes
+	mu          sync.RWMutex
+	channels    map[string]chan *pb.SampleBatch // nodeID → channel
+	Metrics     SampleMetrics
+	wg          sync.WaitGroup
+	handler     SampleHandler
+	workerCount int // current total workers across all nodes
 }
 
 // SampleHandler is called for each received SampleBatch.
@@ -57,20 +57,20 @@ func (p *SampleWorkerPool) Submit(nodeID string, batch *pb.SampleBatch) {
 		if !ok {
 			ch = make(chan *pb.SampleBatch, 1024)
 			p.channels[nodeID] = ch
-			// Start up to 2 workers per Node, respecting global cap
+			// Keep every admitted Node's channel serviced, even beyond the budget.
 			toStart := 2
 			if p.workerCount+toStart > maxTotalWorkers {
-				toStart = maxTotalWorkers - p.workerCount
+				toStart = 1
 			}
 			for i := 0; i < toStart; i++ {
 				p.wg.Add(1)
 				p.workerCount++
 				go p.worker(nodeID, ch)
 			}
-			if toStart > 0 {
+			if p.workerCount <= maxTotalWorkers {
 				log.Printf("sample_worker: started %d workers for node %s (total=%d/%d)", toStart, nodeID, p.workerCount, maxTotalWorkers)
 			} else {
-				log.Printf("sample_worker: worker cap reached (%d/%d), node %s shares channel only", p.workerCount, maxTotalWorkers, nodeID)
+				log.Printf("sample_worker: worker cap exceeded (%d/%d), node %s gets 1 worker", p.workerCount, maxTotalWorkers, nodeID)
 			}
 		}
 		p.mu.Unlock()

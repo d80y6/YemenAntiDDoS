@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -37,13 +38,18 @@ func (s *Server) Serve(addr string) error {
 	return s.grpcServer.Serve(lis)
 }
 
-// GracefulStop performs a graceful shutdown.
+var grpcStopLimit = 10 * time.Second
+
+// GracefulStop forces transport shutdown at the limit, then waits for handlers.
 func (s *Server) GracefulStop() {
 	log.Println("grpc: graceful stop")
-	s.grpcServer.GracefulStop()
-}
-
-// Handler returns the underlying GRPCHandler.
-func (s *Server) Handler() *GRPCHandler {
-	return s.handler
+	done := make(chan struct{})
+	go func() { s.grpcServer.GracefulStop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(grpcStopLimit):
+		log.Printf("WARN grpc: graceful stop exceeded %v, forcing stop", grpcStopLimit)
+		s.grpcServer.Stop()
+		<-done // Handlers must exit before the caller closes the sample pool.
+	}
 }

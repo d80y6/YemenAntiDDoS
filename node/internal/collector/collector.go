@@ -1,7 +1,6 @@
 // Package collector reads BPF maps every second, computes deltas, adjusts
 // the dynamic sample rate, and outputs results for verification (P3) or
 // upstream consumption (P5+).
-//
 package collector
 
 import (
@@ -35,8 +34,8 @@ const (
 	// ewmaAlpha is the EWMA smoothing factor for sample rate (brainstorm: α=0.3).
 	ewmaAlpha = 0.3
 
-	// hysteresis prevents rate micro-adjustments (absolute delta threshold).
-	hysteresis = 2.0
+	// Write BPF only when |smoothed-applied| >= frac*applied.
+	hysteresisFrac = 0.1
 
 	// minHoldTime prevents sample rate oscillation (brainstorm: 3 s).
 	minHoldTime = 3 * time.Second
@@ -46,6 +45,12 @@ const (
 )
 
 // ----- public types -----
+
+var ipIdleTicks uint16 = 300
+
+var testHookAfterSkipDecision func() // test-only; nil in production
+
+const maxIdleDeletesPerTick = 10_000
 
 // IPDelta is a single IP's per-second delta.
 type IPDelta struct {
@@ -67,8 +72,8 @@ type GlobalDelta struct {
 	TotalPkts         uint64
 	TotalBytes        uint64
 	MatchedPkts       uint64
-	MatchedBytes      uint64                     // bytes within watch scope
-	SampleDrops       uint64                     // ring buffer reserve failures this tick
+	MatchedBytes      uint64                      // bytes within watch scope
+	SampleDrops       uint64                      // ring buffer reserve failures this tick
 	DecoderCounts     [decoder.MaxDecoders]uint32 // per-decoder PPS (inbound matched only)
 	DecoderByteCounts [decoder.MaxDecoders]uint64 // per-decoder BPS (inbound matched only)
 	// Outbound (src_ip matched) global counters
@@ -86,20 +91,21 @@ type HealthStatus struct {
 
 // Report is the output of a single collection tick.
 type Report struct {
-	Timestamp      time.Time
-	Global         GlobalDelta
-	IPDeltas       []IPDelta
-	PrefixDeltas   []PrefixDelta
+	Timestamp    time.Time
+	Global       GlobalDelta
+	IPDeltas     []IPDelta
+	PrefixDeltas []PrefixDelta
 	// v2.11 Phase 2: outbound (src_ip matched) deltas
 	SrcIPDeltas       []IPDelta
 	SrcPrefixDeltas   []PrefixDelta
 	SrcTruncated      bool
 	TotalActiveSrcIPs int
-	Truncated      bool
-	TotalActiveIPs int
-	SampleRate     uint32
-	Health         HealthStatus
-	TopFlows       []sampler.FlowEntry // top-N flows from flow table this tick
+	Truncated         bool
+	TotalActiveIPs    int
+	SampleRate        uint32
+	UpstreamRate      uint32 // zero falls back to the reporter's startup rate
+	Health            HealthStatus
+	TopFlows          []sampler.FlowEntry // top-N flows from flow table this tick
 }
 
 // ----- collector -----
@@ -113,18 +119,22 @@ type Collector struct {
 	Reports chan *Report
 
 	// snapshots from last tick (inbound)
-	lastGlobal  bpf.GlobalStats
-	lastIP      map[bpf.LPMKey]bpf.DstIPStats
-	lastPrefix  map[bpf.PrefixKeyGo]bpf.PrefixStats
+	lastGlobal   bpf.GlobalStats
+	lastGlobalAt time.Time // when lastGlobal was committed
+	lastIP       map[bpf.LPMKey]bpf.DstIPStats
+	lastPrefix   map[bpf.PrefixKeyGo]bpf.PrefixStats
 	// snapshots from last tick (outbound)
 	lastSrcIP     map[bpf.LPMKey]bpf.DstIPStats
 	lastSrcPrefix map[bpf.PrefixKeyGo]bpf.PrefixStats
+	idleIP        map[bpf.LPMKey]uint16
+	idleSrc       map[bpf.LPMKey]uint16
 
 	// report channel drop counter (rate-limited log)
 	reportDrops uint64
 
 	// dynamic sample rate state
 	smoothedRate   float64
+	appliedRate    uint32 // last successful slot 0 write by this process; Report.SampleRate
 	lastRateChange time.Time
 
 	// backpressure: consecutive ticks with increasing sample_drops
@@ -135,6 +145,7 @@ type Collector struct {
 
 	// HotSwap: skip next tick's deltas to avoid cumulative-as-delta spike
 	skipNextTick atomic.Bool
+	upstreamRate atomic.Uint32
 
 	// config
 	targetSPS float64
@@ -150,17 +161,36 @@ func New(mgr *bpf.Manager, targetSPS float64) *Collector {
 		targetSPS = DefaultTargetSPS
 	}
 	c := &Collector{
-		mgr:          mgr,
-		Reports:      make(chan *Report, 4),
+		mgr:           mgr,
+		Reports:       make(chan *Report, 4),
 		lastIP:        make(map[bpf.LPMKey]bpf.DstIPStats),
 		lastPrefix:    make(map[bpf.PrefixKeyGo]bpf.PrefixStats),
 		lastSrcIP:     make(map[bpf.LPMKey]bpf.DstIPStats),
 		lastSrcPrefix: make(map[bpf.PrefixKeyGo]bpf.PrefixStats),
-		smoothedRate: 1,
-		targetSPS:    targetSPS,
+		idleIP:        make(map[bpf.LPMKey]uint16),
+		idleSrc:       make(map[bpf.LPMKey]uint16),
+		smoothedRate:  1,
+		appliedRate:   1,
+		targetSPS:     targetSPS,
 	}
 	c.skipNextTick.Store(true) // skip first tick to establish baseline
+	if mgr != nil {
+		if gs, err := mgr.GlobalStats(); err == nil {
+			c.lastGlobal = *gs
+			c.lastGlobalAt = time.Now()
+		} else {
+			log.Printf("collector: initial global_stats baseline: %v", err)
+		}
+		if err := mgr.SetSampleRate(1); err != nil {
+			log.Printf("collector: reset sample_rate to 1: %v", err)
+		}
+	}
 	return c
+}
+
+// SetUpstreamRate binds the upstream multiplier to subsequent collection ticks.
+func (c *Collector) SetUpstreamRate(v uint32) {
+	c.upstreamRate.Store(v)
 }
 
 // SetFlowTable sets the flow table used to drain top-N flows each tick.
@@ -208,19 +238,24 @@ func (c *Collector) Run(ctx context.Context) {
 // ----- internal -----
 
 func (c *Collector) collect() (*Report, error) {
+	fail := func(err error) (*Report, error) {
+		c.skipNextTick.Store(true)
+		return nil, err
+	}
 	now := time.Now()
 
 	// 1. Read global_stats
 	gs, err := c.mgr.GlobalStats()
 	if err != nil {
-		return nil, fmt.Errorf("global_stats: %w", err)
+		return fail(fmt.Errorf("global_stats: %w", err))
 	}
+	k := tickSpan(c.lastGlobalAt, now)
 	gd := GlobalDelta{
-		TotalPkts:   gs.TotalPkts - c.lastGlobal.TotalPkts,
-		TotalBytes:  gs.TotalBytes - c.lastGlobal.TotalBytes,
-		MatchedPkts: gs.MatchedPkts - c.lastGlobal.MatchedPkts,
+		TotalPkts:    gs.TotalPkts - c.lastGlobal.TotalPkts,
+		TotalBytes:   gs.TotalBytes - c.lastGlobal.TotalBytes,
+		MatchedPkts:  gs.MatchedPkts - c.lastGlobal.MatchedPkts,
 		MatchedBytes: gs.MatchedBytes - c.lastGlobal.MatchedBytes,
-		SampleDrops: gs.SampleDrops - c.lastGlobal.SampleDrops,
+		SampleDrops:  gs.SampleDrops - c.lastGlobal.SampleDrops,
 	}
 	// Per-decoder global deltas (inbound)
 	for i := 0; i < decoder.MaxDecoders; i++ {
@@ -235,6 +270,7 @@ func (c *Collector) collect() (*Report, error) {
 		gd.SrcDecoderByteCounts[i] = gs.SrcDecoderByteCounts[i] - c.lastGlobal.SrcDecoderByteCounts[i]
 	}
 	c.lastGlobal = *gs
+	c.lastGlobalAt = now
 
 	// 2. Read prefix_stats
 	prefixNow := make(map[bpf.PrefixKeyGo]bpf.PrefixStats)
@@ -246,14 +282,18 @@ func (c *Collector) collect() (*Report, error) {
 			prefixNow[k] = v
 		}
 		if err := iter.Err(); err != nil {
-			return nil, fmt.Errorf("prefix_stats iter: %w", err)
+			return fail(fmt.Errorf("prefix_stats iter: %w", err))
 		}
 	}
 
 	// 3. Read ip_stats (active slot) — batch syscalls for performance
+	slot, err := c.mgr.ReadActiveSlot()
+	if err != nil {
+		return fail(err)
+	}
 	ipNow, err := c.mgr.BatchReadIPStats()
 	if err != nil {
-		return nil, fmt.Errorf("ip_stats: %w", err)
+		return fail(fmt.Errorf("ip_stats: %w", err))
 	}
 
 	// 4. Compute IP deltas (only entries with pkt_count delta > 0)
@@ -302,13 +342,13 @@ func (c *Collector) collect() (*Report, error) {
 			srcPrefixNow[k] = v
 		}
 		if err := iter.Err(); err != nil {
-			return nil, fmt.Errorf("src_prefix_stats iter: %w", err)
+			return fail(fmt.Errorf("src_prefix_stats iter: %w", err))
 		}
 	}
 
 	srcIPNow, err := c.mgr.BatchReadSrcIPStats()
 	if err != nil {
-		return nil, fmt.Errorf("src_ip_stats: %w", err)
+		return fail(fmt.Errorf("src_ip_stats: %w", err))
 	}
 
 	var srcIPDeltas []IPDelta
@@ -361,7 +401,14 @@ func (c *Collector) collect() (*Report, error) {
 		health = HealthStatus{Status: "degraded", Message: "global_stats not growing for 10+ seconds"}
 	}
 
+	scaleGlobalDelta(&gd, k)
+	scaleIPDeltas(ipDeltas, k)
+	scalePrefixDeltas(prefixDeltas, k)
+	scaleIPDeltas(srcIPDeltas, k)
+	scalePrefixDeltas(srcPrefixDeltas, k)
+
 	// Store snapshots for next tick
+	prevIP, prevSrc := c.lastIP, c.lastSrcIP
 	c.lastIP = ipNow
 	c.lastPrefix = prefixNow
 	c.lastSrcIP = srcIPNow
@@ -372,16 +419,18 @@ func (c *Collector) collect() (*Report, error) {
 	// (not a 1-second delta), so feeding it into EWMA would produce a wildly
 	// inflated local_sample_rate that persists for many subsequent ticks and
 	// causes the upstream restoration (observed × upstream × local) to overshoot.
-	if c.skipNextTick.Load() {
-		c.skipNextTick.Store(false)
-		log.Println("collector: skipping delta report + sample rate (post-HotSwap baseline reset)")
+	skip := c.skipNextTick.Swap(false)
+	if testHookAfterSkipDecision != nil {
+		testHookAfterSkipDecision()
+	}
+	if skip {
+		clear(c.idleIP)
+		clear(c.idleSrc)
+		log.Println("collector: skipping delta report + sample rate (baseline reset)")
 		ipDeltas = nil
 		prefixDeltas = nil
 		// Keep current smoothedRate unchanged; use it as-is for this tick's report
-		sampleRate := uint32(math.Round(c.smoothedRate))
-		if sampleRate < 1 {
-			sampleRate = 1
-		}
+		sampleRate := c.appliedRate
 		return &Report{
 			Timestamp:      now,
 			Global:         gd,
@@ -390,9 +439,14 @@ func (c *Collector) collect() (*Report, error) {
 			Truncated:      false,
 			TotalActiveIPs: 0,
 			SampleRate:     sampleRate,
+			UpstreamRate:   c.upstreamRate.Load(),
 			Health:         health,
 		}, nil
 	}
+
+	// All reads and snapshot commits succeeded; no early returns remain.
+	c.deleteIdle(false, slot, ipNow, prevIP, c.idleIP)
+	c.deleteIdle(true, slot, srcIPNow, prevSrc, c.idleSrc)
 
 	// 7. Dynamic sample rate adjustment (includes backpressure)
 	// Dynamic sample rate uses total matched PPS (inbound + outbound)
@@ -416,67 +470,148 @@ func (c *Collector) collect() (*Report, error) {
 		SrcTruncated:      srcTruncated,
 		TotalActiveSrcIPs: totalActiveSrcIPs,
 		SampleRate:        sampleRate,
+		UpstreamRate:      c.upstreamRate.Load(),
 		Health:            health,
 		TopFlows:          topFlows,
 	}, nil
 }
 
+func (c *Collector) deleteIdle(src bool, slot uint32, seen, prev map[bpf.LPMKey]bpf.DstIPStats, idle map[bpf.LPMKey]uint16) {
+	for k := range idle {
+		if _, ok := seen[k]; !ok {
+			delete(idle, k)
+		}
+	}
+	var keys []bpf.LPMKey
+	for k, cur := range seen {
+		if cur.PktCount != prev[k].PktCount {
+			idle[k] = 0
+		} else if idle[k] < math.MaxUint16 {
+			idle[k]++
+		}
+		if idle[k] >= ipIdleTicks && len(keys) < maxIdleDeletesPerTick {
+			keys = append(keys, k)
+		}
+	}
+	deleted, _, err := c.mgr.DeleteIdleStats(src, slot, keys, seen)
+	for _, k := range deleted {
+		delete(seen, k) // seen is already committed as lastIP / lastSrcIP.
+		delete(idle, k)
+	}
+	if err != nil {
+		log.Printf("collector: delete idle stats src=%t: %v", src, err)
+	}
+}
+
 // adjustSampleRate implements the EWMA + hysteresis + min-hold algorithm.
 // Reference: brainstorm-node.md "Dynamic Sample Rate Mechanism"
 func (c *Collector) adjustSampleRate(matchedPPS uint64, now time.Time) uint32 {
-	// raw_rate = observed_pps / target
-	rawRate := float64(matchedPPS) / c.targetSPS
-
-	// rate < 2 → 1 (prefer no secondary sampling)
-	if rawRate < 2 {
-		rawRate = 1
-	}
-
-	// Backpressure: ring buffer drops for 3+ consecutive ticks → double rate
-	// Reference: brainstorm-node.md "Backpressure Handling"
-	if c.dropTicks >= 3 && rawRate < maxSampleRate {
-		rawRate = math.Max(rawRate*2, float64(c.smoothedRate)*2)
-		log.Printf("collector: backpressure engaged (drops for %d ticks), rate → %.0f", c.dropTicks, rawRate)
-	}
-
-	// clamp [1, maxSampleRate]
-	if rawRate < 1 {
-		rawRate = 1
-	}
-	if rawRate > maxSampleRate {
-		rawRate = maxSampleRate
-	}
-
-	// EWMA smoothing
-	smoothed := ewmaAlpha*rawRate + (1-ewmaAlpha)*c.smoothedRate
-
-	// Hysteresis: skip small changes
-	if math.Abs(smoothed-c.smoothedRate) < hysteresis {
-		smoothed = c.smoothedRate
-	}
-
-	// Min hold time: don't change rate within 3s of last change
-	rateChanged := uint32(math.Round(smoothed)) != uint32(math.Round(c.smoothedRate))
-	if rateChanged && now.Sub(c.lastRateChange) < minHoldTime {
-		smoothed = c.smoothedRate
-	}
-
-	finalRate := uint32(math.Round(smoothed))
-	if finalRate < 1 {
-		finalRate = 1
-	}
-
-	// Write to BPF if changed
-	if finalRate != uint32(math.Round(c.smoothedRate)) {
-		if err := c.mgr.SetSampleRate(finalRate); err != nil {
-			log.Printf("collector: set sample_rate: %v", err)
+	s, cand, write := nextSampleRate(c.smoothedRate, c.appliedRate, c.lastRateChange, matchedPPS, c.dropTicks, c.targetSPS, now)
+	c.smoothedRate = s
+	if write {
+		if err := c.mgr.SetSampleRate(cand); err != nil {
+			log.Printf("collector: set sample_rate %d: %v (keeping %d)", cand, err, c.appliedRate)
 		} else {
+			c.appliedRate = cand
 			c.lastRateChange = now
 		}
 	}
-	c.smoothedRate = smoothed
+	if c.dropTicks >= 3 {
+		log.Printf("collector: backpressure engaged (drops for %d ticks), sample_rate=%d", c.dropTicks, c.appliedRate)
+	}
+	return c.appliedRate
+}
 
-	return finalRate
+func nextSampleRate(smoothed float64, applied uint32, lastChange time.Time, matchedPPS uint64, dropTicks int, targetSPS float64, now time.Time) (newSmoothed float64, cand uint32, write bool) {
+	raw := float64(matchedPPS) / targetSPS
+	if raw < 2 {
+		raw = 1
+	}
+	if dropTicks >= 3 && raw < maxSampleRate {
+		raw = math.Max(raw*2, float64(applied)*2)
+	}
+	raw = math.Max(1, math.Min(raw, maxSampleRate))
+	newSmoothed = ewmaAlpha*raw + (1-ewmaAlpha)*smoothed
+	cand = max(1, uint32(math.Round(newSmoothed)))
+	write = cand != applied && math.Abs(newSmoothed-float64(applied)) >= hysteresisFrac*float64(applied) && now.Sub(lastChange) >= minHoldTime
+	return
+}
+
+func tickSpan(prev, now time.Time) uint64 {
+	if prev.IsZero() {
+		return 1
+	}
+	k := math.Round(now.Sub(prev).Seconds())
+	if k < 1 {
+		return 1
+	}
+	return uint64(k)
+}
+
+func scaleGlobalDelta(d *GlobalDelta, k uint64) {
+	if k <= 1 {
+		return
+	}
+	d.TotalPkts /= k
+	d.TotalBytes /= k
+	d.MatchedPkts /= k
+	d.MatchedBytes /= k
+	d.SampleDrops /= k
+	d.SrcMatchedPkts /= k
+	d.SrcMatchedBytes /= k
+	for i := range d.DecoderCounts {
+		d.DecoderCounts[i] = uint32(uint64(d.DecoderCounts[i]) / k)
+		d.DecoderByteCounts[i] /= k
+		d.SrcDecoderCounts[i] = uint32(uint64(d.SrcDecoderCounts[i]) / k)
+		d.SrcDecoderByteCounts[i] /= k
+	}
+}
+
+func scaleIPDeltas(ds []IPDelta, k uint64) {
+	if k <= 1 {
+		return
+	}
+	for i := range ds {
+		d := &ds[i].Stats
+		d.PktCount /= k
+		d.ByteCount /= k
+		d.SmallPkt = uint32(uint64(d.SmallPkt) / k)
+		d.MediumPkt = uint32(uint64(d.MediumPkt) / k)
+		d.LargePkt = uint32(uint64(d.LargePkt) / k)
+		for j := range d.DecoderCounts {
+			d.DecoderCounts[j] = uint32(uint64(d.DecoderCounts[j]) / k)
+			d.DecoderByteCounts[j] /= k
+		}
+	}
+}
+
+func scalePrefixDeltas(ds []PrefixDelta, k uint64) {
+	if k <= 1 {
+		return
+	}
+	for i := range ds {
+		d := &ds[i].Stats
+		d.PktCount /= k
+		d.ByteCount /= k
+		d.OverflowCount = uint32(uint64(d.OverflowCount) / k)
+		for j := range d.DecoderCounts {
+			d.DecoderCounts[j] = uint32(uint64(d.DecoderCounts[j]) / k)
+			d.DecoderByteCounts[j] /= k
+		}
+	}
+}
+
+type prefixNet struct {
+	key bpf.PrefixKeyGo
+	net net.IPNet
+}
+
+func sortLongestFirst(ps []prefixNet) {
+	sort.SliceStable(ps, func(i, j int) bool {
+		a, _ := ps[i].net.Mask.Size()
+		b, _ := ps[j].net.Mask.Size()
+		return a > b
+	})
 }
 
 // countActiveIPsPerPrefix counts how many active IPs fall under each prefix.
@@ -485,15 +620,12 @@ func (c *Collector) countActiveIPsPerPrefix(
 	prefixNow map[bpf.PrefixKeyGo]bpf.PrefixStats,
 ) map[bpf.PrefixKeyGo]uint32 {
 	// Build list of net.IPNet from known prefix keys
-	type prefixNet struct {
-		key bpf.PrefixKeyGo
-		net net.IPNet
-	}
 	var prefixes []prefixNet
 	for k := range prefixNow {
 		ipNet := PrefixKeyToIPNet(k)
 		prefixes = append(prefixes, prefixNet{key: k, net: ipNet})
 	}
+	sortLongestFirst(prefixes)
 
 	counts := make(map[bpf.PrefixKeyGo]uint32)
 	for _, d := range ipDeltas {
@@ -552,27 +684,7 @@ func LPMKeyToIP(k bpf.LPMKey) net.IP {
 
 // PrefixKeyToIPNet builds a net.IPNet from a PrefixKeyGo.
 func PrefixKeyToIPNet(k bpf.PrefixKeyGo) net.IPNet {
-	ones := int(k.Prefixlen)
-	// Detect IPv4 vs IPv6: if bytes 4-15 are all zero and prefixlen <= 32 → IPv4
-	isV4 := ones <= 32
-	if isV4 {
-		for i := 4; i < 16; i++ {
-			if k.Addr[i] != 0 {
-				isV4 = false
-				break
-			}
-		}
-	}
-	if isV4 {
-		return net.IPNet{
-			IP:   net.IP(k.Addr[:4]),
-			Mask: net.CIDRMask(ones, 32),
-		}
-	}
-	return net.IPNet{
-		IP:   net.IP(k.Addr[:16]),
-		Mask: net.CIDRMask(ones, 128),
-	}
+	return bpf.PrefixKeyToIPNet(k)
 }
 
 // formatIP returns a human-readable IP string from an LPMKey.

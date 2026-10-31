@@ -9,6 +9,7 @@
 //
 // Rule: if a more specific decoder already has an active attack for the same
 // (dst_ip, direction), suppress the broader decoder.
+// Other decoders do not participate in suppression (Q1 = A).
 package dedup
 
 import (
@@ -73,6 +74,12 @@ func (d *Dedup) ShouldSuppress(evt engine.ThresholdExceeded) bool {
 
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+
+	// Keep confirmed attacks alive with their own events, even when a more
+	// specific decoder is active. Registration also covers the expiring state.
+	if d.active[attackKey{dstIP, evt.Direction, evt.Decoder}] {
+		return false
+	}
 
 	for _, moreSpecific := range suppressedBy[evt.Decoder] {
 		if d.active[attackKey{dstIP, evt.Direction, moreSpecific}] {

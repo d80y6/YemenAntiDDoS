@@ -77,8 +77,8 @@ func (r *templateRepo) Duplicate(ctx context.Context, id int, newName string) (i
 	// Create new template
 	var newID int
 	err = tx.QueryRow(ctx,
-		`INSERT INTO threshold_templates (name, description)
-		 SELECT $1, description FROM threshold_templates WHERE id=$2
+		`INSERT INTO threshold_templates (name, description, response_id)
+		 SELECT $1, description, response_id FROM threshold_templates WHERE id=$2
 		 RETURNING id`, newName, id).Scan(&newID)
 	if err != nil {
 		return 0, fmt.Errorf("duplicate template: %w", err)

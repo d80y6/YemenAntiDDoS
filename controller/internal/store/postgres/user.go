@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -10,6 +11,8 @@ import (
 )
 
 type userRepo struct{ pool *pgxpool.Pool }
+
+const userAdminLockKey = "xsight:users:enabled-admin"
 
 func (r *userRepo) List(ctx context.Context) ([]store.User, error) {
 	rows, err := r.pool.Query(ctx,
@@ -71,14 +74,59 @@ func (r *userRepo) Create(ctx context.Context, u *store.User) (int, error) {
 }
 
 func (r *userRepo) Update(ctx context.Context, u *store.User) error {
-	_, err := r.pool.Exec(ctx,
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := guardUserAdmin(ctx, tx, u.ID, u.Role == "admin" && u.Enabled); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`UPDATE users SET username=$1, password=$2, role=$3, enabled=$4, updated_at=now()
 		 WHERE id=$5`,
 		u.Username, u.Password, u.Role, u.Enabled, u.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *userRepo) Delete(ctx context.Context, id int) error {
-	_, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, id)
-	return err
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := guardUserAdmin(ctx, tx, id, false); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM users WHERE id=$1`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func guardUserAdmin(ctx context.Context, tx pgx.Tx, id int, nextAdmin bool) error {
+	// Every Update / Delete takes the same lock before reading the current row.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, userAdminLockKey); err != nil {
+		return err
+	}
+	var oldAdmin bool
+	err := tx.QueryRow(ctx, `SELECT role = 'admin' AND enabled IS TRUE FROM users WHERE id = $1`, id).Scan(&oldAdmin)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if !oldAdmin || nextAdmin {
+		return nil
+	}
+	var peer bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE id <> $1 AND role = 'admin' AND enabled IS TRUE)`, id).Scan(&peer); err != nil {
+		return err
+	}
+	if !peer {
+		return store.ErrLastAdmin
+	}
+	return nil
 }

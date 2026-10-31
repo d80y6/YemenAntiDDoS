@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,7 +16,7 @@ func listUsers(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		users, err := deps.Store.Users().List(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, users)
@@ -43,9 +46,12 @@ func createUser(deps Dependencies) gin.HandlerFunc {
 			Username: req.Username, Password: hash, Role: req.Role, Enabled: true,
 		})
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
+		auditDirect(c, deps, "user", strconv.Itoa(id), "create", makeDiff(nil, userAuditView(&store.User{
+			Username: req.Username, Role: req.Role, Enabled: true,
+		})))
 		created(c, gin.H{"id": id})
 	}
 }
@@ -68,6 +74,8 @@ func updateUser(deps Dependencies) gin.HandlerFunc {
 			errResponse(c, http.StatusNotFound, "user not found")
 			return
 		}
+		old := userAuditView(user)
+		passwordChanged := false
 		if req.Username != "" {
 			user.Username = req.Username
 		}
@@ -78,6 +86,7 @@ func updateUser(deps Dependencies) gin.HandlerFunc {
 				return
 			}
 			user.Password = hash
+			passwordChanged = true
 		}
 		if req.Role != "" {
 			user.Role = req.Role
@@ -86,9 +95,16 @@ func updateUser(deps Dependencies) gin.HandlerFunc {
 			user.Enabled = *req.Enabled
 		}
 		if err := deps.Store.Users().Update(c, user); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			if errors.Is(err, store.ErrLastAdmin) {
+				errResponse(c, http.StatusConflict, store.ErrLastAdmin.Error())
+				return
+			}
+			dbError(c, "", err)
 			return
 		}
+		newView := userAuditView(user)
+		newView["password_changed"] = passwordChanged
+		auditDirect(c, deps, "user", strconv.Itoa(id), "update", makeDiff(old, newView))
 		ok(c, gin.H{"ok": true})
 	}
 }
@@ -96,10 +112,41 @@ func updateUser(deps Dependencies) gin.HandlerFunc {
 func deleteUser(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, _ := strconv.Atoi(c.Param("id"))
+		var old any = gin.H{"id": id}
+		if user, err := deps.Store.Users().Get(c, id); err == nil && user != nil {
+			old = userAuditView(user)
+		}
 		if err := deps.Store.Users().Delete(c, id); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			if errors.Is(err, store.ErrLastAdmin) {
+				errResponse(c, http.StatusConflict, store.ErrLastAdmin.Error())
+				return
+			}
+			dbError(c, "", err)
 			return
 		}
+		auditDirect(c, deps, "user", strconv.Itoa(id), "delete", makeDiff(old, nil))
 		ok(c, gin.H{"ok": true})
+	}
+}
+
+func userAuditView(user *store.User) gin.H {
+	return gin.H{"username": user.Username, "role": user.Role, "enabled": user.Enabled}
+}
+
+// auditDirect records a successful user or node request without publishing configuration.
+func auditDirect(c *gin.Context, deps Dependencies, entityType, entityID, action string, diff json.RawMessage) {
+	var userID *int
+	if uid, exists := c.Get("user_id"); exists {
+		id := uid.(int)
+		userID = &id
+		if entityType == "user" && action == "delete" && entityID == strconv.Itoa(id) {
+			userID = nil
+		}
+	}
+	if err := deps.Store.AuditLog().Create(c, &store.AuditLog{
+		UserID: userID, EntityType: entityType, EntityID: entityID,
+		Action: action, Diff: diff, DeliveryVersion: nil,
+	}); err != nil {
+		log.Printf("ERROR api: audit %s %s %s: %v", entityType, action, entityID, err)
 	}
 }

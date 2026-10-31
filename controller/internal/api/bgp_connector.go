@@ -1,21 +1,46 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
 
+var vtyshHTTPTimeout = 25 * time.Second
+var vtyshHTTPWaitDelay = 2 * time.Second
+var errVtyshHTTPTimeout = errors.New("vtysh timed out")
+
+func runVtyshHTTP(ctx context.Context, path string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.WaitDelay = vtyshHTTPWaitDelay
+	dl, _ := ctx.Deadline()
+	budget := time.Until(dl)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return out, nil
+	}
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		err = nil
+	} else if ctx.Err() == context.DeadlineExceeded {
+		err = fmt.Errorf("%w after %s: %w", errVtyshHTTPTimeout, budget, err)
+	}
+	return out, err
+}
+
 func listBGPConnectors(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		list, err := deps.Store.BGPConnectors().List(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, list)
@@ -37,15 +62,23 @@ func getBGPConnector(deps Dependencies) gin.HandlerFunc {
 func createBGPConnector(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req struct {
-			Name           string `json:"name" binding:"required"`
-			VtyshPath      string `json:"vtysh_path"`
-			BGPASN         int    `json:"bgp_asn" binding:"required"`
-			AddressFamily  string `json:"address_family"`
-			Enabled        *bool  `json:"enabled"`
-			Description    string `json:"description"`
+			Name          string `json:"name" binding:"required"`
+			VtyshPath     string `json:"vtysh_path"`
+			BGPASN        *int64 `json:"bgp_asn"`
+			AddressFamily string `json:"address_family"`
+			Enabled       *bool  `json:"enabled"`
+			Description   string `json:"description"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.BGPASN == nil {
+			errResponse(c, http.StatusBadRequest, "bgp_asn is required")
+			return
+		}
+		if *req.BGPASN < 1 || *req.BGPASN > 4294967295 {
+			errResponse(c, http.StatusBadRequest, fmt.Sprintf("bgp_asn must be between 1 and 4294967295, got %d", *req.BGPASN))
 			return
 		}
 		if req.VtyshPath == "" {
@@ -63,14 +96,14 @@ func createBGPConnector(deps Dependencies) gin.HandlerFunc {
 		conn := &store.BGPConnector{
 			Name:          req.Name,
 			VtyshPath:     req.VtyshPath,
-			BGPASN:        req.BGPASN,
+			BGPASN:        int(*req.BGPASN),
 			AddressFamily: req.AddressFamily,
 			Enabled:       enabled,
 			Description:   req.Description,
 		}
 		id, err := deps.Store.BGPConnectors().Create(c, conn)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		conn.ID = id
@@ -88,12 +121,12 @@ func updateBGPConnector(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		var req struct {
-			Name           string `json:"name"`
-			VtyshPath      string `json:"vtysh_path"`
-			BGPASN         int    `json:"bgp_asn"`
-			AddressFamily  string `json:"address_family"`
-			Enabled        *bool  `json:"enabled"`
-			Description    string `json:"description"`
+			Name          string  `json:"name"`
+			VtyshPath     string  `json:"vtysh_path"`
+			BGPASN        *int64  `json:"bgp_asn"`
+			AddressFamily string  `json:"address_family"`
+			Enabled       *bool   `json:"enabled"`
+			Description   *string `json:"description"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
@@ -106,8 +139,12 @@ func updateBGPConnector(deps Dependencies) gin.HandlerFunc {
 		if req.VtyshPath != "" {
 			conn.VtyshPath = req.VtyshPath
 		}
-		if req.BGPASN > 0 {
-			conn.BGPASN = req.BGPASN
+		if req.BGPASN != nil {
+			conn.BGPASN = int(*req.BGPASN)
+		}
+		if conn.BGPASN < 1 || conn.BGPASN > 4294967295 {
+			errResponse(c, http.StatusBadRequest, fmt.Sprintf("bgp_asn must be between 1 and 4294967295, got %d", conn.BGPASN))
+			return
 		}
 		if req.AddressFamily != "" {
 			conn.AddressFamily = req.AddressFamily
@@ -115,12 +152,15 @@ func updateBGPConnector(deps Dependencies) gin.HandlerFunc {
 		if req.Enabled != nil {
 			conn.Enabled = *req.Enabled
 		}
-		if req.Description != "" {
-			conn.Description = req.Description
+		if req.Description != nil {
+			conn.Description = *req.Description
 		}
 		if err := deps.Store.BGPConnectors().Update(c, conn); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
+		}
+		if conn.Enabled && deps.ActionEngine != nil {
+			go deps.ActionEngine.SweepEnabledBGPConnector(id)
 		}
 		publishAfterChange(c, deps, "bgp_connector", strconv.Itoa(id), "update", makeDiff(old, conn))
 		ok(c, gin.H{"ok": true})
@@ -133,16 +173,25 @@ func deleteBGPConnector(deps Dependencies) gin.HandlerFunc {
 		// In-use guard: reject if any response action references this connector
 		count, err := deps.Store.Responses().CountActionsByBGPConnector(c, id)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		if count > 0 {
 			errResponse(c, http.StatusConflict, fmt.Sprintf("connector in use by %d action(s)", count))
 			return
 		}
+		live, err := deps.Store.BGPAnnouncements().CountLiveByConnector(c, id)
+		if err != nil {
+			dbError(c, "", err)
+			return
+		}
+		if live > 0 {
+			errResponse(c, http.StatusConflict, fmt.Sprintf("connector still has %d announcements in FRR-relevant states", live))
+			return
+		}
 		old, _ := deps.Store.BGPConnectors().Get(c, id)
 		if err := deps.Store.BGPConnectors().Delete(c, id); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		if old != nil {
@@ -155,6 +204,8 @@ func deleteBGPConnector(deps Dependencies) gin.HandlerFunc {
 // listBGPRoutes returns the current BGP RIB for the connector's address family.
 func listBGPRoutes(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c, vtyshHTTPTimeout)
+		defer cancel()
 		id, _ := strconv.Atoi(c.Param("id"))
 		conn, err := deps.Store.BGPConnectors().Get(c, id)
 		if err != nil {
@@ -162,8 +213,19 @@ func listBGPRoutes(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		// Show both IPv4 and IPv6 BGP RIB — partial success is OK
-		out4, err4 := exec.CommandContext(c, conn.VtyshPath, "-c", "show ip bgp ipv4 unicast").CombinedOutput()
-		out6, err6 := exec.CommandContext(c, conn.VtyshPath, "-c", "show ip bgp ipv6 unicast").CombinedOutput()
+		var out4, out6 []byte
+		var err4, err6 error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			out4, err4 = runVtyshHTTP(ctx, conn.VtyshPath, "-c", "show ip bgp ipv4 unicast")
+		}()
+		go func() {
+			defer wg.Done()
+			out6, err6 = runVtyshHTTP(ctx, conn.VtyshPath, "-c", "show ip bgp ipv6 unicast")
+		}()
+		wg.Wait()
 		if err4 != nil && err6 != nil {
 			errResponse(c, http.StatusBadGateway, fmt.Sprintf("vtysh failed: ipv4=%v ipv6=%v", err4, err6))
 			return
@@ -185,13 +247,15 @@ func listBGPRoutes(deps Dependencies) gin.HandlerFunc {
 // testBGPConnector runs "vtysh -c 'show bgp summary'" to verify FRR connectivity.
 func testBGPConnector(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c, vtyshHTTPTimeout)
+		defer cancel()
 		id, _ := strconv.Atoi(c.Param("id"))
 		conn, err := deps.Store.BGPConnectors().Get(c, id)
 		if err != nil {
 			errResponse(c, http.StatusNotFound, "bgp connector not found")
 			return
 		}
-		out, err := exec.CommandContext(c, conn.VtyshPath, "-c", "show bgp summary").CombinedOutput()
+		out, err := runVtyshHTTP(ctx, conn.VtyshPath, "-c", "show bgp summary")
 		if err != nil {
 			errResponse(c, http.StatusBadGateway, fmt.Sprintf("vtysh failed: %v\n%s", err, strings.TrimSpace(string(out))))
 			return

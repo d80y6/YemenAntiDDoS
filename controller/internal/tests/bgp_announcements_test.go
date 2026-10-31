@@ -17,6 +17,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,7 +205,7 @@ func TestBGPAnnouncement_ForceWithdraw_DetachesAll(t *testing.T) {
 	}
 
 	annID := 1 // first announcement
-	if err := ms.BGPAnnouncements().ForceWithdraw(ctx, annID); err != nil {
+	if _, _, err := ms.BGPAnnouncements().ForceWithdraw(ctx, annID); err != nil {
 		t.Fatalf("force withdraw: %v", err)
 	}
 
@@ -233,9 +234,9 @@ func TestBGPAnnouncement_ResurrectFromWithdrawn(t *testing.T) {
 	r1, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 1,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, r1.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, r1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r1.AnnouncementID))
 	ms.BGPAnnouncements().Detach(ctx, 1, "198.51.100.0/24", "DIVERT", 1)
-	ms.BGPAnnouncements().MarkWithdrawn(ctx, r1.AnnouncementID)
+	ms.BGPAnnouncements().MarkWithdrawn(ctx, r1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r1.AnnouncementID))
 
 	// Later, a new attack triggers announce on the same prefix.
 	r2, err := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
@@ -302,13 +303,13 @@ func TestBGPAnnouncement_DelayMinutes_ResurrectResetsCycle(t *testing.T) {
 	r1, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 1, DelayMinutes: 10,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, r1.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, r1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r1.AnnouncementID))
 	ms.BGPAnnouncements().Detach(ctx, 1, "198.51.100.0/24", "DIVERT", 1)
 	// Simulate delay expiry + vtysh withdraw completing the cycle.
 	// In the mock, Detach transitions to 'delayed' when delay>0; ForceWithdraw
 	// bypasses to withdrawing → MarkWithdrawn completes the cycle.
 	ms.BGPAnnouncements().ForceWithdraw(ctx, r1.AnnouncementID)
-	ms.BGPAnnouncements().MarkWithdrawn(ctx, r1.AnnouncementID)
+	ms.BGPAnnouncements().MarkWithdrawn(ctx, r1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r1.AnnouncementID))
 
 	// Cycle 2: fresh attack with delay=2 → resurrect.
 	r2, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
@@ -328,9 +329,10 @@ func TestBGPAnnouncement_DelayMinutes_ResurrectResetsCycle(t *testing.T) {
 // of the three surface together.
 //
 // Timeline:
-//   cycle 1: attack 1 (delay=3) attach → detach → withdraw (delay preserved = 3)
-//   cycle 2 (resurrect): attack 2 (delay=7) attach → attack 3 (delay=2) attach
-//   (both in same cycle; sticky MAX = 7)
+//
+//	cycle 1: attack 1 (delay=3) attach → detach → withdraw (delay preserved = 3)
+//	cycle 2 (resurrect): attack 2 (delay=7) attach → attack 3 (delay=2) attach
+//	(both in same cycle; sticky MAX = 7)
 //
 // Assertions:
 //   - cycle 2 announcement.delay_minutes = 7 (new cycle sticky MAX; prior
@@ -345,11 +347,11 @@ func TestBGPAnnouncement_CycleBoundaries_Integration(t *testing.T) {
 	r1, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 1, DelayMinutes: 3,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, r1.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, r1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r1.AnnouncementID))
 	// Attack 1 ends → refcount=0; with delay=3 this enters delayed, but we
 	// drive it straight to withdrawn for the scenario.
 	ms.BGPAnnouncements().ForceWithdraw(ctx, r1.AnnouncementID)
-	ms.BGPAnnouncements().MarkWithdrawn(ctx, r1.AnnouncementID)
+	ms.BGPAnnouncements().MarkWithdrawn(ctx, r1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r1.AnnouncementID))
 
 	// Cycle 2 — resurrect.
 	r2a, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
@@ -358,7 +360,7 @@ func TestBGPAnnouncement_CycleBoundaries_Integration(t *testing.T) {
 	if r1.AnnouncementID != r2a.AnnouncementID {
 		t.Fatalf("cycle 2 must reuse announcement id; got %d vs %d", r1.AnnouncementID, r2a.AnnouncementID)
 	}
-	ms.BGPAnnouncements().MarkAnnounced(ctx, r2a.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, r2a.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r2a.AnnouncementID))
 	ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 3, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 1, DelayMinutes: 2,
 	})
@@ -428,7 +430,7 @@ func TestBGPAnnouncement_MarkFailedAnnounce_CompensatesCorrectly(t *testing.T) {
 	r1, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 1,
 	})
-	if err := ms.BGPAnnouncements().MarkFailedAnnounce(ctx, r1.AnnouncementID, "vtysh timeout"); err != nil {
+	if err := ms.BGPAnnouncements().MarkFailedAnnounce(ctx, r1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r1.AnnouncementID), "vtysh timeout"); err != nil {
 		t.Fatalf("MarkFailedAnnounce: %v", err)
 	}
 	if got, _ := ms.BGPAnnouncements().Get(ctx, r1.AnnouncementID); got != nil {
@@ -442,7 +444,7 @@ func TestBGPAnnouncement_MarkFailedAnnounce_CompensatesCorrectly(t *testing.T) {
 	r2, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 3, Prefix: "203.0.113.0/24", RouteMap: "DIVERT", ConnectorID: 1,
 	})
-	if err := ms.BGPAnnouncements().MarkFailedAnnounce(ctx, r2.AnnouncementID, "vtysh timeout"); err != nil {
+	if err := ms.BGPAnnouncements().MarkFailedAnnounce(ctx, r2.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r2.AnnouncementID), "vtysh timeout"); err != nil {
 		t.Fatalf("MarkFailedAnnounce: %v", err)
 	}
 	a, _ := ms.BGPAnnouncements().Get(ctx, r2.AnnouncementID)
@@ -491,7 +493,7 @@ func TestBGPAnnouncement_Events_Timeline(t *testing.T) {
 	r, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 1, DelayMinutes: 5,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, r.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, r.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), r.AnnouncementID))
 	ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 2, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 1, DelayMinutes: 5,
 	})
@@ -556,33 +558,21 @@ func TestBGPAnnouncement_Detach_Idempotent(t *testing.T) {
 
 // `announcing` rows at startup — reconciliation retries vtysh announce.
 // The test can't actually exercise vtysh (no FRR), but verifies that the
-// reconcile path calls MarkFailedAnnounce on lookup failure (no connector).
-func TestReconcile_BGPAnnouncing_ConnectorMissing_MarksFailed(t *testing.T) {
+// Startup lookup failure retains ownership for runtime reconciliation.
+func TestReconcile_BGPAnnouncing_ConnectorMissing_KeepsAnnouncing(t *testing.T) {
 	ms := NewMockStore()
 	eng := action.NewEngine(ms, "auto")
-
-	// Seed an announcing row with a connector_id that doesn't exist.
 	r, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
-		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 999, // missing
+		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 999,
 	})
-
+	before, _ := ms.bgpAnnouncements.Get(context.Background(), r.AnnouncementID)
+	logs := dao5CaptureLog(t)
 	eng.ReconcileOnStartup(context.Background())
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		ann, _ := ms.bgpAnnouncements.Get(context.Background(), r.AnnouncementID)
-		// refcount=1 path → MarkFailedAnnounce deletes the row.
-		// Otherwise the row is marked failed.
-		if ann == nil {
-			return // deleted (refcount=1 path)
-		}
-		if ann.Status == "failed" {
-			return // marked failed (refcount>1 path)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	dao13dAwait(t, 2*time.Second, func() bool { return strings.Contains(logs.text(), "leaving announcing for runtime reconcile") })
 	ann, _ := ms.bgpAnnouncements.Get(context.Background(), r.AnnouncementID)
-	t.Errorf("expected announcing row to be cleaned up or marked failed; got %+v", ann)
+	if ann == nil || ann.Status != "announcing" || ann.Gen != before.Gen || ann.Refcount != before.Refcount {
+		t.Fatalf("startup failure changed ownership: before=%+v after=%+v", before, ann)
+	}
 }
 
 // `withdrawing` rows at startup — reconciliation retries vtysh no network.
@@ -596,8 +586,11 @@ func TestReconcile_BGPWithdrawing_ConnectorMissing_MarksFailed(t *testing.T) {
 	r, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
 		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 999,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(context.Background(), r.AnnouncementID)
-	ms.bgpAnnouncements.MarkWithdrawing(context.Background(), r.AnnouncementID)
+	ms.bgpAnnouncements.MarkAnnounced(context.Background(), r.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, r.AnnouncementID))
+	detached, err := ms.bgpAnnouncements.Detach(context.Background(), 1, "198.51.100.0/24", "DIVERT", 999)
+	if err != nil || !detached.NeedWithdraw {
+		t.Fatalf("Detach=%+v err=%v; want NeedWithdraw", detached, err)
+	}
 
 	eng.ReconcileOnStartup(context.Background())
 
@@ -624,7 +617,7 @@ func TestReconcile_BGPWithdraw_ScheduledRecovery_ByAnnouncementID(t *testing.T) 
 	r, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
 		AttackID: 1, Prefix: "198.51.100.0/24", RouteMap: "DIVERT", ConnectorID: 999, DelayMinutes: 5,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(context.Background(), r.AnnouncementID)
+	ms.bgpAnnouncements.MarkAnnounced(context.Background(), r.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, r.AnnouncementID))
 	// Transition to delayed via final detach.
 	ms.bgpAnnouncements.Detach(context.Background(), 1, "198.51.100.0/24", "DIVERT", 999)
 
@@ -632,14 +625,14 @@ func TestReconcile_BGPWithdraw_ScheduledRecovery_ByAnnouncementID(t *testing.T) 
 	// so RecoverScheduledActions executes it immediately via the announcement
 	// recovery path.
 	annID := r.AnnouncementID
-	ms.scheduledActions.records = append(ms.scheduledActions.records, store.ScheduledAction{
+	ms.scheduledActions.appendRecords(store.ScheduledAction{
 		ID:             100,
 		ActionType:     "bgp_withdraw",
 		AnnouncementID: &annID,
 		ScheduledFor:   time.Now().Add(-1 * time.Minute),
 		Status:         "pending",
 	})
-	ms.scheduledActions.nextID = 100
+	ms.scheduledActions.setNextID(100)
 
 	eng.ReconcileOnStartup(context.Background())
 
@@ -949,7 +942,7 @@ func TestAttach_DifferentRouteMaps_IndependentRefcount(t *testing.T) {
 	aRTBH, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, ActionID: ip(10), Prefix: "192.0.2.0/24", RouteMap: "RTBH", ConnectorID: 6,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, aRTBH.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, aRTBH.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), aRTBH.AnnouncementID))
 	ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 2, ActionID: ip(10), Prefix: "192.0.2.0/24", RouteMap: "RTBH", ConnectorID: 6,
 	})
@@ -957,7 +950,7 @@ func TestAttach_DifferentRouteMaps_IndependentRefcount(t *testing.T) {
 	aDIVERT, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 3, ActionID: ip(11), Prefix: "192.0.2.0/24", RouteMap: "DIVERT", ConnectorID: 6,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, aDIVERT.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, aDIVERT.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), aDIVERT.AnnouncementID))
 
 	// Detach attack 3 (DIVERT). RTBH announcement must remain refcount=2.
 	r, _ := ms.BGPAnnouncements().Detach(ctx, 3, "192.0.2.0/24", "DIVERT", 6)
@@ -983,16 +976,16 @@ func TestForceWithdraw_OneRouteMap_OtherIndependent(t *testing.T) {
 	aRTBH, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, ActionID: ip(10), Prefix: "192.0.2.0/24", RouteMap: "RTBH", ConnectorID: 6,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, aRTBH.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, aRTBH.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), aRTBH.AnnouncementID))
 	aDIVERT, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 2, ActionID: ip(11), Prefix: "192.0.2.0/24", RouteMap: "DIVERT", ConnectorID: 6,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, aDIVERT.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, aDIVERT.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), aDIVERT.AnnouncementID))
 
-	if err := ms.BGPAnnouncements().ForceWithdraw(ctx, aRTBH.AnnouncementID); err != nil {
+	if _, _, err := ms.BGPAnnouncements().ForceWithdraw(ctx, aRTBH.AnnouncementID); err != nil {
 		t.Fatalf("force withdraw RTBH: %v", err)
 	}
-	ms.BGPAnnouncements().MarkWithdrawn(ctx, aRTBH.AnnouncementID)
+	ms.BGPAnnouncements().MarkWithdrawn(ctx, aRTBH.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), aRTBH.AnnouncementID))
 
 	divertState, _ := ms.BGPAnnouncements().Get(ctx, aDIVERT.AnnouncementID)
 	if divertState.Status != "active" || divertState.Refcount != 1 {
@@ -1013,13 +1006,13 @@ func TestPrefix_SerialRouteMapSwitch(t *testing.T) {
 	a1, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{
 		AttackID: 1, ActionID: ip(10), Prefix: "192.0.2.0/24", RouteMap: "RTBH", ConnectorID: 6,
 	})
-	ms.BGPAnnouncements().MarkAnnounced(ctx, a1.AnnouncementID)
+	ms.BGPAnnouncements().MarkAnnounced(ctx, a1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), a1.AnnouncementID))
 	// Attack ends → withdraw.
 	r, _ := ms.BGPAnnouncements().Detach(ctx, 1, "192.0.2.0/24", "RTBH", 6)
 	if !r.NeedWithdraw {
 		t.Fatalf("expected NeedWithdraw after first detach, got %+v", r)
 	}
-	ms.BGPAnnouncements().MarkWithdrawn(ctx, a1.AnnouncementID)
+	ms.BGPAnnouncements().MarkWithdrawn(ctx, a1.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), a1.AnnouncementID))
 
 	// Phase 2: operator edited action.route_map=DIVERT; new attack triggers.
 	a2, _ := ms.BGPAnnouncements().Attach(ctx, store.BGPAttachParams{

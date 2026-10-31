@@ -14,6 +14,7 @@ import (
 const sourceOfflineTimeout = 60 // seconds — source considered offline if no packets for this long
 
 const (
+	maxBucketIPs = 10_000
 	// maxSpreadDuration clamps excessively long flow durations (e.g. broken exporter).
 	maxSpreadDuration = 300
 	// staleBucketAge — buckets older than this are garbage-collected in Flush.
@@ -48,10 +49,12 @@ type secondBucket struct {
 	srcGlobalDecoderPkts  [decoder.MaxDecoders]uint32
 	srcGlobalDecoderBytes [decoder.MaxDecoders]uint64
 
-	ipStats        map[string]*ipDelta    // dst_ip string → inbound
+	ipStats        map[string]*ipDelta // dst_ip string → inbound
 	prefixStats    map[string]*prefixDelta
-	srcIPStats     map[string]*ipDelta    // src_ip string → outbound
+	srcIPStats     map[string]*ipDelta // src_ip string → outbound
 	srcPrefixStats map[string]*prefixDelta
+
+	ipTruncated, srcIPTruncated bool
 }
 
 func newSecondBucket() *secondBucket {
@@ -199,7 +202,11 @@ func (a *FlowAggregator) addInbound(b *secondBucket, prefix string, ip net.IP, d
 	d, ok := b.ipStats[ipStr]
 	if !ok {
 		d = &ipDelta{IP: copyIP(ip)}
-		b.ipStats[ipStr] = d
+		if len(b.ipStats) < maxBucketIPs {
+			b.ipStats[ipStr] = d
+		} else {
+			b.ipTruncated = true
+		}
 	}
 	d.Pkts += pkts
 	d.Bytes += bytes
@@ -212,7 +219,9 @@ func (a *FlowAggregator) addInbound(b *secondBucket, prefix string, ip net.IP, d
 	}
 	pf.Pkts += pkts
 	pf.Bytes += bytes
-	pf.ActiveIPs[ipStr] = true
+	if len(pf.ActiveIPs) < maxBucketIPs {
+		pf.ActiveIPs[ipStr] = true
+	}
 
 	b.globalPkts += pkts
 	b.globalBytes += bytes
@@ -235,7 +244,11 @@ func (a *FlowAggregator) addOutbound(b *secondBucket, prefix string, ip net.IP, 
 	d, ok := b.srcIPStats[ipStr]
 	if !ok {
 		d = &ipDelta{IP: copyIP(ip)}
-		b.srcIPStats[ipStr] = d
+		if len(b.srcIPStats) < maxBucketIPs {
+			b.srcIPStats[ipStr] = d
+		} else {
+			b.srcIPTruncated = true
+		}
 	}
 	d.Pkts += pkts
 	d.Bytes += bytes
@@ -248,7 +261,9 @@ func (a *FlowAggregator) addOutbound(b *secondBucket, prefix string, ip net.IP, 
 	}
 	pf.Pkts += pkts
 	pf.Bytes += bytes
-	pf.ActiveIPs[ipStr] = true
+	if len(pf.ActiveIPs) < maxBucketIPs {
+		pf.ActiveIPs[ipStr] = true
+	}
 
 	b.srcGlobalPkts += pkts
 	b.srcGlobalBytes += bytes
@@ -270,6 +285,22 @@ func (a *FlowAggregator) addOutbound(b *secondBucket, prefix string, ip net.IP, 
 // Called every 1 second by the flow mode main loop.
 func (a *FlowAggregator) Flush(nodeID, ifaceName string, upstreamRate uint32) *pb.StatsReport {
 	return a.FlushAt(time.Now().Unix()-1, nodeID, ifaceName, upstreamRate)
+}
+
+// Heartbeat reports current health and metrics without consuming any flow data.
+func (a *FlowAggregator) Heartbeat(nodeID, ifaceName string, upstreamRate uint32) *pb.StatsReport {
+	return a.HeartbeatAt(time.Now().Unix()-1, nodeID, ifaceName, upstreamRate)
+}
+
+// HeartbeatAt builds a heartbeat with the given timestamp and no counter payload.
+func (a *FlowAggregator) HeartbeatAt(ts int64, nodeID, ifaceName string, upstreamRate uint32) *pb.StatsReport {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return &pb.StatsReport{
+		NodeId: nodeID, InterfaceName: ifaceName, UpstreamSampleRate: upstreamRate,
+		LocalSampleRate: 1, Timestamp: ts,
+		Health: a.collectHealth(), SamplingMetrics: a.collectMetrics(),
+	}
 }
 
 // FlushAt pops the bucket at the given unix second and builds a StatsReport.
@@ -313,7 +344,7 @@ func (a *FlowAggregator) FlushAt(ts int64, nodeID, ifaceName string, upstreamRat
 			SrcDecoderCounts:     trimZeroes32(b.srcGlobalDecoderPkts[:]),
 			SrcDecoderByteCounts: trimZeroes64(b.srcGlobalDecoderBytes[:]),
 		},
-		Health: a.collectHealth(),
+		Health:          a.collectHealth(),
 		SamplingMetrics: a.collectMetrics(),
 	}
 
@@ -328,6 +359,7 @@ func (a *FlowAggregator) FlushAt(ts int64, nodeID, ifaceName string, upstreamRat
 		})
 	}
 	msg.TotalActiveIps = uint32(len(b.ipStats))
+	msg.IpStatsTruncated = b.ipTruncated
 
 	// Prefix stats (inbound)
 	for _, d := range b.prefixStats {
@@ -353,6 +385,7 @@ func (a *FlowAggregator) FlushAt(ts int64, nodeID, ifaceName string, upstreamRat
 		})
 	}
 	msg.TotalActiveSrcIps = uint32(len(b.srcIPStats))
+	msg.SrcIpStatsTruncated = b.srcIPTruncated
 
 	// Outbound prefix stats
 	for _, d := range b.srcPrefixStats {
@@ -441,13 +474,13 @@ type sourceStatusJSON struct {
 
 // listenerStatusJSON is per-listener metrics included in NodeHealth.Message.
 type listenerStatusJSON struct {
-	ListenAddr     string `json:"listen_addr"`
-	ProtocolMode   string `json:"protocol_mode"`
-	RecordsDecoded    int64  `json:"records_decoded"`
-	DecodeErrors   int64  `json:"decode_errors"`
-	UnknownExporter int64 `json:"unknown_exporter"`
-	TemplateMisses int64  `json:"template_misses"`
-	SourceCount    int    `json:"source_count"`
+	ListenAddr      string `json:"listen_addr"`
+	ProtocolMode    string `json:"protocol_mode"`
+	RecordsDecoded  int64  `json:"records_decoded"`
+	DecodeErrors    int64  `json:"decode_errors"`
+	UnknownExporter int64  `json:"unknown_exporter"`
+	TemplateMisses  int64  `json:"template_misses"`
+	SourceCount     int    `json:"source_count"`
 }
 
 // collectHealth builds NodeHealth with per-source and per-listener status in Message as JSON.
@@ -472,7 +505,7 @@ func (a *FlowAggregator) collectHealth() *pb.NodeHealth {
 		listeners = append(listeners, listenerStatusJSON{
 			ListenAddr:      l.ListenAddr,
 			ProtocolMode:    l.ProtocolMode,
-			RecordsDecoded:     l.RecordsDecoded.Load(),
+			RecordsDecoded:  l.RecordsDecoded.Load(),
 			DecodeErrors:    l.DecodeErrors.Load(),
 			UnknownExporter: l.UnknownExporter.Load(),
 			TemplateMisses:  l.TemplateMisses.Load(),
@@ -495,9 +528,10 @@ func (a *FlowAggregator) collectHealth() *pb.NodeHealth {
 // collectMetrics aggregates listener runtime metrics into SamplingMetrics.
 //
 // Flow mode field mapping (proto reuse):
-//   decode_error    → goflow2 decode errors (unmarshal failures)
-//   dropped_user    → unknown exporter (unregistered source IP)
-//   dropped_kernel  → template misses (NFv9/IPFIX template not yet received)
+//
+//	decode_error    → goflow2 decode errors (unmarshal failures)
+//	dropped_user    → unknown exporter (unregistered source IP)
+//	dropped_kernel  → template misses (NFv9/IPFIX template not yet received)
 func (a *FlowAggregator) collectMetrics() *pb.SamplingMetrics {
 	m := &pb.SamplingMetrics{}
 	for _, l := range a.listeners {

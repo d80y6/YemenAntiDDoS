@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -48,12 +49,62 @@ func queryTimeseries(deps Dependencies) gin.HandlerFunc {
 		if filter.From.IsZero() {
 			filter.From = time.Now().Add(-1 * time.Hour)
 		}
+		if !parseTimeseriesDstIP(c, &filter) {
+			return
+		}
 
 		points, err := deps.Store.Stats().QueryTimeseries(c, filter)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		ok(c, points)
 	}
+}
+
+// parseTimeseriesDstIP applies the bounded raw-table query contract only when
+// dst_ip is supplied, preserving the existing prefix query defaults.
+func parseTimeseriesDstIP(c *gin.Context, filter *store.TimeseriesFilter) bool {
+	raw, supplied := c.Request.URL.Query()["dst_ip"]
+	if !supplied {
+		return true
+	}
+	value := ""
+	if len(raw) > 0 {
+		value = raw[0]
+	}
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		prefix, prefixErr := netip.ParsePrefix(value)
+		if prefixErr != nil || prefix.Bits() != prefix.Addr().BitLen() {
+			errResponse(c, http.StatusBadRequest, "invalid dst_ip")
+			return false
+		}
+		addr = prefix.Addr()
+	}
+	if addr.Zone() != "" {
+		errResponse(c, http.StatusBadRequest, "invalid dst_ip")
+		return false
+	}
+	if filter.Prefix != "" {
+		errResponse(c, http.StatusBadRequest, "dst_ip and prefix are mutually exclusive")
+		return false
+	}
+	if filter.Resolution != "5s" && filter.Resolution != "5min" {
+		errResponse(c, http.StatusBadRequest, "dst_ip resolution must be '5s' or '5min'")
+		return false
+	}
+	if filter.Direction == "both" {
+		errResponse(c, http.StatusBadRequest, "dst_ip direction must be 'receives' or 'sends'")
+		return false
+	}
+	if filter.To.IsZero() {
+		filter.To = time.Now()
+	}
+	if filter.To.Sub(filter.From) > 6*time.Hour {
+		errResponse(c, http.StatusBadRequest, "dst_ip queries are limited to 6h")
+		return false
+	}
+	filter.DstIP = addr.String()
+	return true
 }

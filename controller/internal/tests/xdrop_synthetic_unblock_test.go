@@ -68,7 +68,8 @@ func TestCloseSyntheticXDropRuleLocal_MarksWithdrawnWithoutHTTP(t *testing.T) {
 	// closed out WITHOUT a real DELETE being issued.
 	const marker = "synthetic failed-create rule; no xDrop DELETE needed"
 	found := false
-	for _, l := range ms.actionExecLog.logs {
+	logs := ms.actionExecLog.snapshotLogs()
+	for _, l := range logs {
 		if l.AttackID == 777 && l.ExternalRuleID == ruleID &&
 			l.Status == "success" && l.ErrorMessage == marker {
 			found = true
@@ -76,7 +77,6 @@ func TestCloseSyntheticXDropRuleLocal_MarksWithdrawnWithoutHTTP(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected audit log with marker %q for rule %s; got %+v", marker, ruleID, ms.actionExecLog.logs)
+		t.Errorf("expected audit log with marker %q for rule %s; got %+v", marker, ruleID, logs)
 	}
 }
-

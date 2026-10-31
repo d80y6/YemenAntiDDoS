@@ -20,7 +20,7 @@ package action
 // Scope: this bootstrap only handles orphan detection. The roadmap's phase-C
 // "attack record but FRR missing → re-announce" compensation is a separate
 // path covered by RecoverBGPRoutes (which re-injects vtysh commands for
-// active attacks' BGP success logs). A unified reconciliation that also
+// active and delayed announcement rows). A unified reconciliation that also
 // re-creates bgp_announcement rows from historical logs is out of scope for
 // v1.2 — deferred to v1.2.1 if needed.
 

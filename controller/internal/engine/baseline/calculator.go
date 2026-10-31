@@ -110,7 +110,7 @@ func (c *Calculator) Recompute() {
 	}
 }
 
-// Get returns the baseline for a specific (nodeID, prefix) pair (nil if not computed).
+// Get is a test entry point returning the baseline for a (nodeID, prefix) pair (nil if not computed).
 func (c *Calculator) Get(nodeID, prefix string) *Baseline {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -134,25 +134,3 @@ func (c *Calculator) GetForPrefix(prefix string) *Baseline {
 	}
 	return best
 }
-
-// IsExceeded checks if the current value exceeds the dynamic threshold for a (nodeID, prefix).
-// Returns false during cold start (not active).
-func (c *Calculator) IsExceeded(nodeID, prefix string, currentPPS, currentBPS int64) (exceeded bool, reason string) {
-	c.mu.RLock()
-	bl := c.baselines[baselineKey(nodeID, prefix)]
-	c.mu.RUnlock()
-
-	if bl == nil || !bl.Active {
-		return false, ""
-	}
-
-	if currentPPS > bl.ThreshPPS {
-		return true, "dynamic_pps_exceeded"
-	}
-	if currentBPS > bl.ThreshBPS {
-		return true, "dynamic_bps_exceeded"
-	}
-	return false, ""
-}
-
-

@@ -4,6 +4,8 @@ package classifier
 import (
 	"container/list"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -160,14 +162,6 @@ func (c *Classifier) Classify(dstIP net.IP) *engine.ClassificationResult {
 	return nil
 }
 
-// Reset clears all accumulated samples.
-func (c *Classifier) Reset() {
-	c.mu.Lock()
-	c.samples = make(map[string]*sampleAcc)
-	c.sampleOrder.Init()
-	c.mu.Unlock()
-}
-
 func (c *Classifier) newAccumulator(dstIP string) *sampleAcc {
 	if len(c.samples) < maxAccumulators {
 		acc := &sampleAcc{srcPorts: make(map[uint32]int)}
@@ -212,22 +206,9 @@ func portReason(port uint32, count, total int) string {
 }
 
 func portName(port uint32) string {
-	switch port {
-	case 53:
-		return "53_dns"
-	case 123:
-		return "123_ntp"
-	case 11211:
-		return "11211_memcached"
-	case 1900:
-		return "1900_ssdp"
-	case 389:
-		return "389_cldap"
-	case 161:
-		return "161_snmp"
-	case 19:
-		return "19_chargen"
-	default:
+	attackType, ok := reflectionPorts[port]
+	if !ok {
 		return "unknown"
 	}
+	return strconv.FormatUint(uint64(port), 10) + "_" + strings.TrimSuffix(attackType, "_reflection")
 }

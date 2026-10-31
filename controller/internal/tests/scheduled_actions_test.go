@@ -161,17 +161,18 @@ func TestScheduledActions_CancelAllForAttack(t *testing.T) {
 func TestScheduledActions_Recovery_OverdueExecutesImmediately(t *testing.T) {
 	var deletes int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertLegacyV3Delete(t, r)
 		if r.Method == http.MethodDelete {
 			atomic.AddInt32(&deletes, 1)
 		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	ms := NewMockStore()
 	// Seed an xDrop connector that points to our test server
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 5, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	// Seed an overdue pending row (scheduled_for already elapsed)
 	overdueRow := store.ScheduledAction{
@@ -227,16 +228,17 @@ func TestScheduledActions_Recovery_OverdueExecutesImmediately(t *testing.T) {
 func TestScheduledActions_Recovery_FutureArmsTimer(t *testing.T) {
 	var deletes int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertLegacyV3Delete(t, r)
 		if r.Method == http.MethodDelete {
 			atomic.AddInt32(&deletes, 1)
 		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	ms := NewMockStore()
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 5, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	// Schedule 150ms in the future — tight enough for tests, long enough to
 	// distinguish "deleted immediately" (a bug) from "deleted after timer".
@@ -274,20 +276,17 @@ func TestScheduledActions_Recovery_FutureArmsTimer(t *testing.T) {
 	t.Error("future-scheduled recovery did not fire after timer elapsed")
 }
 
-// PR-3 P1 regression: recovery path must write per-rule action_execution_log
-// so Mitigations UI / timeline correctly reflect the recovered task's outcome.
-// Without this log, buildActiveActions() sees the original `scheduled` row
-// but no matching `on_expired success`, keeping the artifact displayed as
-// pending/delayed forever even after recovery succeeded.
+// Recovery-path action_execution_log entries for individual xDrop rules.
 func TestScheduledActions_Recovery_WritesAuditLog_XDrop(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		assertLegacyV3Delete(t, r)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	ms := NewMockStore()
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 5, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	overdue := store.ScheduledAction{
 		ActionType:     "xdrop_unblock",
@@ -328,13 +327,14 @@ func TestScheduledActions_Recovery_WritesAuditLog_XDrop(t *testing.T) {
 // Mitigations UI can show the failure state instead of stale pending/delayed.
 func TestScheduledActions_Recovery_WritesAuditLog_XDropFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertLegacyV3Delete(t, r)
 		w.WriteHeader(http.StatusInternalServerError) // force failure
 	}))
 	defer srv.Close()
 
 	ms := NewMockStore()
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 5, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	overdue := store.ScheduledAction{
 		ActionType:     "xdrop_unblock",
@@ -371,6 +371,7 @@ func TestScheduledActions_Recovery_WritesAuditLog_XDropFailure(t *testing.T) {
 func TestScheduledActions_Recovery_CancelDuringWait(t *testing.T) {
 	var deletes int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertLegacyV3Delete(t, r)
 		if r.Method == http.MethodDelete {
 			atomic.AddInt32(&deletes, 1)
 		}
@@ -380,7 +381,7 @@ func TestScheduledActions_Recovery_CancelDuringWait(t *testing.T) {
 
 	ms := NewMockStore()
 	ms.xdropConnectors.connectors = append(ms.xdropConnectors.connectors, store.XDropConnector{
-		ID: 5, Name: "test-xdrop", APIURL: srv.URL, Enabled: true,
+		ID: 5, Name: "test-xdrop", APIURL: srv.URL, APIKey: legacyV3Key, Enabled: true,
 	})
 	futureRow := store.ScheduledAction{
 		ActionType:     "xdrop_unblock",

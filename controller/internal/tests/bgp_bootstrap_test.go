@@ -232,7 +232,7 @@ func TestUpsertOrphan_WithdrawnRow_UpgradesToOrphan(t *testing.T) {
 	if _, err := ms.BGPAnnouncements().Detach(ctx, 1, "192.0.2.0/24", "BLACKHOLE", 1); err != nil {
 		t.Fatalf("Detach: %v", err)
 	}
-	if err := ms.BGPAnnouncements().MarkWithdrawn(ctx, res.AnnouncementID); err != nil {
+	if err := ms.BGPAnnouncements().MarkWithdrawn(ctx, res.AnnouncementID, dao5bCurrentGen(t, ms.BGPAnnouncements(), res.AnnouncementID)); err != nil {
 		t.Fatalf("MarkWithdrawn: %v", err)
 	}
 

@@ -74,29 +74,48 @@ func TestCaggV7_IncludesExtraDecoderAggregatesWithCoalesce(t *testing.T) {
 		}
 	}
 
-	// v7: 9 decoders × 2 (pps + bps) aggregate columns
-	extraDecoders := []string{"tcp_ack", "tcp_rst", "tcp_fin", "gre", "esp", "igmp", "ip_other", "bad_fragment", "invalid"}
+	// K8: generated definition covers every registered extra decoder and unit.
+	generated := caggExtraColumns(extraDecoderNames(), "pps") + ", " + caggExtraColumns(extraDecoderNames(), "bps")
+	extraDecoders := extraDecoderNames()
 	for _, d := range extraDecoders {
 		wantPPS := "avg_" + d + "_pps"
 		wantBPS := "avg_" + d + "_bps"
-		if !strings.Contains(content, wantPPS) {
+		if !strings.Contains(generated, wantPPS) {
 			t.Errorf("CAGG v7 missing %s aggregate column", wantPPS)
 		}
-		if !strings.Contains(content, wantBPS) {
+		if !strings.Contains(generated, wantBPS) {
 			t.Errorf("CAGG v7 missing %s aggregate column", wantBPS)
 		}
 	}
 
 	// v7 audit fix: each JSONB extraction must be inside COALESCE so missing keys
-	// count as 0 in per-bucket averages. Spot-check 3 decoders (PPS + BPS).
-	for _, d := range []string{"tcp_ack", "gre", "bad_fragment"} {
+	// count as 0 in per-bucket averages. Check every decoder (PPS + BPS).
+	for _, d := range extraDecoders {
 		wantPPS := "COALESCE((extra_decoder_pps->>'" + d + "')"
 		wantBPS := "COALESCE((extra_decoder_bps->>'" + d + "')"
-		if !strings.Contains(content, wantPPS) {
+		if !strings.Contains(generated, wantPPS) {
 			t.Errorf("CAGG v7 must wrap %s PPS extraction in COALESCE (audit fix): missing %q", d, wantPPS)
 		}
-		if !strings.Contains(content, wantBPS) {
+		if !strings.Contains(generated, wantBPS) {
 			t.Errorf("CAGG v7 must wrap %s BPS extraction in COALESCE (audit fix): missing %q", d, wantBPS)
+		}
+	}
+
+	// Exact alias set, including multiplicity, must match the probe expectation.
+	aliases := map[string]int{}
+	fields := strings.Fields(generated)
+	for i, field := range fields {
+		if field == "AS" && i+1 < len(fields) {
+			aliases[strings.TrimSuffix(fields[i+1], ",")]++
+		}
+	}
+	expected := caggExtraColumnNames(extraDecoderNames())
+	if len(aliases) != len(expected) {
+		t.Errorf("generated alias count=%d, expected=%d", len(aliases), len(expected))
+	}
+	for _, name := range expected {
+		if aliases[name] != 1 {
+			t.Errorf("generated alias %s count=%d, want=1", name, aliases[name])
 		}
 	}
 
@@ -114,9 +133,9 @@ func TestCaggV7_IncludesExtraDecoderAggregatesWithCoalesce(t *testing.T) {
 // are collected into the map, keyed by decoder name.
 func TestBuildExtraDecoderPPS_OnlyExtras(t *testing.T) {
 	var input [decoder.MaxDecoders]int32
-	input[decoder.TCP] = 100     // index 0 — standard, must NOT appear
-	input[decoder.UDP] = 200     // index 2 — standard, must NOT appear
-	input[decoder.Frag] = 300    // index 4 — standard, must NOT appear
+	input[decoder.TCP] = 100  // index 0 — standard, must NOT appear
+	input[decoder.UDP] = 200  // index 2 — standard, must NOT appear
+	input[decoder.Frag] = 300 // index 4 — standard, must NOT appear
 	// Fill extras (this test is robust against new decoder additions as long as
 	// their indices are >= StandardCount and they register a name).
 	// Use raw indices directly to avoid coupling to specific v1.3 decoder identities.

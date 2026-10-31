@@ -174,7 +174,6 @@ func TestBGPAutoAFI_IPv6SubnetPrefix(t *testing.T) {
 // TestBGPAutoAFI_HasManualOverride_IPv6 verifies HasManualOverride works with IPv6 rule IDs.
 func TestBGPAutoAFI_HasManualOverride_IPv6(t *testing.T) {
 	ms := NewMockStore()
-	eng := action.NewEngine(ms, "auto")
 
 	// v1.2 PR-2: seed the index table (authoritative for HasManualOverride)
 	if _, err := ms.manualOverrides.Create(context.Background(), &store.ActionManualOverride{
@@ -187,10 +186,10 @@ func TestBGPAutoAFI_HasManualOverride_IPv6(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if !eng.HasManualOverride(ctx, 10, 70, 1, "2001:db8::1/128|RTBH") {
+	if !dao4LookupOverride(t, ms, ctx, 10, 70, 1, "2001:db8::1/128|RTBH") {
 		t.Error("HasManualOverride should return true for IPv6 rule")
 	}
-	if eng.HasManualOverride(ctx, 10, 70, 1, "10.0.0.1/32|RTBH") {
+	if dao4LookupOverride(t, ms, ctx, 10, 70, 1, "10.0.0.1/32|RTBH") {
 		t.Error("HasManualOverride should return false for non-matching IPv4 rule")
 	}
 }
@@ -213,7 +212,7 @@ func TestBGPAutoAFI_LegacyIPv6RuleID(t *testing.T) {
 	ms.attacks.attacks = append(ms.attacks.attacks, store.Attack{
 		ID: 100, DstIP: "2001:db8::1", StartedAt: now.Add(-10 * time.Minute), EndedAt: &ended,
 	})
-	ms.attacks.expiredAttacks = append(ms.attacks.expiredAttacks, ms.attacks.attacks[0])
+	ms.attacks.appendExpiredAttacks(ms.attacks.snapshotAttacks()[0])
 
 	// Legacy format: "2001:db8::1/128:RTBH" (colon before route_map)
 	ms.actionExecLog.logs = append(ms.actionExecLog.logs, store.ActionExecutionLog{
@@ -251,8 +250,8 @@ func TestBGPAutoAFI_ActiveActionsParseIPv6(t *testing.T) {
 	ar, _ := ms.bgpAnnouncements.Attach(context.Background(), store.BGPAttachParams{
 		AttackID: 200, ActionID: ip(50), Prefix: "2001:db8::99/128", RouteMap: "RTBH", ConnectorID: connID,
 	})
-	ms.bgpAnnouncements.MarkAnnounced(context.Background(), ar.AnnouncementID)
-	ms.bgpConnectors.connectors = append(ms.bgpConnectors.connectors, store.BGPConnector{
+	ms.bgpAnnouncements.MarkAnnounced(context.Background(), ar.AnnouncementID, dao5bCurrentGen(t, ms.bgpAnnouncements, ar.AnnouncementID))
+	ms.bgpConnectors.appendConnectors(store.BGPConnector{
 		ID: connID, Name: "test-bgp", Enabled: true,
 	})
 

@@ -1,27 +1,39 @@
 # xSight Controller configuration
+#
+# Unknown or misspelled keys are silently ignored, so check spelling carefully.
 
 listen:
   grpc: ":50051"           # Node gRPC ingestion
   http: ":8080"            # Web UI + REST API
 
 database:
-  driver: "postgres"       # postgres | sqlite
-  # PostgreSQL (recommended for production)
+  driver: "postgres"       # only postgres is supported (PostgreSQL 15+ with TimescaleDB)
   dsn: "postgres://xsight:YOUR_DB_PASSWORD@localhost:5432/xsight?sslmode=disable"
-  # SQLite (lightweight alternative)
-  # driver: "sqlite"
-  # dsn: "./xsight.db"
-
-log:
-  level: "info"            # debug | info | warn | error
 
 auth:
-  api_key: "CHANGE_ME"    # REST API key (Header: X-API-Key). Generate with: openssl rand -hex 32
+  api_key: "CHANGE_ME"    # must be changed, the controller refuses to start with this value; REST API key (Header: X-API-Key). Generate with: openssl rand -hex 32
+                           # The JWT signing key is derived from it: changing it signs out every Web UI session.
+  # Password of the first "admin" account. Required while the user table is empty (the controller
+  # refuses to start without it) and for rotating a legacy default admin password; remove after use.
+  # Set a unique password of 8 to 72 bytes (not "admin") before first startup.
+  initial_admin_password: ""
+
+action_engine:
+  # observe (default): xDrop actions are logged as skipped (skip_reason=mode_observe) and no xDrop rule is created.
+  # auto: xDrop rules are actually created. BGP, webhook and shell actions run in both modes.
+  mode: "observe"
+  # Narrow permitted XDrop fields at this packet share (1–100) and sample count (0 disables the sample check).
+  xdrop_narrow_pct: 80
+  xdrop_min_sample_packets: 1000
+  # Expand permitted ports to this cumulative packet share (1–100), up to this many rules (1–8; 1 disables top-K).
+  xdrop_topk_pct: 80
+  xdrop_topk_max: 8
 
 detection:
-  hard_threshold_confirm_seconds: 3     # consecutive seconds before declaring attack
-  dynamic_threshold_confirm_seconds: 5
+  hard_threshold_confirm_seconds: 3     # consecutive per-second breaching data points to confirm (one missing second tolerated)
+  dynamic_threshold_confirm_seconds: 5  # same rule for dynamic-baseline breaches
   expiry_interval_seconds: 300          # seconds of no breach before attack expires
+  # manual_expire_hold_seconds: 300     # after a manual expire, hold new alerts for the same target/decoder/direction (0 = no hold, max 86400); omitted = expiry_interval_seconds clamped to 0–86400
   expiry_function: "static"             # "static" | "dynamic" — dynamic scales expiry by attack duration
   expiry_scale_base_seconds: 300        # attack duration for 1x scale (dynamic only)
   expiry_max_scale: 4.0                 # max multiplier (dynamic only)
@@ -31,19 +43,19 @@ detection:
 # Ring buffer — in-memory realtime detection store
 # Ring only serves realtime threshold detection (seconds). Long history uses ts_stats.
 ring:
-  max_points_per_ip: 120     # per-IP history depth (10-600, default 120 = 2min)
+  max_points_per_ip: 120     # per-IP history depth (10-600, default 120 = 2min); must be >= both confirm_seconds values
   max_ips_per_prefix: 10000  # max tracked IPs per prefix (100-50000)
-  max_global_keys: 100000    # total tracked IPs globally (1000-500000)
+  max_global_keys: 100000    # total tracked IPs globally (1000-500000); when full, a new IP replaces a key idle > 5 s, else the lightest key only if heavier, else it is not tracked; keys of active/confirming attacks are skipped, but if every key belongs to one, the oldest key is evicted
 
 # Data retention — automatic cleanup of old data (0 = keep forever)
-# ts_stats compression/retention requires TimescaleDB; plain PostgreSQL uses cleaner.go
+# ts_stats compression/retention requires TimescaleDB; without it the built-in cleaner deletes old rows by day
 retention:
-  ts_stats_days: 1           # raw ts_stats: drop chunks older than N days (high volume, 5s granularity — keep short, query the cagg for older data)
-  ts_stats_compress_days: 1  # raw ts_stats: compress chunks older than N days (saves ~90% disk, TimescaleDB only)
-  ts_stats_cagg_days: 90     # aggregated ts_stats_5min: drop older than N days (5min granularity, low volume)
+  ts_stats_days: 7           # raw ts_stats: drop chunks older than N days (default 7; high volume, 5s granularity — lower it to save disk, older data is served from the 5-min aggregate)
+  ts_stats_compress_days: 1  # raw ts_stats: compress chunks older than N days (saves ~90% disk, TimescaleDB only); 0 = no compression policy
+  ts_stats_cagg_days: 90     # aggregated ts_stats_5min: chunk size auto N/7 days (min 1); a chunk is only dropped once its whole span ages out; existing chunks keep their size until they age out; 0 = keep forever, chunk size untouched
   ts_stats_chunk_days: 0     # chunk size in days (0 = auto: retention/7, min 1; clamped to <= ts_stats_days). Smaller = retention trims tighter. The 7-day default makes short retention ineffective — a chunk is only dropped once its whole span ages out
-  flow_logs_days: 1          # flow_logs: drop chunks older than N days (raw flow records are large — keep short)
-  flow_logs_compress_days: 1 # flow_logs: compress chunks older than N days (saves ~90% disk)
+  flow_logs_days: 7          # flow_logs: drop chunks older than N days (default 7; raw flow records are large — lower it to save disk); 0 = keep forever
+  flow_logs_compress_days: 1 # flow_logs: compress chunks older than N days (saves ~90% disk); 0 = no compression policy
   flow_logs_chunk_days: 0    # chunk size in days (0 = auto: retention/7, min 1; clamped to <= flow_logs_days)
   attacks_days: 90           # ended attack records (active attacks are never deleted)
   audit_log_days: 180        # configuration change audit trail

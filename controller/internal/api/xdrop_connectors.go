@@ -1,13 +1,16 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/littlewolf9527/xsight/controller/internal/action"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
 
@@ -51,7 +54,7 @@ func listXDropConnectors(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		connectors, err := deps.Store.XDropConnectors().List(c)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		views := make([]xDropConnectorView, len(connectors))
@@ -99,7 +102,7 @@ func createXDropConnector(deps Dependencies) gin.HandlerFunc {
 		}
 		id, err := deps.Store.XDropConnectors().Create(c, conn)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		conn.ID = id
@@ -130,35 +133,52 @@ func updateXDropConnector(deps Dependencies) gin.HandlerFunc {
 		}
 
 		var req struct {
-			Name      string `json:"name"`
-			APIURL    string `json:"api_url"`
-			APIKey    string `json:"api_key"`
-			TimeoutMs int    `json:"timeout_ms"`
-			Enabled   bool   `json:"enabled"`
+			Name      *string `json:"name"`
+			APIURL    *string `json:"api_url"`
+			APIKey    string  `json:"api_key"`
+			TimeoutMs *int    `json:"timeout_ms"`
+			Enabled   *bool   `json:"enabled"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
 			return
 		}
 
-		conn := &store.XDropConnector{
-			ID:        id,
-			Name:      req.Name,
-			APIURL:    strings.TrimRight(req.APIURL, "/"),
-			APIKey:    req.APIKey,
-			TimeoutMs: req.TimeoutMs,
-			Enabled:   req.Enabled,
+		conn := *old
+		if req.Name != nil {
+			conn.Name = *req.Name
+			if conn.Name == "" {
+				errResponse(c, http.StatusBadRequest, "name is required")
+				return
+			}
 		}
-		// If no new API key provided, keep the old one
-		if conn.APIKey == "" {
-			conn.APIKey = old.APIKey
+		if req.APIURL != nil {
+			conn.APIURL = strings.TrimRight(*req.APIURL, "/")
+			if conn.APIURL == "" {
+				errResponse(c, http.StatusBadRequest, "api_url is required")
+				return
+			}
 		}
-
-		if err := deps.Store.XDropConnectors().Update(c, conn); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+		if req.TimeoutMs != nil {
+			conn.TimeoutMs = *req.TimeoutMs
+		}
+		if req.Enabled != nil {
+			conn.Enabled = *req.Enabled
+		}
+		if conn.APIURL != old.APIURL && req.APIKey == "" {
+			errResponse(c, http.StatusBadRequest, "api_url changed: api_key must be re-entered")
 			return
 		}
-		publishAfterChange(c, deps, "xdrop_connector", strconv.Itoa(id), "update", makeDiff(toXDropView(old), toXDropView(conn)))
+		// If no new API key provided, keep the old one
+		if req.APIKey != "" {
+			conn.APIKey = req.APIKey
+		}
+
+		if err := deps.Store.XDropConnectors().Update(c, &conn); err != nil {
+			dbError(c, "", err)
+			return
+		}
+		publishAfterChange(c, deps, "xdrop_connector", strconv.Itoa(id), "update", makeDiff(toXDropView(old), toXDropView(&conn)))
 		ok(c, gin.H{"ok": true})
 	}
 }
@@ -169,7 +189,7 @@ func deleteXDropConnector(deps Dependencies) gin.HandlerFunc {
 		// Check if any action targets this connector (fail closed on error)
 		count, err := deps.Store.XDropTargets().CountByConnector(c, id)
 		if err != nil {
-			errResponse(c, http.StatusInternalServerError, "failed to check connector usage: "+err.Error())
+			dbError(c, "failed to check connector usage: ", err)
 			return
 		}
 		if count > 0 {
@@ -177,9 +197,18 @@ func deleteXDropConnector(deps Dependencies) gin.HandlerFunc {
 				fmt.Sprintf("xDrop connector in use by %d action(s)", count))
 			return
 		}
+		live, err := deps.Store.XDropActiveRules().CountLiveByConnector(c, id)
+		if err != nil {
+			errResponse(c, http.StatusInternalServerError, "failed to check xDrop connector usage")
+			return
+		}
+		if live > 0 {
+			errResponse(c, http.StatusConflict, "xDrop connector still has active rules")
+			return
+		}
 		old, _ := deps.Store.XDropConnectors().Get(c, id)
 		if err := deps.Store.XDropConnectors().Delete(c, id); err != nil {
-			errResponse(c, http.StatusInternalServerError, err.Error())
+			dbError(c, "", err)
 			return
 		}
 		var diff interface{}
@@ -200,16 +229,16 @@ func testXDropConnector(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 
-		// Test by calling GET {api_url}/health on the xDrop endpoint.
+		// Test the v3 machine credential via GET {api_url}/auth/me.
 		// api_url is the versioned API base (e.g. http://host:8000/api/v1),
 		// consistent with runtime execution which appends /rules.
-		healthURL := strings.TrimRight(conn.APIURL, "/") + "/health"
+		healthURL := strings.TrimRight(conn.APIURL, "/") + "/auth/me"
 		req, err := http.NewRequestWithContext(c, http.MethodGet, healthURL, nil)
 		if err != nil {
 			errResponse(c, http.StatusBadRequest, "invalid connector URL: "+err.Error())
 			return
 		}
-		req.Header.Set("X-API-Key", conn.APIKey)
+		action.SetXDropAuth(req, conn.APIKey)
 
 		timeout := time.Duration(conn.TimeoutMs) * time.Millisecond
 		if timeout == 0 {
@@ -224,9 +253,17 @@ func testXDropConnector(deps Dependencies) gin.HandlerFunc {
 		}
 		defer resp.Body.Close()
 
-		ok(c, gin.H{
-			"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
-			"status_code": resp.StatusCode,
-		})
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		var identity struct{ Kind, Name string }
+		decodeErr := json.Unmarshal(body, &identity)
+		success := resp.StatusCode == http.StatusOK && readErr == nil && decodeErr == nil && identity.Kind == "machine"
+		result := gin.H{"success": success, "status_code": resp.StatusCode, "kind": identity.Kind, "name": identity.Name}
+		if !success {
+			result["error"] = "invalid xdrop machine auth response"
+			if resp.StatusCode != http.StatusOK {
+				result["error"] = action.XDropHTTPError(resp.StatusCode, body)
+			}
+		}
+		ok(c, result)
 	}
 }

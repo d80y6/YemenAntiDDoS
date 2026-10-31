@@ -10,9 +10,12 @@ import (
 	"sync/atomic"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/littlewolf9527/xsight/controller/internal/metrics"
 	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
 	"github.com/littlewolf9527/xsight/controller/internal/store"
 )
@@ -36,6 +39,7 @@ type GRPCHandler struct {
 	// Peer → nodeID mapping (set during Handshake, used by ControlStream)
 	peerNodes   map[string]string // peer address → nodeID
 	peerNodesMu sync.RWMutex
+	handshaked  map[string]struct{} // Successful IDs retained for this process lifetime.
 
 	// Metrics
 	StatsReceived   atomic.Uint64
@@ -60,6 +64,7 @@ func NewGRPCHandler(cfg GRPCHandlerConfig) *GRPCHandler {
 		onStats:    cfg.OnStats,
 		onCritical: cfg.OnCritical,
 		peerNodes:  make(map[string]string),
+		handshaked: make(map[string]struct{}),
 	}
 }
 
@@ -140,6 +145,10 @@ func (h *GRPCHandler) Handshake(ctx context.Context, req *pb.NodeHandshake) (*pb
 	log.Printf("grpc: handshake accepted: node=%s prefixes=%d delivery_version=%d",
 		req.NodeId, len(watchConfig.Prefixes), version)
 
+	h.peerNodesMu.Lock()
+	h.handshaked[req.NodeId] = struct{}{}
+	h.peerNodesMu.Unlock()
+	h.nodeState.NoteHandshake(req.NodeId, req.Interfaces)
 	return &pb.HandshakeResponse{
 		Accepted:               true,
 		WatchConfig:            watchConfig,
@@ -159,7 +168,7 @@ func (h *GRPCHandler) buildWatchConfig(ctx context.Context) (*pb.WatchConfig, er
 			continue
 		}
 		// 0.0.0.0/0 is a virtual global prefix — do NOT push to BPF trie.
-		if p.Prefix == "0.0.0.0/0" {
+		if p.Prefix == "0.0.0.0/0" || p.Prefix == "::/0" {
 			continue
 		}
 		_, ipnet, err := net.ParseCIDR(p.Prefix)
@@ -176,7 +185,10 @@ func (h *GRPCHandler) buildWatchConfig(ctx context.Context) (*pb.WatchConfig, er
 	}
 
 	// Load aggregated hard thresholds from DB: lowest per-IP pps/bps
-	allThresholds, _ := h.store.Thresholds().List(ctx)
+	allThresholds, err := h.store.Thresholds().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load thresholds: %w", err)
+	}
 	var minPPS, minBPS int64
 	for _, th := range allThresholds {
 		if !th.Enabled || th.Comparison != "over" || th.Domain != "internal_ip" {
@@ -244,22 +256,61 @@ func (h *GRPCHandler) appendFlowConfig(ctx context.Context, wc *pb.WatchConfig, 
 
 // --- 1.3 StatsStream ---
 
+func (h *GRPCHandler) requireHandshake(nodeID, stream string) error {
+	h.peerNodesMu.RLock()
+	_, ok := h.handshaked[nodeID]
+	h.peerNodesMu.RUnlock()
+	if ok {
+		return nil
+	}
+	metrics.GRPCIdentityRejects.WithLabelValues(stream).Inc()
+	log.Printf("WARN grpc: %s rejected node=%s: handshake required", stream, nodeID)
+	return status.Error(codes.Unauthenticated, "handshake required")
+}
+
 func (h *GRPCHandler) StatsStream(stream grpc.ClientStreamingServer[pb.StatsReport, emptypb.Empty]) error {
 	// Decouple Recv from processing: Recv into a bounded queue,
 	// process in a separate goroutine. This prevents slow onStats
 	// (e.g. ring lock contention) from blocking gRPC stream Recv.
 	const queueSize = 16
 	queue := make(chan *pb.StatsReport, queueSize)
+	hbQueue := make(chan *pb.StatsReport, 1)
 	done := make(chan error, 1)
+	handle := func(msg *pb.StatsReport) {
+		if h.onStats != nil {
+			h.onStats(msg.NodeId, msg)
+		}
+	}
 
 	// Processing goroutine
 	go func() {
-		for msg := range queue {
-			if h.onStats != nil {
-				h.onStats(msg.NodeId, msg)
+		defer func() { done <- nil }()
+	serve:
+		for {
+			select { // real reports first
+			case msg, ok := <-queue:
+				if !ok {
+					break serve
+				}
+				handle(msg)
+				continue
+			default:
+			}
+			select {
+			case msg, ok := <-queue:
+				if !ok {
+					break serve
+				}
+				handle(msg)
+			case hb := <-hbQueue:
+				handle(hb)
 			}
 		}
-		done <- nil
+		select {
+		case hb := <-hbQueue:
+			handle(hb)
+		default:
+		}
 	}()
 
 	// Recv loop — fast, only touches lightweight fields
@@ -276,6 +327,10 @@ func (h *GRPCHandler) StatsStream(stream grpc.ClientStreamingServer[pb.StatsRepo
 			break
 		}
 
+		if err := h.requireHandshake(msg.NodeId, "stats"); err != nil {
+			recvErr = err
+			break
+		}
 		h.StatsReceived.Add(1)
 
 		if msg.GapSeconds > 0 {
@@ -286,6 +341,19 @@ func (h *GRPCHandler) StatsStream(stream grpc.ClientStreamingServer[pb.StatsRepo
 				msg.NodeId, msg.TotalActiveIps, len(msg.IpStats))
 		}
 
+		if msg.GlobalStats == nil && len(msg.IpStats) == 0 && len(msg.PrefixStats) == 0 &&
+			len(msg.SrcIpStats) == 0 && len(msg.SrcPrefixStats) == 0 && len(msg.TopFlows) == 0 {
+			select {
+			case hbQueue <- msg:
+			default: // A heartbeat is already pending.
+				h.StatsDropped.Add(1)
+				log.Printf("grpc: stats heartbeat pending for node=%s, dropped heartbeat (total_dropped=%d)",
+					msg.NodeId, h.StatsDropped.Load())
+			}
+			h.nodeState.TouchStats(msg.NodeId) // A dropped heartbeat still proves liveness.
+			h.nodeState.NoteCapture(msg.NodeId, msg.InterfaceName, msg.UpstreamSampleRate)
+			continue
+		}
 		select {
 		case queue <- msg:
 		default:
@@ -301,6 +369,7 @@ func (h *GRPCHandler) StatsStream(stream grpc.ClientStreamingServer[pb.StatsRepo
 		}
 		// Always touch online status — msg is enqueued in both paths
 		h.nodeState.TouchStats(msg.NodeId)
+		h.nodeState.NoteCapture(msg.NodeId, msg.InterfaceName, msg.UpstreamSampleRate)
 	}
 
 	close(queue)
@@ -320,6 +389,9 @@ func (h *GRPCHandler) SampleStream(stream grpc.ClientStreamingServer[pb.SampleBa
 			return err
 		}
 
+		if err := h.requireHandshake(msg.NodeId, "sample"); err != nil {
+			return err
+		}
 		h.SamplesReceived.Add(uint64(len(msg.Samples)))
 
 		if h.samplePool != nil {
@@ -340,6 +412,9 @@ func (h *GRPCHandler) CriticalEventStream(stream grpc.ClientStreamingServer[pb.C
 			return err
 		}
 
+		if err := h.requireHandshake(msg.NodeId, "critical"); err != nil {
+			return err
+		}
 		h.EventsReceived.Add(1)
 		log.Printf("grpc: critical event node=%s type=%s dst=%v",
 			msg.NodeId, msg.EventType, net.IP(msg.DstIp))
@@ -368,8 +443,11 @@ func (h *GRPCHandler) ControlStream(stream grpc.BidiStreamingServer[pb.ControlMe
 
 	defer func() {
 		if nodeID != "" {
-			h.nodeState.ClearControlStream(nodeID)
-			log.Printf("grpc: control stream closed for node=%s", nodeID)
+			if h.nodeState.ClearControlStream(nodeID, stream) {
+				log.Printf("grpc: control stream closed for node=%s", nodeID)
+			} else {
+				log.Printf("grpc: control stream closed for node=%s (superseded by a newer stream; state kept)", nodeID)
+			}
 		}
 		// Clean up peer mapping
 		if addr != "" {
@@ -405,6 +483,9 @@ func (h *GRPCHandler) ControlStream(stream grpc.BidiStreamingServer[pb.ControlMe
 				}
 			} else {
 				log.Printf("grpc: node %s config apply failed: %s", nodeID, ack.ErrorMessage)
+				if err := h.store.Nodes().MarkConfigFailed(ctx, nodeID, int64(ack.DeliveryVersionApplied)); err != nil {
+					log.Printf("grpc: mark config failed for node %s: %v", nodeID, err)
+				}
 			}
 		}
 	}

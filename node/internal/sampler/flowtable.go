@@ -2,7 +2,6 @@
 //
 // Each tick (1 second), the table is drained (top-N returned) and reset.
 // The flow table is thread-safe and supports a max entry limit with LRU eviction.
-//
 package sampler
 
 import (

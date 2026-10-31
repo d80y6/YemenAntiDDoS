@@ -17,6 +17,8 @@ import (
 // testJWTSecret is the shared JWT signing secret used across all test files.
 const testJWTSecret = "test-secret-key"
 
+var testUserUpdatedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // makeTestToken generates a valid HS256 JWT signed with testJWTSecret.
 // Used to add an Authorization header to test HTTP requests.
 func makeTestToken(t *testing.T) string {
@@ -25,12 +27,14 @@ func makeTestToken(t *testing.T) string {
 		UserID   int    `json:"user_id"`
 		Username string `json:"username"`
 		Role     string `json:"role"`
+		Rev      int64  `json:"rev"`
 		jwt.RegisteredClaims
 	}
 	c := claims{
 		UserID:   1,
 		Username: "testuser",
 		Role:     "admin",
+		Rev:      testUserUpdatedAt.UnixMicro(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

@@ -4,15 +4,15 @@
 // IMPORTANT: Decoder indices are append-only and must never be reordered.
 // The BPF C enums in xsight.h MUST be kept in sync with these constants.
 // Violating this invariant causes new/old binaries to misinterpret decoder_counts[i].
-//
 package decoder
 
 // MaxDecoders is the fixed array size for decoder_counts in BPF maps and protobuf.
 // Pre-allocated to avoid BPF map rebuilds when adding new decoders.
 const MaxDecoders = 16
 
-// StandardCount is the number of decoders with dedicated ts_stats columns
+// StandardCount is the number of decoders with dedicated ts_stats PPS columns
 // (tcp_pps, tcp_syn_pps, udp_pps, icmp_pps, frag_pps).
+// BPS fixed columns are tcp_bps, tcp_syn_bps, udp_bps, icmp_bps and frag_bps.
 // Indices 0..StandardCount-1 are written to fixed columns.
 // Indices >= StandardCount are written to extra_decoder_pps JSONB.
 const StandardCount = 5
@@ -34,7 +34,7 @@ const (
 	ESP     = 9  // IP proto 50
 	IGMP    = 10 // IP proto 2
 	IPOther = 11 // catch-all for other IP protocols
-	// v1.3 Phase 1b (追加) — Packet-level anomalies (detected stateless in BPF):
+	// v1.3 Phase 1b (appended) — Packet-level anomalies (detected stateless in BPF):
 	BadFragment = 12 // Ping of Death-style (frag_end > 65535) + tiny fragment (first frag too small for L4 header)
 	Invalid     = 13 // IP IHL < 5 / TCP doff < 5 / IP total_length < header size
 	// Reflection sub-categories (dns_reflect, ntp_reflect, memcached_reflect, etc.)

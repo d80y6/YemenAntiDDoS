@@ -46,16 +46,8 @@ func (r *actionExecLogRecorder) ListByAttack(ctx context.Context, attackID int) 
 	return r.inner.ListByAttack(ctx, attackID)
 }
 
-func (r *actionExecLogRecorder) FindByAttackAndAction(ctx context.Context, attackID, actionID int, triggerPhase string) (*store.ActionExecutionLog, error) {
-	return r.inner.FindByAttackAndAction(ctx, attackID, actionID, triggerPhase)
-}
-
-func (r *actionExecLogRecorder) FindExternalRuleIDs(ctx context.Context, attackID, actionID int) ([]string, error) {
-	return r.inner.FindExternalRuleIDs(ctx, attackID, actionID)
-}
-
-func (r *actionExecLogRecorder) FindExternalRulesWithActions(ctx context.Context, attackID int) ([]store.RuleWithAction, error) {
-	return r.inner.FindExternalRulesWithActions(ctx, attackID)
+func (r *actionExecLogRecorder) AllTargetsDone(ctx context.Context, attackID, actionID int, triggerPhase string) (bool, error) {
+	return r.inner.AllTargetsDone(ctx, attackID, actionID, triggerPhase)
 }
 
 // instrumentedStore embeds a store.Store and overrides only ActionExecLog()

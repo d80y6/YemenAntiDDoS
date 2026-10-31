@@ -161,12 +161,12 @@ do {                                                                          \
 // compile-time constants — cannot pass maps through void* parameters.
 // ---------------------------------------------------------------------------
 #define PROCESS_DIRECTION(prefix_map, ip_map_a, ip_map_b, active_slot,       \
-                          ip_key, matched_prefixlen, pkt_len,                 \
+                          ip_key, trie_key, matched_prefixlen, pkt_len,       \
                           l4_proto, tcp_flags, is_frag,                       \
                           is_bad_fragment, is_invalid)                        \
 do {                                                                          \
     struct prefix_stats *_ps;                                                 \
-    LOOKUP_PREFIX_STATS(_ps, prefix_map, ip_key, matched_prefixlen);          \
+    LOOKUP_PREFIX_STATS(_ps, prefix_map, trie_key, matched_prefixlen);        \
     if (_ps) {                                                                \
         __sync_fetch_and_add(&_ps->pkt_count, 1);                             \
         __sync_fetch_and_add(&_ps->byte_count, pkt_len);                      \
@@ -197,6 +197,49 @@ do {                                                                          \
     }                                                                         \
 } while (0)
 
+#define IS_V4_MAPPED(key)                                                     \
+    (((key)->addr[0] | (key)->addr[1] | (key)->addr[2] | (key)->addr[3] |       \
+      (key)->addr[4] | (key)->addr[5] | (key)->addr[6] | (key)->addr[7] |       \
+      (key)->addr[8] | (key)->addr[9] |                                      \
+      ((key)->addr[10] ^ 0xff) | ((key)->addr[11] ^ 0xff)) == 0)
+
+// Global linkage lets the verifier check this function independently of callers.
+// Return a length in [0, 128] or -1; the caller must also bound the scalar result.
+// Fully write trie_key without changing the original per-IP HASH key.
+__noinline __s64 lookup_prefix(const struct lpm_key *ip_key,
+                              struct lpm_key *trie_key, __u32 active)
+{
+    if (!ip_key)
+        return -1;
+    if (!trie_key)
+        return -1;
+    __builtin_memset(trie_key, 0, sizeof(*trie_key));
+    if (ip_key->prefixlen == 32) {
+        trie_key->prefixlen = 128;
+        trie_key->addr[10] = trie_key->addr[11] = 0xff;
+        __builtin_memcpy(trie_key->addr + 12, ip_key->addr, 4);
+    } else {
+        *trie_key = *ip_key;
+        if (IS_V4_MAPPED(trie_key))
+            return -1;
+    }
+
+    __u32 *prefixlen;
+    if (active == 0)
+        prefixlen = bpf_map_lookup_elem(&watch_trie_a, trie_key);
+    else
+        prefixlen = bpf_map_lookup_elem(&watch_trie_b, trie_key);
+    if (!prefixlen)
+        return -1;
+    __u32 matched = *prefixlen;
+    if (matched > 128)
+        return -1;
+    // Broad IPv6 prefixes may cover the mapped namespace: reject before counting.
+    if (ip_key->prefixlen == 32 && matched < 96)
+        return -1;
+    return matched;
+}
+
 // UPDATE_GLOBAL_DECODERS — thin wrapper around DECODER_SWITCH for global_stats arrays.
 // Kept as a named macro for readability at call sites.
 #define UPDATE_GLOBAL_DECODERS(dec_counts, dec_byte_counts,                   \
@@ -217,7 +260,7 @@ static __always_inline __u64 cfg_read(__u32 index, __u64 def)
 // ---------------------------------------------------------------------------
 // Helper: emit sample to ring buffer
 // Sends raw packet bytes (from data to data_end), capped at sample_bytes.
-// Called only when pkt_count % sample_rate == 0 after trie match.
+// Matched packets are sampled 1-in-N at random.
 // ---------------------------------------------------------------------------
 static __always_inline void emit_sample(struct xdp_md *ctx, struct global_stats *gs)
 {
@@ -237,21 +280,20 @@ static __always_inline void emit_sample(struct xdp_md *ctx, struct global_stats 
 
     __u64 sample_bytes = cfg_read(CFG_SAMPLE_BYTES, DEFAULT_SAMPLE_BYTES);
 
-    // Clamp to [1, MAX_SAMPLE_BYTES-1] with bitmask — verifier-friendly.
-    // MAX_SAMPLE_BYTES=512 is power-of-2, so &511 gives [0,511].
-    // Cap at 511 (not 512) to keep verifier provably bounded for all paths.
-    __u32 cap_len = (__u32)sample_bytes & (MAX_SAMPLE_BYTES - 1);
-    if (cap_len == 0)
-        cap_len = MAX_SAMPLE_BYTES - 1;  // 511
+    if (sample_bytes == 0)
+        sample_bytes = DEFAULT_SAMPLE_BYTES;
+    if (sample_bytes > MAX_SAMPLE_BYTES)
+        sample_bytes = MAX_SAMPLE_BYTES;
+    __u64 cap_len = sample_bytes;
 
     // Don't read past packet end
     if (cap_len > pkt_len)
         cap_len = pkt_len;
 
-    // Final verifier-friendly bound: re-apply bitmask so verifier can prove
-    // cap_len is in [0, 511] regardless of control flow.
-    cap_len &= (MAX_SAMPLE_BYTES - 1);
-    if (cap_len == 0) {
+    // Keep the checked scalar 64-bit so the verifier carries both bounds to
+    // the helper argument without a separate 32-bit normalization.
+    asm volatile("" : "+r"(cap_len));
+    if (cap_len == 0 || cap_len > MAX_SAMPLE_BYTES) {
         bpf_ringbuf_discard(buf, 0);
         return;
     }
@@ -261,7 +303,7 @@ static __always_inline void emit_sample(struct xdp_md *ctx, struct global_stats 
     hdr->cap_len = cap_len;
     hdr->pkt_len = pkt_len;
 
-    // Packet data follows header. cap_len is provably in [1, 511].
+    // Packet data follows header; the bound includes all 512 reserved bytes.
     if (bpf_xdp_load_bytes(ctx, 0, (void *)hdr + sizeof(struct sample_hdr), cap_len) < 0) {
         bpf_ringbuf_discard(buf, 0);
         return;
@@ -501,26 +543,28 @@ int xsight_main(struct xdp_md *ctx)
         __u16 gre_flags = bpf_ntohs(*(__u16 *)gre_hdr);
         __u16 gre_proto = bpf_ntohs(*((__u16 *)gre_hdr + 1));
 
+        if (gre_flags & (GRE_FLAG_ROUTING | GRE_VERSION_MASK))
+            return XDP_DROP;
+        __u32 gre_len = 4;
+        if (gre_flags & GRE_FLAG_CSUM)
+            gre_len += 4;
+        if (gre_flags & GRE_FLAG_KEY)
+            gre_len += 4;
+        if (gre_flags & GRE_FLAG_SEQ)
+            gre_len += 4;
+
         // Determine inner frame offset based on ERSPAN type
         // Reference: brainstorm-node.md "ERSPAN auto-detection"
         void *inner_eth;
 
         if (gre_proto == GRE_PROTO_ERSPAN_III) {
-            // Type III: GRE(4B) + sequence(4B if SEQ set) + ERSPAN-III header(12B)
-            __u32 gre_len = 4;
-            if (gre_flags & GRE_FLAG_SEQ)
-                gre_len += 4;  // sequence number
+            // Type III: GRE and its options, then the 12-byte ERSPAN header.
             inner_eth = gre_hdr + gre_len + 12;
             // Note: optional 8B subheader not handled (PoC — record if needed)
 
         } else if (gre_proto == GRE_PROTO_ERSPAN_II) {
-            if (gre_flags & GRE_FLAG_SEQ) {
-                // Type II: GRE(4B) + sequence(4B) + ERSPAN-II header(8B)
-                inner_eth = gre_hdr + 4 + 4 + 8;
-            } else {
-                // Type I: GRE(4B) only, no ERSPAN header
-                inner_eth = gre_hdr + 4;
-            }
+            // Without S, preserve Type I semantics (no ERSPAN header).
+            inner_eth = (gre_flags & GRE_FLAG_SEQ) ? gre_hdr + gre_len + 8 : gre_hdr + gre_len;
 
         } else {
             // Unknown GRE protocol — drop
@@ -561,36 +605,31 @@ int xsight_main(struct xdp_md *ctx)
     // Extract src_ip for outbound detection (separate call to avoid verifier issues)
     extract_src_key(l3_hdr, data_end, &src_key, eth_type);
 
+    struct lpm_key dst_trie_key = {};
+    struct lpm_key src_trie_key = {};
+
     // ④ Read active_slot → choose trie + maps
     __u32 slot_key = 0;
     __u32 *slot = bpf_map_lookup_elem(&active_slot, &slot_key);
     __u32 active = slot ? *slot : 0;
 
-    // ⑤ LPM trie lookup — dst_ip (inbound)
-    __u32 *dst_prefix_idx;
-    if (active == 0)
-        dst_prefix_idx = bpf_map_lookup_elem(&watch_trie_a, &dst_key);
-    else
-        dst_prefix_idx = bpf_map_lookup_elem(&watch_trie_b, &dst_key);
-
-    // ⑤b LPM trie lookup — src_ip (outbound)
-    __u32 *src_prefix_idx;
-    if (active == 0)
-        src_prefix_idx = bpf_map_lookup_elem(&watch_trie_a, &src_key);
-    else
-        src_prefix_idx = bpf_map_lookup_elem(&watch_trie_b, &src_key);
+    // ⑤ / ⑤b LPM trie lookup — inbound / outbound, with identical family guards.
+    __s64 dst_prefixlen = lookup_prefix(&dst_key, &dst_trie_key, active);
+    __s64 src_prefixlen = lookup_prefix(&src_key, &src_trie_key, active);
+    // Keep caller bounds even if clang infers the callee's return range.
+    asm volatile("" : "+r"(dst_prefixlen), "+r"(src_prefixlen));
 
     // Both miss → done.
-    // Compiler barrier prevents clang from merging these two pointer null-checks
-    // into a single "r1 |= r0" which the BPF verifier rejects as "pointer |= pointer".
-    if (!dst_prefix_idx) {
+    // Global-call results are unknown scalars here; bound both before masking.
+    // Unsigned comparison also rejects the -1 miss sentinel. Keep the barrier.
+    if ((__u64)dst_prefixlen > 128) {
         asm volatile("" ::: "memory");
-        if (!src_prefix_idx)
+        if ((__u64)src_prefixlen > 128)
             return XDP_DROP;
     }
 
     // ====== INBOUND (dst_ip matched) ======
-    if (dst_prefix_idx) {
+    if ((__u64)dst_prefixlen <= 128) {
         if (gs) {
             __sync_fetch_and_add(&gs->matched_pkts, 1);
             __sync_fetch_and_add(&gs->matched_bytes, pkt_len);
@@ -599,13 +638,13 @@ int xsight_main(struct xdp_md *ctx)
                                    is_bad_fragment, is_invalid);
         }
         PROCESS_DIRECTION(prefix_stats_map, ip_stats_a, ip_stats_b,
-                          active, &dst_key, *dst_prefix_idx,
+                          active, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
                           pkt_len, l4_proto, tcp_flags, is_frag,
                           is_bad_fragment, is_invalid);
     }
 
     // ====== OUTBOUND (src_ip matched) — same macro, different maps ======
-    if (src_prefix_idx) {
+    if ((__u64)src_prefixlen <= 128) {
         if (gs) {
             __sync_fetch_and_add(&gs->src_matched_pkts, 1);
             __sync_fetch_and_add(&gs->src_matched_bytes, pkt_len);
@@ -614,20 +653,17 @@ int xsight_main(struct xdp_md *ctx)
                                    is_bad_fragment, is_invalid);
         }
         PROCESS_DIRECTION(src_prefix_stats_map, src_stats_a, src_stats_b,
-                          active, &src_key, *src_prefix_idx,
+                          active, &src_key, &src_trie_key, (__u32)src_prefixlen,
                           pkt_len, l4_proto, tcp_flags, is_frag,
                           is_bad_fragment, is_invalid);
     }
 
     // ⑧ Ring buffer sampling — after trie match (either direction)
-    // Use total matched packets (inbound + outbound) for sampling decision
-    __u64 current_pkt_count = gs ? (gs->matched_pkts + gs->src_matched_pkts) : 1;
-
     __u64 sample_rate = cfg_read(CFG_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
     if (sample_rate == 0)
         sample_rate = 1;
 
-    if (current_pkt_count % sample_rate == 0)
+    if (sample_rate <= 1 || ((__u64)bpf_get_prandom_u32() % sample_rate) == 0)
         emit_sample(ctx, gs);
 
     // ⑨ Drop — mirror/ERSPAN packets are copies

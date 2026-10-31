@@ -44,52 +44,7 @@ func (r *flowLogRepo) BulkInsert(ctx context.Context, flows []store.FlowLog) err
 // QueryByDstIP returns flow logs matching a destination IP within a time window,
 // sorted by packets descending.
 func (r *flowLogRepo) QueryByDstIP(ctx context.Context, filter store.FlowLogFilter) ([]store.FlowLog, error) {
-	var conds []string
-	var args []any
-	argN := 1
-
-	if filter.DstIP != "" {
-		// Support both exact IP and subnet match:
-		// attack dst_ip can be "1.2.3.0/24" (subnet) or "1.2.3.4" (single IP)
-		if strings.Contains(filter.DstIP, "/") {
-			conds = append(conds, fmt.Sprintf("dst_ip <<= $%d::CIDR", argN))
-		} else {
-			conds = append(conds, fmt.Sprintf("dst_ip = $%d::INET", argN))
-		}
-		args = append(args, filter.DstIP)
-		argN++
-	}
-
-	if !filter.From.IsZero() {
-		conds = append(conds, fmt.Sprintf("time >= $%d", argN))
-		args = append(args, filter.From)
-		argN++
-	}
-
-	if !filter.To.IsZero() {
-		conds = append(conds, fmt.Sprintf("time <= $%d", argN))
-		args = append(args, filter.To)
-		argN++
-	}
-
-	where := ""
-	if len(conds) > 0 {
-		where = " WHERE " + strings.Join(conds, " AND ")
-	}
-
-	limit := 1000
-	if filter.Limit > 0 {
-		limit = filter.Limit
-	}
-	if limit > 10000 {
-		limit = 10000
-	}
-
-	q := fmt.Sprintf(`SELECT time, node_id, prefix::TEXT, src_ip::TEXT, dst_ip::TEXT,
-		src_port, dst_port, protocol, tcp_flags, packets, bytes
-		FROM flow_logs%s
-		ORDER BY packets DESC
-		LIMIT %d`, where, limit)
+	q, args := flowLogQuery(filter, "dst_ip")
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -114,50 +69,7 @@ func (r *flowLogRepo) QueryByDstIP(ctx context.Context, filter store.FlowLogFilt
 
 // QueryBySrcIP queries flow_logs by source IP for outbound attack sensor logs.
 func (r *flowLogRepo) QueryBySrcIP(ctx context.Context, filter store.FlowLogFilter) ([]store.FlowLog, error) {
-	var conds []string
-	var args []any
-	argN := 1
-
-	if filter.DstIP != "" {
-		// For outbound attacks, DstIP in the attack record is actually the internal src IP
-		if strings.Contains(filter.DstIP, "/") {
-			conds = append(conds, fmt.Sprintf("src_ip <<= $%d::CIDR", argN))
-		} else {
-			conds = append(conds, fmt.Sprintf("src_ip = $%d::INET", argN))
-		}
-		args = append(args, filter.DstIP)
-		argN++
-	}
-
-	if !filter.From.IsZero() {
-		conds = append(conds, fmt.Sprintf("time >= $%d", argN))
-		args = append(args, filter.From)
-		argN++
-	}
-	if !filter.To.IsZero() {
-		conds = append(conds, fmt.Sprintf("time <= $%d", argN))
-		args = append(args, filter.To)
-		argN++
-	}
-
-	where := ""
-	if len(conds) > 0 {
-		where = " WHERE " + strings.Join(conds, " AND ")
-	}
-
-	limit := 1000
-	if filter.Limit > 0 {
-		limit = filter.Limit
-	}
-	if limit > 10000 {
-		limit = 10000
-	}
-
-	q := fmt.Sprintf(`SELECT time, node_id, prefix::TEXT, src_ip::TEXT, dst_ip::TEXT,
-		src_port, dst_port, protocol, tcp_flags, packets, bytes
-		FROM flow_logs%s
-		ORDER BY packets DESC
-		LIMIT %d`, where, limit)
+	q, args := flowLogQuery(filter, "src_ip")
 
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -178,4 +90,70 @@ func (r *flowLogRepo) QueryBySrcIP(ctx context.Context, filter store.FlowLogFilt
 		result = append(result, f)
 	}
 	return result, rows.Err()
+}
+
+func flowLogWhere(filter store.FlowLogFilter, addrCol string) (string, []any) {
+	var conds []string
+	var args []any
+	argN := 1
+
+	if filter.DstIP != "" {
+		if strings.Contains(filter.DstIP, "/") {
+			conds = append(conds, fmt.Sprintf("%s <<= $%d::CIDR", addrCol, argN))
+		} else {
+			conds = append(conds, fmt.Sprintf("%s = $%d::INET", addrCol, argN))
+		}
+		args = append(args, filter.DstIP)
+		argN++
+	}
+
+	if !filter.From.IsZero() {
+		conds = append(conds, fmt.Sprintf("time >= $%d", argN))
+		args = append(args, filter.From)
+		argN++
+	}
+
+	if !filter.To.IsZero() {
+		conds = append(conds, fmt.Sprintf("time <= $%d", argN))
+		args = append(args, filter.To)
+		argN++
+	}
+
+	if len(filter.Protocols) > 0 {
+		conds = append(conds, fmt.Sprintf("protocol = ANY($%d)", argN))
+		args = append(args, filter.Protocols)
+		argN++
+	}
+	if filter.TCPFlagsAll != 0 {
+		conds = append(conds, fmt.Sprintf("tcp_flags & $%d = $%d", argN, argN))
+		args = append(args, int(filter.TCPFlagsAll))
+		argN++
+	}
+	if filter.TCPFlagsNone != 0 {
+		conds = append(conds, fmt.Sprintf("tcp_flags & $%d = 0", argN))
+		args = append(args, int(filter.TCPFlagsNone))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	return where, args
+}
+
+func flowLogQuery(filter store.FlowLogFilter, addrCol string) (string, []any) {
+	where, args := flowLogWhere(filter, addrCol)
+	limit := 1000
+	if filter.Limit > 0 {
+		limit = filter.Limit
+	}
+	if limit > 10000 {
+		limit = 10000
+	}
+
+	return fmt.Sprintf(`SELECT time, node_id, prefix::TEXT, src_ip::TEXT, dst_ip::TEXT,
+		src_port, dst_port, protocol, tcp_flags, packets, bytes
+		FROM flow_logs%s
+		ORDER BY packets DESC
+		LIMIT %d`, where, limit), args
 }
