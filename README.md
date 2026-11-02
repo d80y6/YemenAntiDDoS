@@ -85,6 +85,9 @@ The system has two components:
 - **Shared BGP announcements (Wanguard-style)** — multiple attacks sharing a `(prefix, route_map)` ref a single FRR route. MAX delay across attached attacks, atomic attach/detach under `SELECT FOR UPDATE`.
 - **Persisted delayed tasks** — `scheduled_actions` table survives controller restart; startup reconciliation re-arms pending timers, fires overdue tasks, retries in-flight crashed tasks.
 - **FRR orphan detection** — startup scan surfaces FRR routes with no backing YemenAntiDDoS attack so operators can withdraw or dismiss them.
+- **BGP Flowspec** — Multi-vendor BGP Flowspec rule generation and management (Cisco, Juniper, Arista, FRR) with console preview, inspection, and force-withdraw.
+- **Layer 7 Inspection** — HTTP flood, Slowloris, and TLS ClientHello detection on the Node with in-memory aggregation and a dedicated L7 dashboard in the console.
+- **mTLS Management** — Peer certificate tracking and posture indicators in the node management UI.
 
 ### Active Mitigations & Per-Attack Drilldown
 - Dedicated `Active Mitigations` page showing BGP Routing and XDrop Rules sections on one page, with a detail drawer per artifact (fields, Delivery for xDrop, Execution Timeline); Delivery queries current per-node xDrop state.
