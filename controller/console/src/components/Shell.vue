@@ -50,7 +50,7 @@ function count(item: string) {
     <aside class="side">
       <div class="brand">
         <span class="mark" aria-hidden="true" />
-        <span class="lbl">XSIGHT</span>
+        <span class="lbl">YEMENANTIDDOS</span>
       </div>
       <nav class="nav" :aria-label="t('nav.main')">
         <template v-for="group in groups" :key="group.name">

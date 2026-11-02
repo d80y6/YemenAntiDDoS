@@ -86,7 +86,7 @@ async function action() {
           />
         </label>
         <XPassword v-model="password" :label="t('login.password')" />
-        <XCopy text="XSIGHT" />
+        <XCopy text="YEMENANTIDDOS" />
       </div>
     </section>
     <section class="panel">

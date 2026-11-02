@@ -46,7 +46,7 @@ async function submit() {
     <form class="login panel lg-card" @submit.prevent="submit">
       <div class="lg-brand">
         <span class="logo-full" aria-hidden="true" />
-        <div class="lg-name">XSIGHT</div>
+        <div class="lg-name">YEMENANTIDDOS</div>
         <div class="sub">{{ t('login.subtitle') }}</div>
       </div>
       <p v-if="route.query.notice === 'account-updated' || route.query.notice === 'account-deleted'"

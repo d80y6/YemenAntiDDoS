@@ -27,7 +27,7 @@ onMounted(async () => {
   <div class="page">
     <h1>{{ t('pages.about') }}</h1>
     <section class="panel">
-      <h2>XSIGHT</h2>
+      <h2>YEMENANTIDDOS</h2>
       <dl class="kv">
         <dt>{{ t('pages.version') }}</dt>
         <dd class="mono">{{ version }}</dd>
