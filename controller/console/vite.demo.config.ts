@@ -5,7 +5,7 @@ import { generateThirdParty } from './scripts/third-party.mjs'
 
 const version = process.env.XSIGHT_VERSION || execFileSync('git', ['describe', '--always'], { encoding: 'utf8' }).trim()
 export default defineConfig({
-  base: '/xsight/',
+  base: '/YemenAntiDDoS/',
   define: { __XS_VERSION__: JSON.stringify(version + '-demo') },
   plugins: [vue(), { name: 'third-party', generateBundle: generateThirdParty }, {
     name: 'demo-root-html',
