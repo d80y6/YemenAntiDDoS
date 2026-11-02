@@ -5,7 +5,7 @@ import { response } from './helpers'
 import { i18n } from '../src/i18n'
 import { actions, entityTypes, entityLabel, actionLabel } from '../src/views/audit/data'
 const query = () => new URL(String(calls('/api/audit-log').at(-1)![0]), 'http://localhost').searchParams
-it.each(['zh', 'en'] as const)('K4 complete entity and action labels in %s with unknown fallback', locale => {
+it.each(['ar', 'en'] as const)('K4 complete entity and action labels in %s with unknown fallback', locale => {
   const t = (key: string) => i18n.global.t(key, {}, { locale })
   expect(entityTypes).toHaveLength(19)
   expect(actions).toHaveLength(7)

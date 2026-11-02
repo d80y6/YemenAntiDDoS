@@ -53,9 +53,9 @@ it('auth1 A2 W39 write refresh clears stale template and baseline silently', asy
   expect(calls('/api/threshold-templates')).toHaveLength(2)
   expect(calls('/api/baseline')).toHaveLength(2)
 })
-it.each([['zh', '启用动态检测'], ['en', 'Enable Dynamic Detection']])(
+it.each([['ar', '启用动态检测'], ['en', 'Enable Dynamic Detection']])(
   'auth1 P3-4 visible configuration label %s', async (locale, label) => {
-    state.locale = locale as 'zh' | 'en'
+    state.locale = locale as 'ar' | 'en'
     const { w } = await mountQE('/baseline')
     expect(w.get('.config').text()).toContain(label)
   })

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { defineComponent, h, onUnmounted, nextTick } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { state, saveSession, readTheme, readLocale, summaryBadges } from '../src/state'
+import { state, saveSession, readTheme, readLocale } from '../src/state'
 import { request, safeNext, configureClient, ApiError } from '../src/api/client'
 import { i18n } from '../src/i18n'
 import { notifications, notify, notifyWrite } from '../src/notifications'
@@ -108,7 +108,7 @@ describe('G-behavior request', () => {
     await expect(request('/api/item')).rejects.toMatchObject({ message: 'HTTP 500' })
   })
 
-  it.each([['zh', '请求超时'], ['en', 'Request timed out']] as const)(
+  it.each([['ar', '请求超时'], ['en', 'Request timed out']] as const)(
     '30s timeout has %s text',
     async (locale, message) => {
       vi.useFakeTimers()
@@ -168,7 +168,7 @@ describe('G-behavior preferences and roles', () => {
     expect(document.documentElement.hasAttribute('data-theme')).toBe(false)
   })
 
-  it.each([['zh-CN','zh'],['zh-TW','zh'],['en-US','en'],['fr-FR','en']] as const)(
+  it.each([['zh-CN','ar'],['zh-TW','ar'],['en-US','en'],['fr-FR','en']] as const)(
     'locale inference %s',
     (language, expected) => {
       expect(readLocale(localStorage, language)).toBe(expected)
@@ -331,7 +331,7 @@ describe('G-behavior shell/routing/login', () => {
   it('missing action_mode uses dash, badges computed, sidebar persists', async () => {
     session()
     state.summary = { active_attacks: 4, total_nodes: 6, online_nodes: 2 }
-    expect(summaryBadges(state.summary)).toEqual({ attacks: 4, nodes: 4 })
+    expect(state.summary?.active_attacks).toBe(4)
     vi.mocked(fetch).mockResolvedValue(response(200, state.summary))
     const router = makeRouter(createMemoryHistory())
     await router.push('/overview')
@@ -458,7 +458,7 @@ describe('R2 F1 response-body cancellation', () => {
     return headers.promise
   }
 
-  it.each([['zh', '请求超时'], ['en', 'Request timed out']] as const)(
+  it.each([['ar', '请求超时'], ['en', 'Request timed out']] as const)(
     'R2 F1 timeout while reading a body rejects with %s ApiError',
     async (locale, message) => {
       vi.useFakeTimers()

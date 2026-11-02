@@ -11,7 +11,7 @@ beforeEach(() => {
   state.user = null
   state.summary = null
   state.theme = 'auto'
-  state.locale = 'zh'
+  state.locale = 'ar'
   state.sideCollapsed = false
   notifications.splice(0)
   drawerCount.value = 0

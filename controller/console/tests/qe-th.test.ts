@@ -26,11 +26,11 @@ it('G-th rule count failure hides count; templates null shows empty', async () =
     ? response(200, null) : undefined)
   expect(empty.w.text()).toContain('暂无数据')
 })
-it.each([['zh', 'Transit defaults 副本'], ['en', 'Transit defaults (Copy)']])(
+it.each([['ar', 'Transit defaults 副本'], ['en', 'Transit defaults (Copy)']])(
   'G-th W9 copy prefill focus selection blank disabled 409 persists %s', async (lang, expected) => {
-    state.locale = lang as 'zh' | 'en'
+    state.locale = lang as 'ar' | 'en'
     const { w, intercept } = await mountQE('/thresholds')
-    const copy = lang === 'zh' ? '复制' : 'Copy'
+    const copy = lang === 'ar' ? '复制' : 'Copy'
     await clickText(w.findAll('tbody tr').find(r => r.text().includes('Transit defaults'))!, copy)
     const field = w.get('.inline input')
     expect(field.element).toBe(document.activeElement)
@@ -51,7 +51,7 @@ it.each([['zh', 'Transit defaults 副本'], ['en', 'Transit defaults (Copy)']])(
     intercept()
     await button.trigger('click'); await flushPromises()
     expect(w.find('.inline').exists()).toBe(false)
-    expect(notifications.at(-1)?.message).toBe(lang === 'zh' ? '已复制' : 'Copied')
+    expect(notifications.at(-1)?.message).toBe(lang === 'ar' ? '已复制' : 'Copied')
   })
 it('G-th W10 referenced zero DELETE; unused rule count and 409 fallback', async () => {
   const { w, intercept } = await mountQE('/thresholds')

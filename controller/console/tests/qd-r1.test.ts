@@ -9,7 +9,7 @@ import { bgpConfirmation } from '../src/views/mitigations/data'
 import Status from '../src/views/mitigations/Status.vue'
 import { i18n } from '../src/i18n'
 import { notifications } from '../src/notifications'
-import zh from '../src/i18n/zh'
+import zh from '../src/i18n/ar'
 import en from '../src/i18n/en'
 
 it('r1 B1 W39 BGP unnamed connector stays in its own namespace in list and drawer', async () => {

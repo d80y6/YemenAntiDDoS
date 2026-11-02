@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { conditionsChanged, connectorName, defaults, exampleKey, fill, paired, payload, phaseRows,
   saveAction, validate } from '../src/views/responses/data'
 import type { Condition, Form, Phase, Send } from '../src/views/responses/data'
-import zh from '../src/i18n/zh'
+import zh from '../src/i18n/ar'
 import en from '../src/i18n/en'
 import { mockSession } from '../mock/data'
 const one = { attribute: 'severity', operator: 'eq', value: 'critical' }

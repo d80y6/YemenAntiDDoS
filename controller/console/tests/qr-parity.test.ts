@@ -29,7 +29,7 @@ async function mitigation(row: any, logs: any[] = [], nodes: any[] = [], kind = 
 }
 
 it.each([
-  ['zh', '只筛选本图；卡片与 Top 表不按前缀筛选'],
+  ['ar', '只筛选本图；卡片与 Top 表不按前缀筛选'],
   ['en', 'Filters this chart only; the cards and the Top table are not filtered by prefix'],
 ] as const)('F1 prefix explanation is exact in %s and cards/Top ignore prefix', async (locale, text) => {
   state.locale = locale
@@ -71,7 +71,7 @@ it.each([[71.4, 0], [126.2, 1]])('F3 drag ending at %s emits %s updates for one/
 })
 
 it.each([
-  ['zh', ['生效中', '延迟撤回', '失败', '待执行']],
+  ['ar', ['生效中', '延迟撤回', '失败', '待执行']],
   ['en', ['Active', 'Delayed withdrawal', 'Failed', 'Pending']],
 ] as const)('F4 mitigation Status and attack summary hover map all states in %s', async (locale, labels) => {
   state.locale = locale
@@ -92,7 +92,7 @@ it.each([
     w.unmount()
   }
 })
-it.each([['zh', '解码器'], ['en', 'Decoder']] as const)(
+it.each([['ar', '解码器'], ['en', 'Decoder']] as const)(
   'F4 AttackDetail detection label translates in %s; decoder identifier stays tcp', async (locale, label) => {
     state.locale = locale
     const { w } = await mountPage('/attacks/1', 'attacks', (path, _init, result) => {
@@ -105,7 +105,7 @@ it.each([['zh', '解码器'], ['en', 'Decoder']] as const)(
     expect(dt.element.nextElementSibling?.textContent).toBe('tcp')
   },
 )
-it.each([['zh', '源端口:123', '目的端口:456'], ['en', 'src:123', 'dst:456']] as const)(
+it.each([['ar', '源端口:123', '目的端口:456'], ['en', 'src:123', 'dst:456']] as const)(
   'F4 attack mitigation port labels translate in %s', (locale, src, dst) => {
     state.locale = locale
     const row = { id: 1, attack_id: 1, action_id: 5, connector_id: 1, external_rule_id: 'r1', status: 'active' }
@@ -117,7 +117,7 @@ it.each([['zh', '源端口:123', '目的端口:456'], ['en', 'src:123', 'dst:456
   },
 )
 it.each([
-  ['zh', 'triggered', '触发'], ['zh', 'attached_shared', '附加'],
+  ['ar', 'triggered', '触发'], ['ar', 'attached_shared', '附加'],
   ['en', 'triggered', 'triggered'], ['en', 'attached_shared', 'attached'],
 ] as const)('F4 ActionDrawer BGP role %s/%s uses the log-table label', async (locale, role, expected) => {
   state.locale = locale
@@ -157,7 +157,7 @@ it('F5 missing live status retains the original pending explanation', async () =
   expect(w.findAll('[title]').map(e => e.attributes('title')))
     .toContain('实时状态暂未取到（可能刚结束）')
 })
-it.each([['zh', '触发阶段'], ['en', 'trigger_phase']] as const)(
+it.each([['ar', '触发阶段'], ['en', 'trigger_phase']] as const)(
   'F4 timeline trigger phase hover translates in %s', async (locale, expected) => {
     state.locale = locale
     await mitigation({ ...action('success'), prefix: '192.0.2.0/24' }, [action('success')])

@@ -4,7 +4,7 @@ import { checkContract } from '../scripts/contract-check.mjs'
 import { contract } from '../src/api/contract'
 import { mockReply } from '../mock/data'
 import { sourceText } from './r1-files.mjs'
-import zh from '../src/i18n/zh'
+import zh from '../src/i18n/ar'
 import en from '../src/i18n/en'
 import { mountQE } from './qe-harness'
 import { flushPromises } from '@vue/test-utils'
@@ -56,7 +56,7 @@ it('G-shared both production routes mount new response components', async () => 
   await router.push('/responses/3'); await flushPromises()
   expect(w.find('.rs-detail').exists()).toBe(true)
 })
-it.each([['zh', zh], ['en', en]])('G-i18n all 42 old responses literals exact %s', (lang, dictionary) => {
+it.each([['ar', zh], ['en', en]])('G-i18n all 42 old responses literals exact %s', (lang, dictionary) => {
   const old = sourceText('tests/fixtures/legacy-i18n/' + lang + '.js.txt')
     .match(/  responses: \{\n([\s\S]*?)\n  \},/)![1]!
   const entries = [...old.matchAll(/(\w+): '([^']*)'/g)]

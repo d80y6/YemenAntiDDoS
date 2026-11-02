@@ -9,11 +9,11 @@ const slots = days.flatMap((day, d) => Array.from({ length: 24 }, (_, hour) => [
     chinese[d] + ' ' + time + (latest ? '（最近有数据）' : '')]
 })).flat())
 it.each(slots)('K3 slot %s', (raw, expected) => {
-  expect(slotLabel(raw!, key => i18n.global.t(key, {}, { locale: 'zh' }))).toBe(expected)
+  expect(slotLabel(raw!, key => i18n.global.t(key, {}, { locale: 'ar' }))).toBe(expected)
   expect(slotLabel(raw!, key => i18n.global.t(key, {}, { locale: 'en' }))).toBe(raw)
 })
 it.each(['slot_200', 'Funday 01:00 UTC', ''])('K3 unknown slot %s is unchanged', raw => {
-  for (const locale of ['zh', 'en'] as const) {
+  for (const locale of ['ar', 'en'] as const) {
     expect(slotLabel(raw, key => i18n.global.t(key, {}, { locale }))).toBe(raw)
   }
 })

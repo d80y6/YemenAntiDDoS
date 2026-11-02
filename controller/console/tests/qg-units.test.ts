@@ -5,7 +5,7 @@ import { responseSession, fixtureState, mockSession } from '../mock/data'
 import { scanArtifacts } from '../scripts/artifact-scan.mjs'
 import { root } from '../scripts/lib.mjs'
 import { sourceText } from './r1-files.mjs'
-import zh from '../src/i18n/zh'
+import zh from '../src/i18n/ar'
 import en from '../src/i18n/en'
 const base: Form = { name: '  Edge  ', bgp_asn: 65001, vtysh_path: ' /usr/bin/vtysh ', description: ' memo ',
   api_url: ' https://xdrop.example.com/api/v1// ', api_key: ' key1234 ', url: ' https://hooks.example.net/notify ',
@@ -151,7 +151,7 @@ it('G-artifact example hostname exception has three adversarial rejected URLs W2
   ])
   expect(scan.schemaErrors).toEqual([])
 })
-it.each([['zh', zh], ['en', en]] as const)('G-i18n specified old connector literals exact %s', (lang, dict) => {
+it.each([['ar', zh], ['en', en]] as const)('G-i18n specified old connector literals exact %s', (lang, dict) => {
   const source = sourceText('tests/fixtures/legacy-i18n/' + lang + '.js.txt')
   const mapping: Record<string, Record<string, string>> = {
     xdropConnectors: { decoderScopeTitle: 'decoderScopeTitle', decoderScopeBody: 'decoderScopeBody',

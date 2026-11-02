@@ -1,7 +1,7 @@
 import { reactive, watch } from 'vue'
 
 export type Theme = 'auto' | 'light' | 'dark'
-export type Locale = 'zh' | 'en'
+export type Locale = 'ar' | 'en'
 
 export interface User {
   id: number
@@ -26,7 +26,8 @@ export function readTheme(storage: Storage): Theme {
 
 export function readLocale(storage: Storage, language: string): Locale {
   const saved = storage.getItem('locale')
-  return saved === 'zh' || saved === 'en' ? saved : language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+  if (saved === 'ar' || saved === 'en') return saved
+  return language.toLowerCase().startsWith('ar') ? 'ar' : 'en'
 }
 
 function readUser(): User | null {
@@ -64,7 +65,8 @@ watch(
   () => state.locale,
   locale => {
     localStorage.setItem('locale', locale)
-    document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en'
+    document.documentElement.lang = locale === 'ar' ? 'ar' : 'en'
+    document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr'
   },
   { immediate: true, flush: 'sync' },
 )
@@ -77,21 +79,13 @@ watch(
 export function saveSession(token: string, user: User) {
   state.token = token
   state.user = user
-  localStorage.setItem('token', token)
-  localStorage.setItem('user', JSON.stringify(user))
+  localStorage.setItem("token", token)
+  localStorage.setItem("user", JSON.stringify(user))
 }
 
 export function clearSession() {
-  state.token = ''
+  state.token = ""
   state.user = null
-  state.summary = null
-  localStorage.removeItem('token')
-  localStorage.removeItem('user')
-}
-
-export function summaryBadges(summary: Summary | null) {
-  return {
-    attacks: summary?.active_attacks ?? 0,
-    nodes: Math.max(0, (summary?.total_nodes ?? 0) - (summary?.online_nodes ?? 0)),
-  }
+  localStorage.removeItem("token")
+  localStorage.removeItem("user")
 }

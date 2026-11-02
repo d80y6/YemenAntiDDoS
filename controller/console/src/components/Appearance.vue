@@ -17,7 +17,7 @@ const themes = computed(() => ['auto', 'light', 'dark'].map(value => ({ value, l
   />
   <XSeg
     :model-value="state.locale"
-    :options="[{ value: 'zh', label: '中' }, { value: 'en', label: 'EN' }]"
+    :options="[{ value: 'ar', label: 'عربي' }, { value: 'en', label: 'EN' }]"
     :label="t('common.language')"
     @update:model-value="state.locale = $event as Locale"
   />

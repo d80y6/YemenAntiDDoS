@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { state, clearSession, summaryBadges, type Summary } from '../state'
+import { state, clearSession, type Summary } from '../state'
 import { request } from '../api/client'
 import { usePoll } from '../composables/usePoll'
 import { icons } from '../icons'
@@ -19,7 +19,7 @@ const groups = [
   { name: 'response', items: ['responses', 'connectors'] },
   { name: 'system', items: ['users', 'audit'] },
 ]
-const badges = computed(() => summaryBadges(state.summary))
+const badges = computed(() => ({ attacks: state.summary?.active_attacks || 0, nodes: state.summary?.online_nodes || 0 }))
 const actionMode = computed(() => state.summary?.action_mode === 'auto'
   ? t('common.auto')
   : state.summary?.action_mode === 'observe' ? t('nav.observe') : '—')
@@ -107,9 +107,9 @@ function count(item: string) {
             type="button"
             class="mini-b"
             :aria-label="t('common.language')"
-            @click="state.locale = state.locale === 'zh' ? 'en' : 'zh'"
+            @click="state.locale = state.locale === 'ar' ? 'en' : 'ar'"
           >
-            {{ state.locale === 'zh' ? '中' : 'EN' }}
+            {{ state.locale === 'ar' ? 'عربي' : 'EN' }}
           </button>
           <button
             type="button"

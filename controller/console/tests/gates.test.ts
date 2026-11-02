@@ -1,6 +1,6 @@
 import { it, expect } from 'vitest'
 const join = (...parts: string[]) => parts.join('/')
-import zh from '../src/i18n/zh'
+import zh from '../src/i18n/ar'
 import en from '../src/i18n/en'
 import { root } from '../scripts/lib.mjs'
 import { scanArtifacts } from '../scripts/artifact-scan.mjs'

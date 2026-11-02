@@ -59,7 +59,7 @@ function commitTime(key: 'from' | 'to', clear = false) {
   void load()
 }
 function selectFilter(key: 'entity_type' | 'user_id', value: string) {
-  if (key === 'entity_type') value = entityTypes.find(v => ['zh', 'en']
+  if (key === 'entity_type') value = entityTypes.find(v => ['ar', 'en']
     .some(locale => t('audit.entity.' + v, {}, { locale }) === value)) ?? value
   filters[key] = value
   void load()

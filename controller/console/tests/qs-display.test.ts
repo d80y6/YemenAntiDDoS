@@ -13,7 +13,7 @@ it('K5 traffic node labels preserve IDs, modes and offline entries', async () =>
     { value: 'edge-c', label: 'edge-c · XDP' },
   ])
 })
-it.each([['zh', '解码器'], ['en', 'Decoders']] as const)('K7 decoder label %s', (locale, label) => {
+it.each([['ar', '解码器'], ['en', 'Decoders']] as const)('K7 decoder label %s', (locale, label) => {
   state.locale = locale
   expect(render(DecoderPicker).get('.decoder-picker > button').text()).toBe(label)
 })

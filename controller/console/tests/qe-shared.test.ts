@@ -6,7 +6,7 @@ import { mockReply } from '../mock/data'
 import { contract } from '../src/api/contract'
 import { checkContract } from '../scripts/contract-check.mjs'
 import { mountQE } from './qe-harness'
-import zh from '../src/i18n/zh'
+import zh from '../src/i18n/ar'
 import en from '../src/i18n/en'
 it('G-shared W31 POST and PUT actual middleware forwards nondefault body without opening a port', async () => {
   const invoke = await middlewareProbe()
@@ -65,7 +65,7 @@ it('G-contract W33 nullable parent_id all-null fixture strict and status nullabl
   expect(contract.find(e => e.endpoint === '/api/dynamic-detection/status' && e.path === 'prefixes'))
     .toHaveProperty('nullable', true)
 })
-it.each([['zh', zh], ['en', en]])('G-i18n W34 exact old texts %s', (lang, dictionary) => {
+it.each([['ar', zh], ['en', en]])('G-i18n W34 exact old texts %s', (lang, dictionary) => {
   const old = sourceText('tests/fixtures/legacy-i18n/' + lang + '.js.txt')
   for (const [section, keys] of [['templates', ['recommendInboundOnly', 'prefixLevel']], ['thresholds',
     ['globalSubnetOnly', 'pctRange', 'pctWarning', 'noResponse', 'useDefault']], ['baseline',

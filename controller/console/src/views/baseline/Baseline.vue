@@ -49,7 +49,7 @@ onUnmounted(() => lifetime.abort())
 <template>
   <div class="page detection baseline-page">
     <div class="page-head"><h1>{{ t('nav.baseline') }}
-      <span v-if="locale === 'zh'" class="sub count">{{ t('baseline.subtitle') }}</span></h1></div>
+      <span v-if="locale === 'ar'" class="sub count">{{ t('baseline.subtitle') }}</span></h1></div>
     <section class="panel"><div class="panel-head"><h2>{{ t('baseline.infoTitle') }}</h2>
       <button class="btn sm ghost" :aria-expanded="info" @click="info = !info">
         {{ t(info ? 'baseline.less' : 'baseline.more') }}</button></div>
