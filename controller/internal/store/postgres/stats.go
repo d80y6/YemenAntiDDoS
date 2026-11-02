@@ -10,8 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 type statsRepo struct{ pool *pgxpool.Pool }

@@ -13,7 +13,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 func d2cR1Wait(t *testing.T, done <-chan struct{}, description string) {

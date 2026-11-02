@@ -27,8 +27,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/config"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/config"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 const d3aHost = "xdrop-d3a.invalid"

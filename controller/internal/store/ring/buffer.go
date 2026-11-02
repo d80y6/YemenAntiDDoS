@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // StaleAfter must equal threshold.ringFreshnessWindow.

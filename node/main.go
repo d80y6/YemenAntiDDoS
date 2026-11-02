@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,13 +17,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/littlewolf9527/xsight/node/internal/bpf"
-	"github.com/littlewolf9527/xsight/node/internal/collector"
-	"github.com/littlewolf9527/xsight/node/internal/config"
-	"github.com/littlewolf9527/xsight/node/internal/pb"
-	"github.com/littlewolf9527/xsight/node/internal/reporter"
-	"github.com/littlewolf9527/xsight/node/internal/sampler"
-	"github.com/littlewolf9527/xsight/node/internal/watchdog"
+	"github.com/d80y6/YemenDDoS/node/internal/bpf"
+	"github.com/d80y6/YemenDDoS/node/internal/collector"
+	"github.com/d80y6/YemenDDoS/node/internal/config"
+	"github.com/d80y6/YemenDDoS/node/internal/l7collector"
+	"github.com/d80y6/YemenDDoS/node/internal/pb"
+	"github.com/d80y6/YemenDDoS/node/internal/reporter"
+	"github.com/d80y6/YemenDDoS/node/internal/sampler"
+	"github.com/d80y6/YemenDDoS/node/internal/watchdog"
+	"github.com/d80y6/YemenDDoS/shared/tlsconf"
 )
 
 var (
@@ -197,6 +200,21 @@ func main() {
 	go coll.Run(collectorCtx)
 
 	// P5+P6: Start gRPC reporter with applyConfig callback
+	var grpcTLS *tls.Config
+	if cfg.TLS.Enabled {
+		tlsCfg, err := tlsconf.ClientConfig(tlsconf.FileConfig{
+			CAFile:           cfg.TLS.CAFile,
+			CertFile:         cfg.TLS.CertFile,
+			KeyFile:          cfg.TLS.KeyFile,
+			ServerName:       cfg.TLS.ServerName,
+			AllowLegacyTLS12: cfg.TLS.AllowLegacyTLS12,
+		})
+		if err != nil {
+			log.Fatalf("tls client config: %v", err)
+		}
+		grpcTLS = tlsCfg
+		log.Println("tls: node gRPC client enabled (mTLS)")
+	}
 	rpt := reporter.New(reporter.Config{
 		ControllerAddr: cfg.Controller.Address,
 		NodeID:         cfg.NodeID,
@@ -204,6 +222,7 @@ func main() {
 		InterfaceName:  primaryIface.Name,
 		AgentVersion:   "0.7.0",
 		UpstreamRate:   primaryIface.UpstreamSampleRate,
+		TLS:            grpcTLS,
 	}, coll.Reports, applyConfig)
 	rpt.SetDeliveryVersion(initialDeliveryVersion)
 	go rpt.Run(collectorCtx)
@@ -222,6 +241,48 @@ func main() {
 	// Parallel parse pipeline: reader → N workers → aggregator
 	// workers=1 bypasses channels (identical to old single-threaded path)
 	pool := sampler.NewWorkerPool(cfg.ParseWorkers, flowTable, batcher, primaryIface.Mode == "erspan")
+
+	// Layer 7 inspection: feeds CriticalEventStream with HTTP flood, Slowloris
+	// and TLS ClientHello anomalies. Disabled by default to keep the hot path
+	// allocation-free for deployments that only need L3/L4 visibility.
+	l7c := l7collector.New(l7collector.Config{
+		Enabled:          cfg.L7.Enabled,
+		Window:           time.Duration(cfg.L7.WindowSeconds) * time.Second,
+		HTTPRPS:          cfg.L7.HTTPRPS,
+		TLSHSPS:          cfg.L7.TLSHSPS,
+		SlowlorisConns:   cfg.L7.SlowlorisConns,
+		MaxTracked:       cfg.L7.MaxTracked,
+		MaxFlows:         cfg.L7.MaxFlows,
+		MaxOpenFragments: cfg.L7.MaxOpenFragments,
+	})
+	if l7c.Enabled() {
+		pool.SetL7(l7c)
+		window := time.Duration(cfg.L7.WindowSeconds) * time.Second
+		go func() {
+			ticker := time.NewTicker(window)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-collectorCtx.Done():
+					return
+				case now := <-ticker.C:
+					for _, ev := range l7c.Tick(now) {
+						rpt.SendCriticalEvent(&pb.CriticalEvent{
+							NodeId:        cfg.NodeID,
+							InterfaceName: primaryIface.Name,
+							Timestamp:     ev.At.Unix(),
+							DstIp:         ev.DstIP,
+							EventType:     ev.Type,
+							Counters:      ev.Counters,
+						})
+					}
+				}
+			}
+		}()
+		log.Printf("l7: enabled window=%s http_rps=%d tls_hsps=%d slowloris_conns=%d",
+			window, cfg.L7.HTTPRPS, cfg.L7.TLSHSPS, cfg.L7.SlowlorisConns)
+	}
+
 	log.Printf("sampler: starting with %d parse workers", pool.Workers())
 	go pool.Start(s)
 

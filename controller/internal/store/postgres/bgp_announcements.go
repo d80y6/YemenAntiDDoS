@@ -15,7 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 type bgpAnnouncementRepo struct{ pool *pgxpool.Pool }
@@ -83,13 +83,13 @@ func (r *bgpAnnouncementRepo) ReconcileAttachments(ctx context.Context, id int, 
 
 const bgpAnnouncementCols = `id, prefix, route_map, connector_id, first_action_id,
 	status, refcount, announced_at, delay_started_at, delay_minutes, withdrawn_at,
-	COALESCE(error_message, ''), created_at, gen`
+	COALESCE(error_message, ''), COALESCE(kind, 'rtbh'), COALESCE(rule_spec, ''), created_at, gen`
 
 func (r *bgpAnnouncementRepo) scanOne(row pgx.Row) (*store.BGPAnnouncement, error) {
 	var a store.BGPAnnouncement
 	err := row.Scan(&a.ID, &a.Prefix, &a.RouteMap, &a.ConnectorID, &a.FirstActionID,
 		&a.Status, &a.Refcount, &a.AnnouncedAt, &a.DelayStartedAt, &a.DelayMinutes,
-		&a.WithdrawnAt, &a.ErrorMessage, &a.CreatedAt, &a.Gen)
+		&a.WithdrawnAt, &a.ErrorMessage, &a.Kind, &a.RuleSpec, &a.CreatedAt, &a.Gen)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -141,10 +141,10 @@ func (r *bgpAnnouncementRepo) Attach(ctx context.Context, p store.BGPAttachParam
 			// No prior announcement — INSERT as announcing, refcount=1, caller will run vtysh.
 			if err := tx.QueryRow(ctx,
 				`INSERT INTO bgp_announcements
-				 (prefix, route_map, connector_id, first_action_id, status, refcount, delay_minutes)
-				 VALUES ($1, $2, $3, $4, 'announcing', 1, $5)
+				 (prefix, route_map, connector_id, first_action_id, status, refcount, delay_minutes, kind, rule_spec)
+				 VALUES ($1, $2, $3, $4, 'announcing', 1, $5, COALESCE(NULLIF($6,''),'rtbh'), $7)
 				 RETURNING id`,
-				p.Prefix, p.RouteMap, p.ConnectorID, p.ActionID, p.DelayMinutes).Scan(&annID); err != nil {
+				p.Prefix, p.RouteMap, p.ConnectorID, p.ActionID, p.DelayMinutes, p.Kind, p.RuleSpec).Scan(&annID); err != nil {
 				return fmt.Errorf("insert announcement: %w", err)
 			}
 			if _, err := tx.Exec(ctx,
@@ -260,8 +260,9 @@ func (r *bgpAnnouncementRepo) Attach(ctx context.Context, p store.BGPAttachParam
 				 SET status = 'announcing', refcount = $2, gen = gen + 1,
 				     announced_at = now(), withdrawn_at = NULL,
 				     delay_started_at = NULL, error_message = '',
-				     delay_minutes = 0
-				 WHERE id = $1`, annID, 1+liveResidual); err != nil {
+				     delay_minutes = 0,
+				     kind = COALESCE(NULLIF($3,''), kind), rule_spec = $4
+				 WHERE id = $1`, annID, 1+liveResidual, p.Kind, p.RuleSpec); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx,

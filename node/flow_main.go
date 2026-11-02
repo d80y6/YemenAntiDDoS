@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"os"
@@ -11,11 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/littlewolf9527/xsight/node/internal/config"
-	"github.com/littlewolf9527/xsight/node/internal/flow"
-	"github.com/littlewolf9527/xsight/node/internal/pb"
-	"github.com/littlewolf9527/xsight/node/internal/reporter"
-	"github.com/littlewolf9527/xsight/node/internal/watchdog"
+	"github.com/d80y6/YemenDDoS/node/internal/config"
+	"github.com/d80y6/YemenDDoS/node/internal/flow"
+	"github.com/d80y6/YemenDDoS/node/internal/pb"
+	"github.com/d80y6/YemenDDoS/node/internal/reporter"
+	"github.com/d80y6/YemenDDoS/node/internal/watchdog"
+	"github.com/d80y6/YemenDDoS/shared/tlsconf"
 )
 
 func runFlowMode(cfg *config.Config) {
@@ -135,6 +137,21 @@ func runFlowMode(cfg *config.Config) {
 	}
 
 	// Reporter (flow mode — receives *pb.StatsReport directly)
+	var grpcTLS *tls.Config
+	if cfg.TLS.Enabled {
+		tlsCfg, err := tlsconf.ClientConfig(tlsconf.FileConfig{
+			CAFile:           cfg.TLS.CAFile,
+			CertFile:         cfg.TLS.CertFile,
+			KeyFile:          cfg.TLS.KeyFile,
+			ServerName:       cfg.TLS.ServerName,
+			AllowLegacyTLS12: cfg.TLS.AllowLegacyTLS12,
+		})
+		if err != nil {
+			log.Fatalf("tls client config: %v", err)
+		}
+		grpcTLS = tlsCfg
+		log.Println("tls: node gRPC client enabled (mTLS)")
+	}
 	rpt := reporter.NewFlow(reporter.Config{
 		ControllerAddr: cfg.Controller.Address,
 		NodeID:         cfg.NodeID,
@@ -143,6 +160,7 @@ func runFlowMode(cfg *config.Config) {
 		AgentVersion:   "3.0.0",
 		UpstreamRate:   1,
 		Mode:           "flow",
+		TLS:            grpcTLS,
 	}, flowReports, applyConfig)
 	rpt.SetDeliveryVersion(initialDeliveryVersion)
 	rpt.SetHeartbeat(func() *pb.StatsReport { return aggregator.Heartbeat(cfg.NodeID, "flow", 1) })

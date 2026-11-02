@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 )

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/api"
-	"github.com/littlewolf9527/xsight/controller/internal/ingestion"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/api"
+	"github.com/d80y6/YemenDDoS/controller/internal/ingestion"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 const dao13eForbidden = "This response is referenced by outbound (sends) rules — cannot add xDrop/BGP action"

@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store/storetest"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/storetest"
 )
 
 func TestD2A_CountLiveContract(t *testing.T) {

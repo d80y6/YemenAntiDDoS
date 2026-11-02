@@ -8,10 +8,10 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/dedup"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/threshold"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/dedup"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/threshold"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 )
 
 func TestDao14b1V04_D2Sends(t *testing.T) {

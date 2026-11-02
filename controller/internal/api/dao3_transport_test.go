@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"github.com/littlewolf9527/xsight/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
 	"io"
 	"log"
 	"net"

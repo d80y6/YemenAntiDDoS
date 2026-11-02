@@ -11,6 +11,7 @@ export const businessPaths = [
   '/attacks',
   '/attacks/:id',
   '/mitigations',
+  '/l7',
   '/nodes',
   '/prefixes',
   '/thresholds',
@@ -49,6 +50,7 @@ export function makeRouter(history: RouterHistory = createWebHistory()) {
       : path === '/attacks/:id' ? () => import('./views/attacks/AttackDetail.vue')
       : path === '/mitigations' ? () => import('./views/mitigations/Mitigations.vue')
       : path === '/nodes' ? () => import('./views/nodes/Nodes.vue')
+      : path === '/l7' ? () => import('./views/l7/L7.vue')
       : path === '/prefixes' ? () => import('./views/prefixes/Prefixes.vue')
       : path === '/thresholds' ? () => import('./views/thresholds/Templates.vue')
       : path === '/thresholds/rules' ? () => import('./views/thresholds/Rules.vue')

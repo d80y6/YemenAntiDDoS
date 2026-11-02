@@ -18,6 +18,19 @@ auth:
   # Set a unique password of 8 to 72 bytes (not "admin") before first startup.
   initial_admin_password: ""
 
+tls:
+  # Mutual TLS for the Node gRPC listener. Strongly recommended in production:
+  # with enabled=false the Controller accepts statistics from anyone who knows
+  # a node API key, and node identity is taken from message contents.
+  # Generate material with: xsight-cert init-ca ... && xsight-cert issue ...
+  # See docs/MTLS.md for the rollout sequence and rotation procedure.
+  enabled: false
+  ca_file: "/etc/xsight/pki/ca.crt"          # verifies NODE client certificates
+  cert_file: "/etc/xsight/pki/controller.crt"
+  key_file: "/etc/xsight/pki/controller.key"
+  server_name: "controller"                   # expected name in our own leaf (optional)
+  allow_legacy_tls12: false                   # keep false unless a middlebox forces TLS 1.2
+
 action_engine:
   # observe (default): xDrop actions are logged as skipped (skip_reason=mode_observe) and no xDrop rule is created.
   # auto: xDrop rules are actually created. BGP, webhook and shell actions run in both modes.
@@ -28,6 +41,18 @@ action_engine:
   # Expand permitted ports to this cumulative packet share (1–100), up to this many rules (1–8; 1 disables top-K).
   xdrop_topk_pct: 80
   xdrop_topk_max: 8
+  # Adaptive sample floor (opt-in). When true, a field carrying >=90% (>=95%)
+  # of a small sample narrows the rule to base/10 (base/20), so short
+  # hit-and-run floods can still be narrowed. It never tightens the floor and
+  # is ignored when xdrop_min_sample_packets is 0. Default false preserves the
+  # strict "one sample floor for everyone" behaviour.
+  xdrop_adaptive_samples: false
+  # Zero-touch fast path: confirm an attack on the first detection tick when the
+  # measured value is at least this multiple of the threshold (0 disables).
+  # A hit-and-run flood that lasts 2-3 seconds would otherwise never satisfy
+  # hard_threshold_confirm_seconds. Only affects attack confirmation; xDrop is
+  # still gated by mode=auto.
+  fast_path_multiplier: 5.0
 
 detection:
   hard_threshold_confirm_seconds: 3     # consecutive per-second breaching data points to confirm (one missing second tolerated)

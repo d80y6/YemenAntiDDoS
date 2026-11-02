@@ -3,9 +3,11 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
+	"github.com/d80y6/YemenDDoS/shared/tlsconf"
 	"gopkg.in/yaml.v3"
 )
 
@@ -14,10 +16,36 @@ type Config struct {
 	Database  DatabaseConfig  `yaml:"database"`
 	Log       LogConfig       `yaml:"log"`
 	Auth      AuthConfig      `yaml:"auth"`
+	TLS       TLSConfig       `yaml:"tls"`
 	Action    ActionConfig    `yaml:"action_engine"`
 	Detection DetectionConfig `yaml:"detection"`
 	Retention RetentionConfig `yaml:"retention"`
 	Ring      RingConfig      `yaml:"ring"`
+}
+
+// TLSConfig configures mutual TLS on the Node gRPC listener.
+//
+// Security posture: mTLS is ON by default. The plaintext path exists only so
+// an existing deployment can be brought up before its nodes hold certificates;
+// it must be treated as a temporary migration window, never as a steady state.
+// See docs/MTLS.md for the rollout sequence.
+type TLSConfig struct {
+	// Enabled turns on mutual TLS for the gRPC listener.
+	Enabled bool `yaml:"enabled"`
+	// CAFile is the PEM bundle trusted for NODE client certificates. For a
+	// single-tier deployment this is the same file as the listener trust
+	// store; keeping the key distinct makes the two-tier layout obvious.
+	CAFile string `yaml:"ca_file"`
+	// CertFile / KeyFile are the Controller's own leaf certificate and key,
+	// presented to nodes so they can verify the server.
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	// ServerName is the expected name in our own certificate, used for
+	// node-side pinning and rejected if the leaf does not carry it. Optional.
+	ServerName string `yaml:"server_name"`
+	// AllowLegacyTLS12 relaxes the TLS 1.3 floor to 1.2. Kept because some
+	// appliances middlebox-inspect TLS and drop 1.3 handshakes; log loudly.
+	AllowLegacyTLS12 bool `yaml:"allow_legacy_tls12"`
 }
 
 // RingConfig controls the in-memory ring buffer limits.
@@ -69,6 +97,15 @@ type ActionConfig struct {
 	XDropMinSamplePackets uint64 `yaml:"xdrop_min_sample_packets"`
 	XDropTopKPct          int    `yaml:"xdrop_topk_pct"`
 	XDropTopKMax          int    `yaml:"xdrop_topk_max"`
+	// XDropAdaptiveSamples lowers the sample requirement when the observed
+	// dominant field is unambiguous (>=90/95%). Without it, short hit-and-run
+	// attacks never reach xdrop_min_sample_packets and the rule stays broad.
+	XDropAdaptiveSamples bool `yaml:"xdrop_adaptive_samples"`
+	// FastPathMultiplier confirms an attack on the first tick when the
+	// measured rate is at least this multiple of the threshold. 0 disables
+	// the shortcut. This is what makes autonomous mitigation react within one
+	// detection tick instead of waiting for the confirm window.
+	FastPathMultiplier float64 `yaml:"fast_path_multiplier"`
 }
 
 type DetectionConfig struct {
@@ -119,6 +156,8 @@ func Load(path string) (*Config, error) {
 			XDropMinSamplePackets: 1000,
 			XDropTopKPct:          80,
 			XDropTopKMax:          8,
+			XDropAdaptiveSamples:  false,
+			FastPathMultiplier:    5.0,
 		},
 		Detection: DetectionConfig{
 			HardThresholdConfirmSeconds:    3,
@@ -161,6 +200,27 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Action.XDropTopKMax < 1 || cfg.Action.XDropTopKMax > 8 {
 		return nil, fmt.Errorf("action_engine.xdrop_topk_max must be between 1 and 8")
+	}
+	if cfg.Action.FastPathMultiplier < 0 || (cfg.Action.FastPathMultiplier > 0 && cfg.Action.FastPathMultiplier < 1) {
+		return nil, fmt.Errorf("action_engine.fast_path_multiplier must be 0 (disabled) or >= 1, got %v", cfg.Action.FastPathMultiplier)
+	}
+	// TLS: fail fast at startup rather than at the first node handshake. A
+	// controller that boots with enabled=true but a missing/unreadable CA
+	// would otherwise accept TCP and reject every node afterwards, which is
+	// indistinguishable from a node-side misconfiguration in the field.
+	if cfg.TLS.Enabled {
+		if _, err := tlsconf.ServerConfig(tlsconf.FileConfig{
+			CAFile:           cfg.TLS.CAFile,
+			CertFile:         cfg.TLS.CertFile,
+			KeyFile:          cfg.TLS.KeyFile,
+			ServerName:       cfg.TLS.ServerName,
+			AllowLegacyTLS12: cfg.TLS.AllowLegacyTLS12,
+		}); err != nil {
+			return nil, fmt.Errorf("tls: %w", err)
+		}
+		if cfg.TLS.AllowLegacyTLS12 {
+			log.Printf("WARN tls: allow_legacy_tls12=true — TLS 1.3 floor relaxed; harden once the middlebox is removed")
+		}
 	}
 
 	return cfg, nil

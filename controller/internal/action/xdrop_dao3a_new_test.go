@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 const d3aWebTpl = `{"dst_ip":"{dst_ip}","src_ip":"{src_ip}","dst_port":"{dominant_dst_port}","src_port":"{dominant_src_port}","protocol":"{decoder}","action":"drop"}`

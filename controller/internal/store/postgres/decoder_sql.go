@@ -3,7 +3,7 @@ package postgres
 import (
 	"strings"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 func extraDecoderNames() []string {

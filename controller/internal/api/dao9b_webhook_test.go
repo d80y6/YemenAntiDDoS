@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
 )
 
 func dao9bTestButton(t *testing.T, ms int, replyAfter, want time.Duration, wantSuccess bool) {

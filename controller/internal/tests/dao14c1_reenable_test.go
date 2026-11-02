@@ -14,11 +14,11 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/api"
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/api"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )

@@ -3,7 +3,7 @@ package storetest
 import (
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // RunXDrop2AContract is shared by the offline mock and the existing TD104

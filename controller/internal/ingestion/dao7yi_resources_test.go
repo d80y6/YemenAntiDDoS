@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -114,7 +114,7 @@ func dao7New(t *testing.T, interceptor grpc.StreamServerInterceptor) *dao7Fixtur
 	if err := metrics.Register(f.reg, s, &tracker.Tracker{}); err != nil {
 		t.Fatal(err)
 	}
-	f.s = NewServer(f.h)
+	f.s = NewServer(f.h, nil)
 	// Production NewServer stays unchanged; intercept only the test server.
 	f.s.grpcServer = grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, next grpc.UnaryHandler) (any, error) {
 		f.peers <- peerAddr(ctx)
@@ -528,7 +528,7 @@ func TestDao7yi_S2_HandlerExitsBeforeWrapper(t *testing.T) {
 func TestDao7yi_S3_NoStreams(t *testing.T) {
 	dao7Limit(t)
 	logs := dao7Logs(t)
-	s := NewServer(NewGRPCHandler(GRPCHandlerConfig{}))
+	s := NewServer(NewGRPCHandler(GRPCHandlerConfig{}), nil)
 	done := make(chan struct{})
 	go func() { s.GracefulStop(); close(done) }()
 	select {
@@ -536,8 +536,8 @@ func TestDao7yi_S3_NoStreams(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no-stream shutdown did not return")
 	}
-	if strings.Contains(logs.String(), "WARN") {
-		t.Errorf("unexpected warning: %s", logs.String())
+	if msg := logs.String(); strings.Contains(msg, "WARN") && !strings.Contains(msg, "serving PLAINTEXT gRPC") {
+		t.Errorf("unexpected warning: %s", msg)
 	}
 }
 func TestDao7yi_W1_EleventhNodeGetsWorker(t *testing.T) {

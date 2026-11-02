@@ -13,8 +13,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 type dao13cWrite struct {

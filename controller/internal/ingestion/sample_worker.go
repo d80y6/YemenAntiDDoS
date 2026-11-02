@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
 )
 
 // SampleMetrics tracks sample processing statistics.

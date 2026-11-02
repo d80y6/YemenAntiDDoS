@@ -13,7 +13,7 @@ package action
 import (
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // TestSplitIPOrCIDR_ExactToDstIP covers the v1.3 Phase 1c.1 splitter: exact

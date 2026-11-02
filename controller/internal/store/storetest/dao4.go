@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 func dao4Contracts(run runner) {

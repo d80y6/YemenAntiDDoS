@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
 )
 
 type dao14FakeCS struct {

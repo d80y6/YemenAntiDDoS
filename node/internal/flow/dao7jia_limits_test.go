@@ -4,7 +4,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 const dao7jiaSecond = int64(12345)

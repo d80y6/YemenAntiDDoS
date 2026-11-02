@@ -2024,7 +2024,7 @@ const file_xsight_proto_rawDesc = "" +
 	"\vStatsStream\x12\x13.xsight.StatsReport\x1a\x16.google.protobuf.Empty(\x01\x12=\n" +
 	"\fSampleStream\x12\x13.xsight.SampleBatch\x1a\x16.google.protobuf.Empty(\x01\x12F\n" +
 	"\x13CriticalEventStream\x12\x15.xsight.CriticalEvent\x1a\x16.google.protobuf.Empty(\x01\x12C\n" +
-	"\rControlStream\x12\x16.xsight.ControlMessage\x1a\x16.xsight.ControlMessage(\x010\x01B3Z1github.com/littlewolf9527/xsight/node/internal/pbb\x06proto3"
+	"\rControlStream\x12\x16.xsight.ControlMessage\x1a\x16.xsight.ControlMessage(\x010\x01B-Z+github.com/d80y6/YemenDDoS/node/internal/pbb\x06proto3"
 
 var (
 	file_xsight_proto_rawDescOnce sync.Once

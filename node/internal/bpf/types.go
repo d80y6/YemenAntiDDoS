@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // SampleHdr mirrors struct sample_hdr in xsight.h.

@@ -10,8 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 func synBPSFixture(t *testing.T) *dao14d2Fixture {

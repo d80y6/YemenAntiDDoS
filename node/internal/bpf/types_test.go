@@ -5,8 +5,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/node/internal/bpf"
-	"github.com/littlewolf9527/xsight/node/internal/collector"
+	"github.com/d80y6/YemenDDoS/node/internal/bpf"
+	"github.com/d80y6/YemenDDoS/node/internal/collector"
 )
 
 func dao8Prefix(t *testing.T, cidr string) bpf.PrefixEntry {

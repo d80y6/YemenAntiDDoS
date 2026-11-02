@@ -8,7 +8,7 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
 )
 
 func TestDao5b_B5_SnapshotGeneration(t *testing.T) {

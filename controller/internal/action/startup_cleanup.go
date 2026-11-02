@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 var cleanupStepTimeout, cleanupItemTimeout = 60 * time.Second, 10 * time.Second

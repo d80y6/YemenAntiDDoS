@@ -4,19 +4,21 @@ package reporter
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"sync/atomic"
 
-	"github.com/littlewolf9527/xsight/node/internal/collector"
-	"github.com/littlewolf9527/xsight/node/internal/pb"
-	"github.com/littlewolf9527/xsight/node/internal/sampler"
+	"github.com/d80y6/YemenDDoS/node/internal/collector"
+	"github.com/d80y6/YemenDDoS/node/internal/pb"
+	"github.com/d80y6/YemenDDoS/node/internal/sampler"
 )
 
 // Config holds reporter configuration.
@@ -28,6 +30,13 @@ type Config struct {
 	AgentVersion   string
 	UpstreamRate   uint32
 	Mode           string // "xdp" (default) | "flow" — v3.0
+
+	// TLS is the optional mutual-TLS configuration. When nil the dial uses
+	// insecure credentials (plaintext) for backward compatibility during
+	// migration. When non-nil the Node dials over mTLS using the provided
+	// config; the Controller must present a certificate verified by CAFile
+	// and the Node must present its own identity certificate.
+	TLS *tls.Config
 }
 
 // ApplyConfigFunc is called when the reporter receives a new watch config
@@ -55,6 +64,10 @@ type Reporter struct {
 	localRate          atomic.Uint32 // current sample rate, updated from StatsStream
 	upstreamRate       atomic.Uint32 // follows the latest processed Stats report
 	batchSendLatencyUs atomic.Int64  // last SampleStream.Send() latency in microseconds
+	criticalDropped    atomic.Uint64 // CriticalEventStream queue overflows
+
+	// critical carries L7 / threshold events to CriticalEventStream.
+	critical chan *pb.CriticalEvent
 
 	// State
 	conn           *grpc.ClientConn
@@ -71,6 +84,7 @@ func New(cfg Config, reports <-chan *collector.Report, applyConfig ApplyConfigFu
 		cfg:         cfg,
 		reports:     reports,
 		batches:     make(chan []sampler.PacketSample, 16),
+		critical:    make(chan *pb.CriticalEvent, 64),
 		applyConfig: applyConfig,
 	}
 	r.upstreamRate.Store(cfg.UpstreamRate)
@@ -84,6 +98,7 @@ func NewFlow(cfg Config, flowReports <-chan *pb.StatsReport, applyConfig ApplyCo
 		cfg:         cfg,
 		flowReports: flowReports,
 		batches:     make(chan []sampler.PacketSample, 16),
+		critical:    make(chan *pb.CriticalEvent, 64),
 		applyConfig: applyConfig,
 	}
 	r.upstreamRate.Store(cfg.UpstreamRate)
@@ -128,6 +143,24 @@ func (r *Reporter) BatchHandler() func([]sampler.PacketSample) {
 		}
 	}
 }
+
+// SendCriticalEvent queues an L7 or threshold event for CriticalEventStream.
+// It never blocks the capture path: when the queue is full the event is
+// dropped and counted, matching the best-effort contract of SampleStream.
+func (r *Reporter) SendCriticalEvent(ev *pb.CriticalEvent) {
+	if ev == nil {
+		return
+	}
+	select {
+	case r.critical <- ev:
+	default:
+		r.criticalDropped.Add(1)
+	}
+}
+
+// CriticalDropped reports how many critical events were dropped because the
+// controller link could not keep up.
+func (r *Reporter) CriticalDropped() uint64 { return r.criticalDropped.Load() }
 
 // Run connects to Controller, performs handshake, and starts all streams.
 // Blocks until ctx is cancelled. Handles reconnection with backoff.
@@ -179,7 +212,7 @@ func (r *Reporter) connectAndServe(ctx context.Context) error {
 
 	conn, err := grpc.NewClient(
 		r.cfg.ControllerAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(transportCredentials(r.cfg.TLS)),
 	)
 	if err != nil {
 		return err
@@ -236,12 +269,11 @@ func (r *Reporter) connectAndServe(ctx context.Context) error {
 		}()
 	}
 
-	// CriticalEventStream — placeholder for now (events come from collector in future)
+	// CriticalEventStream — L7 and hard-threshold events
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		<-streamCtx.Done()
-		errCh <- nil
+		errCh <- r.runCriticalStream(streamCtx)
 	}()
 
 	// ControlStream
@@ -446,6 +478,24 @@ func (r *Reporter) runSampleStream(ctx context.Context) error {
 	}
 }
 
+func (r *Reporter) runCriticalStream(ctx context.Context) error {
+	stream, err := r.client.CriticalEventStream(ctx)
+	if err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			_, _ = stream.CloseAndRecv()
+			return nil
+		case ev := <-r.critical:
+			if err := sendWithTimeout(ctx, stream, ev); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func (r *Reporter) runControlStream(ctx context.Context, initial *pb.ConfigAck) error {
 	stream, err := r.client.ControlStream(ctx)
 	if err != nil {
@@ -530,3 +580,13 @@ type rejectedError struct{}
 func (rejectedError) Error() string { return "handshake rejected" }
 
 var errRejected = rejectedError{}
+
+// transportCredentials returns secure credentials when TLS is configured and
+// insecure credentials otherwise, preserving backward compatibility for
+// deployments that have not yet rolled out certificates.
+func transportCredentials(tls *tls.Config) credentials.TransportCredentials {
+	if tls != nil {
+		return credentials.NewTLS(tls)
+	}
+	return insecure.NewCredentials()
+}

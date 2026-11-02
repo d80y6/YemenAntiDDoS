@@ -15,9 +15,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/configpub"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // Reads and snapshots are independent copies. Every implemented write counts

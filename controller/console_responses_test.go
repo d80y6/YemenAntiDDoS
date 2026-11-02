@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 func consoleResponsesScope(t *testing.T, lang string) {

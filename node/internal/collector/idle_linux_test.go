@@ -12,7 +12,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/littlewolf9527/xsight/node/internal/bpf"
+	"github.com/d80y6/YemenDDoS/node/internal/bpf"
 )
 
 // This loader uses the explicit unpinned branch of Load, never an interface.

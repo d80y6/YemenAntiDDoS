@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/dedup"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/dedup"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 )
 
 const trackerDBOperationTimeout = 5 * time.Second
@@ -40,6 +40,11 @@ type Config struct {
 	ExpiryMaxScale          float64 // max multiplier (default 4.0)
 	MaxActiveAttacks        int     // default 10000, 0 = no limit
 	ManualExpireHoldSeconds int     // seconds a manually expired key stays held; 0 = remove immediately
+	// FastPathMultiplier promotes an attack straight to active on the first
+	// tick when the measured value is at least this multiple of the threshold.
+	// This is the zero-touch fast path for hit-and-run floods that would end
+	// before the normal confirm window elapses. 0 disables the shortcut.
+	FastPathMultiplier float64
 }
 
 // attackKey uniquely identifies an attack.
@@ -251,6 +256,18 @@ func (t *Tracker) Feed(exceeded []engine.ThresholdExceeded) {
 			a.tickSustained = sus
 		}
 		a.LastSeen = now
+		// Zero-touch fast path: an overwhelming first-second rate is its own
+		// confirmation. Without this, a 2-3 second hit-and-run flood ends before
+		// the sustain window elapses and nothing is ever mitigated.
+		if t.cfg.FastPathMultiplier > 0 && evt.Value > 0 &&
+			float64(evt.Actual) >= t.cfg.FastPathMultiplier*float64(evt.Value) {
+			if a.ConsecutiveExceeded < a.ConfirmThreshold {
+				a.ConsecutiveExceeded = a.ConfirmThreshold
+			}
+			if a.tickSustained < a.ConfirmThreshold {
+				a.tickSustained = a.ConfirmThreshold
+			}
+		}
 		// NOTE: ownership fields (PrefixID, ThresholdID, ResponseID) are intentionally NOT refreshed
 		// on subsequent threshold hits. This is first-writer-wins: the earliest matching rule determines
 		// the response binding for the entire attack lifecycle. Changing response mid-attack would risk

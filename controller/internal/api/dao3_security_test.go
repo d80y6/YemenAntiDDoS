@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/configpub"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // Each repository operation locks, and reads return independent snapshots.

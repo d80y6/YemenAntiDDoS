@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/configpub"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
 

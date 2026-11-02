@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // A.1.1: Verify that every registered decoder has a valid DispatchClass

@@ -18,12 +18,19 @@ import XEmpty from '../../components/XEmpty.vue'
 import Detail from './Detail.vue'
 import Status from './Status.vue'
 import RuleId from './RuleId.vue'
+import Flowspec from './Flowspec.vue'
+import XTabs from '../../components/XTabs.vue'
 const { t } = useI18n()
 const rows = shallowRef<Row[]>([]), dismissed = shallowRef<Row[]>([]), xdrop = shallowRef<Row[]>([])
 const connectors = shallowRef<Row[]>([]), errors = ref(['', '', '']), updated = ref(0)
 const loaded = ref([false, false, false, false])
 const stamps: Stamp[] = Array.from({ length: 4 }, () => ({ lastOk: null, failing: false }))
-const expanded = ref(false), now = ref(Date.now()), drawerOpen = ref(false), kind = ref('bgp')
+const expanded = ref(false), now = ref(Date.now()), drawerOpen = ref(false), kind = ref('bgp'), tab = ref('bgp')
+const tabs = [
+  { value: 'bgp', label: t('mitigations.bgpTitle') },
+  { value: 'flowspec', label: t('flowspec.title') },
+  { value: 'xdrop', label: t('mitigations.xdropTitle') },
+]
 const selected = shallowRef<Row>(), missing = ref(false)
 const bgp = computed(() => rows.value.filter(r => !r.is_orphan))
 const orphans = computed(() => rows.value.filter(r => r.is_orphan))
@@ -101,7 +108,8 @@ const headers = (keys: string[]) => keys.map(k => t('mitigations.' + k))
   <div class="page mitigations-page">
     <div class="page-head"><h1>{{ t('nav.mitigations') }}</h1><span v-if="updated" class="sub">
       {{ t('data.updated', { time: fullDateTime(new Date(updated).toISOString()).slice(11) }) }}</span></div>
-    <section v-if="orphans.length" class="orphan confirm" data-testid="orphans">
+    <XTabs v-model="tab" :tabs="tabs" label="Mitigations" query />
+    <section v-if="orphans.length && tab === 'bgp'" class="orphan confirm" data-testid="orphans">
       <strong>{{ t('mitigations.orphanBannerTitle', { count: orphans.length }) }}</strong>
       <p class="sub">{{ t('mitigations.orphanBannerDesc') }}</p>
       <div class="tbl-wrap"><table><tbody><template v-for="row in orphans" :key="row.announcement_id">
@@ -117,7 +125,7 @@ const headers = (keys: string[]) => keys.map(k => t('mitigations.' + k))
             :confirm-label="confirm!.label" tone="danger" :action="execute" /></td></tr>
       </template></tbody></table></div>
     </section>
-    <section class="panel" data-testid="bgp"><div class="panel-head"><h2>{{ t('mitigations.bgpTitle') }}
+    <template v-if="tab === 'bgp'"><section class="panel" data-testid="bgp"><div class="panel-head"><h2>{{ t('mitigations.bgpTitle') }}
       <span class="sub num">{{ bgp.length }}</span></h2>
       <button class="btn sm ghost" :aria-expanded="expanded" @click="expanded = !expanded">
         {{ t('mitigations.viewDismissedOrphans', { count: dismissed.length }) }}
@@ -163,6 +171,9 @@ const headers = (keys: string[]) => keys.map(k => t('mitigations.' + k))
             {{ t(loaded[1] ? 'mitigations.noDismissedOrphans' : 'common.loading') }}</p></div>
       </template>
     </section>
+  </template>
+  <template v-if="tab === 'flowspec'"><Flowspec :now="now" :admin="isAdmin()" /></template>
+  <template v-if="tab === 'xdrop'">
     <section class="panel" data-testid="xdrop"><div class="panel-head"><h2>{{ t('mitigations.xdropTitle') }}
       <span class="sub num">{{ xdrop.length }}</span></h2><XTip :text="t('mitigations.xdropTip')" wide /></div>
       <p v-if="errors[2]" class="crit mono" role="alert">{{ errors[2] }}
@@ -188,7 +199,8 @@ const headers = (keys: string[]) => keys.map(k => t('mitigations.' + k))
           :action="execute" /></td></tr>
       </template></tbody></table><XEmpty v-if="!xdrop.length" :loading="!loaded[2]" /></div>
     </section>
-    <Detail v-if="selected" :key="kind + businessKey(selected, kind)" v-model="drawerOpen"
+  </template>
+  <Detail v-if="selected" :key="kind + businessKey(selected, kind)" v-model="drawerOpen"
       :row="selected" :kind="kind" :now="now" :missing="missing"
       :connectors="connectors" :holders="holderCount(selected)" />
   </div>

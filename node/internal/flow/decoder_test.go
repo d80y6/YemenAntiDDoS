@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // sameElements reports whether the first n elements of arr contain

@@ -374,6 +374,10 @@ type BGPAttachParams struct {
 	Prefix       string
 	RouteMap     string
 	ConnectorID  int
+	// Kind is "rtbh" (empty defaults to rtbh) or "flowspec".
+	Kind string
+	// RuleSpec is the JSON-encoded Flowspec rule for console inspection.
+	RuleSpec string
 }
 
 // BGPAttachResult tells the caller what side effect (if any) to execute

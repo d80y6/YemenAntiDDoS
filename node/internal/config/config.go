@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/d80y6/YemenDDoS/shared/tlsconf"
 	"gopkg.in/yaml.v3"
 )
 
@@ -18,9 +19,47 @@ type Config struct {
 	Interfaces   []Interface `yaml:"interfaces"`
 	BPF          BPFConfig   `yaml:"bpf"`
 	Controller   CtrlConfig  `yaml:"controller"`
+	TLS          TLSConfig   `yaml:"tls"`
+	L7           L7Config    `yaml:"l7"`
 	Auth         AuthConfig  `yaml:"auth"`
 	ParseWorkers int         `yaml:"parse_workers"` // parallel parse workers, default = NumCPU/2, min 1, max 16
 	Pprof        bool        `yaml:"pprof"`         // enable pprof debug server on 127.0.0.1:6061 (default false)
+}
+
+// TLSConfig configures mutual TLS for the Node's gRPC client.
+//
+// When enabled, the Node dials the Controller over TLS and presents its own
+// client certificate. The server certificate is verified against ca_file.
+// If server_name is empty, the gRPC authority (controller.address host) is
+// used as the expected peer name.
+type TLSConfig struct {
+	Enabled bool `yaml:"enabled"` // when true, use mutual TLS; false keeps plaintext
+	// CAFile verifies the Controller's certificate. Same file as the
+	// Controller's ca_file in single-tier deployments.
+	CAFile string `yaml:"ca_file"`
+	// CertFile / KeyFile are the Node's identity certificate and key.
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	// ServerName is the expected name in the Controller certificate.
+	// Empty means "use controller.address host".
+	ServerName       string `yaml:"server_name"`
+	AllowLegacyTLS12 bool   `yaml:"allow_legacy_tls12"`
+}
+
+// L7Config controls application-layer inspection on captured payloads.
+//
+// L7 parsing needs the first ~512 bytes of each TCP payload. With the default
+// sample_bytes of 256 a TLS ClientHello may be truncated, so enable L7 with
+// sample_bytes: 512 on every XDP interface.
+type L7Config struct {
+	Enabled          bool   `yaml:"enabled"`
+	WindowSeconds    int    `yaml:"window_seconds"` // aggregation window, default 1
+	HTTPRPS          uint64 `yaml:"http_rps"`       // HTTP requests/s per destination
+	TLSHSPS          uint64 `yaml:"tls_hsps"`       // ClientHellos/s per destination
+	SlowlorisConns   uint64 `yaml:"slowloris_conns"`
+	MaxTracked       int    `yaml:"max_tracked_destinations"`
+	MaxFlows         int    `yaml:"max_tracked_flows"`
+	MaxOpenFragments int    `yaml:"max_open_fragments"`
 }
 
 // Interface defines a single mirror/ERSPAN interface to monitor.
@@ -134,11 +173,53 @@ func (c *Config) validate() error {
 	}
 	// flow mode: interfaces/BPF/parse_workers not required (config comes from Controller)
 
+	if c.L7.Enabled {
+		if c.L7.WindowSeconds <= 0 {
+			c.L7.WindowSeconds = 1
+		}
+		if c.L7.WindowSeconds > 60 {
+			return fmt.Errorf("l7.window_seconds must be 1-60, got %d", c.L7.WindowSeconds)
+		}
+		if c.L7.HTTPRPS == 0 {
+			c.L7.HTTPRPS = 2000
+		}
+		if c.L7.TLSHSPS == 0 {
+			c.L7.TLSHSPS = 1000
+		}
+		if c.L7.SlowlorisConns == 0 {
+			c.L7.SlowlorisConns = 50
+		}
+		if c.L7.MaxTracked == 0 {
+			c.L7.MaxTracked = 4096
+		}
+		if c.L7.MaxFlows == 0 {
+			c.L7.MaxFlows = 65536
+		}
+		if c.L7.MaxOpenFragments == 0 {
+			c.L7.MaxOpenFragments = 20
+		}
+		if c.Mode == "xdp" && len(c.Interfaces) > 0 && c.Interfaces[0].SampleBytes < 512 {
+			log.Printf("WARN l7: sample_bytes=%d may truncate TLS ClientHello; set sample_bytes: 512 for full L7 visibility",
+				c.Interfaces[0].SampleBytes)
+		}
+	}
+
 	if c.Controller.Address == "" {
 		return fmt.Errorf("controller.address is required")
 	}
 	if c.Auth.NodeAPIKey == "" {
 		return fmt.Errorf("auth.node_api_key is required")
+	}
+	if c.TLS.Enabled {
+		if _, err := tlsconf.ClientConfig(tlsconf.FileConfig{
+			CAFile:           c.TLS.CAFile,
+			CertFile:         c.TLS.CertFile,
+			KeyFile:          c.TLS.KeyFile,
+			ServerName:       c.TLS.ServerName,
+			AllowLegacyTLS12: c.TLS.AllowLegacyTLS12,
+		}); err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
 	}
 
 	return nil

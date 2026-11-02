@@ -1,7 +1,7 @@
 package postgres
 
 import (
-	"github.com/littlewolf9527/xsight/controller/internal/store/storetest"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/storetest"
 	"os"
 	"testing"
 )

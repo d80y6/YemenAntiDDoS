@@ -12,7 +12,7 @@
 
 [Unit]
 Description=xSight Node — DDoS Detection System (XDP/eBPF Node Agent)
-Documentation=https://github.com/littlewolf9527/xsight
+Documentation=https://github.com/d80y6/YemenDDoS
 After=network-online.target
 Wants=network-online.target
 

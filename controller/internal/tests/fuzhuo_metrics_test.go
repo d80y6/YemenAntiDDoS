@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

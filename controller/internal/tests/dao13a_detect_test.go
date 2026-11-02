@@ -8,12 +8,12 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/classifier"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/dedup"
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/classifier"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/dedup"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
 )
 
 type dao13aFixture struct {

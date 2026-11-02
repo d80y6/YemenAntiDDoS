@@ -1,7 +1,7 @@
 <div align="center">
-  <img src=".github/assets/xsight_logo_amber_hd.png" alt="xSight" height="120">
+  <img src=".github/assets/yemenantiddos_logo_amber_hd.png" alt="YemenAntiDDoS" height="120">
 
-  <h1>xSight</h1>
+  <h1>YemenAntiDDoS</h1>
 
   <p>Distributed DDoS detection and response platform built on XDP/eBPF — wire-speed traffic analysis with automated mitigation.</p>
 
@@ -10,14 +10,14 @@
   [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-orange?logo=anthropic)](https://claude.com/product/claude-code)
 
-  [中文文档](README.zh.md) · [Live demo (sample data)](https://littlewolf9527.github.io/xsight/)
+  [Live demo (sample data)](https://d80y6.github.io/YemenAntiDDoS/)
 </div>
 
 ---
 
-## What is xSight?
+## What is YemenAntiDDoS?
 
-xSight is a distributed DDoS detection and response platform that combines XDP/eBPF wire-speed packet counting with flow-based analysis (sFlow, NetFlow, IPFIX). It watches traffic on mirror/ERSPAN ports or ingests flow data from routers and switches, detects volumetric attacks using both hard thresholds and dynamic baselines, and triggers automated responses — from BPF-level firewall rules to BGP blackhole announcements.
+YemenAntiDDoS is a distributed DDoS detection and response platform that combines XDP/eBPF wire-speed packet counting with flow-based analysis (sFlow, NetFlow, IPFIX). It watches traffic on mirror/ERSPAN ports or ingests flow data from routers and switches, detects volumetric attacks using both hard thresholds and dynamic baselines, and triggers automated responses — from BPF-level firewall rules to BGP blackhole announcements.
 
 The system has two components:
 
@@ -84,14 +84,14 @@ The system has two components:
 - **xDrop decoder compatibility gate** — dispatch follows the compatible decoder set; `ip` / `ip_other` aggregate attacks are not dispatched to xDrop (`decoder_not_xdrop_compatible`).
 - **Shared BGP announcements (Wanguard-style)** — multiple attacks sharing a `(prefix, route_map)` ref a single FRR route. MAX delay across attached attacks, atomic attach/detach under `SELECT FOR UPDATE`.
 - **Persisted delayed tasks** — `scheduled_actions` table survives controller restart; startup reconciliation re-arms pending timers, fires overdue tasks, retries in-flight crashed tasks.
-- **FRR orphan detection** — startup scan surfaces FRR routes with no backing xSight attack so operators can withdraw or dismiss them.
+- **FRR orphan detection** — startup scan surfaces FRR routes with no backing YemenAntiDDoS attack so operators can withdraw or dismiss them.
 
 ### Active Mitigations & Per-Attack Drilldown
 - Dedicated `Active Mitigations` page showing BGP Routing and XDrop Rules sections on one page, with a detail drawer per artifact (fields, Delivery for xDrop, Execution Timeline); Delivery queries current per-node xDrop state.
 - The attack-detail page shows a `BGP Role` column (triggered / attached to a shared announcement) and a Force remove button; for BGP, it withdraws the entire shared route, removing protection for every attached attack.
 
 ### Observability
-- Prometheus `/metrics` endpoint with xSight-specific metrics (vtysh ops, action dispatches, skip reasons, scheduled-action recovery outcomes, state-table gauges, tracker counters) plus Go runtime / process metrics for free.
+- Prometheus `/metrics` endpoint with YemenAntiDDoS-specific metrics (vtysh ops, action dispatches, skip reasons, scheduled-action recovery outcomes, state-table gauges, tracker counters) plus Go runtime / process metrics for free.
 - Custom collectors read DB state at scrape time — always fresh, no staleness window, no background refresh goroutine.
 
 ### Traffic Analysis
@@ -114,7 +114,7 @@ The system has two components:
 ## Repository Layout
 
 ```
-xsight/
+yemenantiddos/
 ├── controller/          # Management plane (Go + Vue 3)
 │   ├── internal/        # API, detection engine, tracker, actions, store
 │   └── console/         # Vue 3 + TypeScript web console
@@ -215,13 +215,13 @@ The last enabled admin cannot be deleted, demoted or disabled; the API returns 4
 
 ## Known Limitations
 
-### The Controller–Node link is not encrypted
+### The Controller–Node link is plaintext unless mTLS is enabled
 
-gRPC between Node and Controller is plaintext, and after a node's first successful handshake the Controller accepts statistics by the `node_id` written in each message. Deploy the Controller and Nodes only on a trusted network or inside a VPN / encrypted tunnel, and firewall the gRPC port (default 50051). Details: [Node gRPC interface — Security Considerations](node/API.md#security-considerations).
+gRPC between Node and Controller defaults to plaintext. When `tls.enabled` is set on both sides, the link uses TLS 1.3 mutual authentication and the Controller takes the node identity from the client certificate's URI SAN (`spiffe://xsight/node/<node_id>`) instead of the `node_id` field in each message. Without mTLS, after a node's first successful handshake the Controller still accepts statistics by the `node_id` written in each message, so deploy only on a trusted network or inside a VPN / encrypted tunnel and firewall the gRPC port (default 50051). Setup, rotation and revocation: [docs/MTLS.md](docs/MTLS.md).
 
 ### xDrop port fields depend on flow samples
 
-Port and source-IP fields of an xDrop rule (`{dominant_dst_port}`, `{dominant_src_port}`, `{src_ip}`) are filled from the attack's sampled flows when the action runs. A field is kept only with at least `action_engine.xdrop_min_sample_packets` sampled packets (default 1000) and a dominant share of at least `xdrop_narrow_pct` (default 80%). Otherwise the field is dropped, or the top ports become several rules (up to `xdrop_topk_max`, default 8). A `drop` rule that ends up with no narrowing field becomes a `rate_limit` at the attack's pps threshold. Early in an attack the rule can therefore be broader than the template suggests. To wait for a clear dominant port, add a precondition such as:
+Port and source-IP fields of an xDrop rule (`{dominant_dst_port}`, `{dominant_src_port}`, `{src_ip}`) are filled from the attack's sampled flows when the action runs. A field is kept only with at least `action_engine.xdrop_min_sample_packets` sampled packets (default 1000) and a dominant share of at least `xdrop_narrow_pct` (default 80%). Setting `action_engine.xdrop_adaptive_samples: true` lowers that floor to `base/10` when the dominant share is at least 90% (and `base/20` at 95%), which lets short hit-and-run floods narrow instead of falling back to a broad rule; `action_engine.fast_path_multiplier` (default 5.0) also confirms an attack on the first tick when the measured rate is that many times the threshold. Otherwise the field is dropped, or the top ports become several rules (up to `xdrop_topk_max`, default 8). A `drop` rule that ends up with no narrowing field becomes a `rate_limit` at the attack's pps threshold. Early in an attack the rule can therefore be broader than the template suggests. To wait for a clear dominant port, add a precondition such as:
 
 ```
 dominant_dst_port_pct  gte  40
@@ -245,24 +245,3 @@ MIT — see [LICENSE](LICENSE).
 
 BPF/C kernel programs (`node/bpf/`) are licensed under GPL-2.0 as required by the Linux kernel BPF subsystem.
 
----
-
-## Sponsors
-
-<a href="https://www.hytron.io/">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/sponsor-hytron-dark.png">
-  <img src=".github/assets/sponsor-hytron.png" alt="Hytron" height="60">
-</picture>
-</a>
-&nbsp;&nbsp;&nbsp;&nbsp;
-<a href="https://www.yecaoyun.com/">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/sponsor-yecaoyun-dark.png">
-  <img src=".github/assets/sponsor-yecaoyun.png" alt="Yecaoyun" height="60">
-</picture>
-</a>
-
----
-
-<sub>Built entirely with <a href="https://claude.com/product/claude-code">Claude Code</a> — including the XDP/BPF kernel program, gRPC streaming, detection engine, and Vue frontend.</sub>

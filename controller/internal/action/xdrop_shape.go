@@ -4,20 +4,62 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	sharedDecoder "github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	sharedDecoder "github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 type xdropShapeConfig struct {
 	NarrowPct        int
 	MinSamplePackets uint64
+	AdaptiveSamples  bool
 }
 
 var xdropShapeSettings = xdropShapeConfig{NarrowPct: 80, MinSamplePackets: 1000}
 
 // SetXDropShapeConfig installs the validated configuration before the engine starts.
 func SetXDropShapeConfig(narrowPct int, minSamplePackets uint64) {
-	xdropShapeSettings = xdropShapeConfig{NarrowPct: narrowPct, MinSamplePackets: minSamplePackets}
+	xdropShapeSettings.NarrowPct = narrowPct
+	xdropShapeSettings.MinSamplePackets = minSamplePackets
+}
+
+// SetXDropAdaptiveSamples toggles the adaptive sample floor. When enabled, a
+// single field carrying an overwhelming share of a small sample still narrows
+// the rule, which is what makes hit-and-run floods mitigable at all.
+func SetXDropAdaptiveSamples(enabled bool) {
+	xdropShapeSettings.AdaptiveSamples = enabled
+}
+
+// effectiveMinSamples scales the sample requirement by how unambiguous the
+// dominance signal already is. At >=95% a handful of samples is enough
+// evidence; at >=90% a tenth of the base suffices; otherwise the configured
+// floor stands unchanged.
+func effectiveMinSamples(dominantPct int) uint64 {
+	base := xdropShapeSettings.MinSamplePackets
+	// base == 0 is the documented "no sample floor" setting; never raise it.
+	if base == 0 || !xdropShapeSettings.AdaptiveSamples {
+		return base
+	}
+	var lowered uint64
+	switch {
+	case dominantPct >= 95:
+		lowered = maxU64(32, base/20)
+	case dominantPct >= 90:
+		lowered = maxU64(64, base/10)
+	default:
+		return base
+	}
+	// Adaptive sampling may only relax the floor, never tighten it.
+	if lowered >= base {
+		return base
+	}
+	return lowered
+}
+
+func maxU64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type thresholdLookup func(id int) (*store.Threshold, error)
@@ -142,13 +184,26 @@ func shapeXDropBody(tpl map[string]any, body map[string]any, fa *FlowAnalysis, a
 		dstPct, srcPct, ipPct = fa.DominantDstPortPct, fa.DominantSrcPortPct, fa.TopSrcIPPct
 	}
 	kept := false
-	if samples < cfg.MinSamplePackets {
+	// Adaptive floor: judge the sample count against the strongest dominance
+	// signal among the fields this template actually allows.
+	maxPct := 0
+	if allowDst && dstPct > maxPct {
+		maxPct = dstPct
+	}
+	if allowSrc && srcPct > maxPct {
+		maxPct = srcPct
+	}
+	if allowIP && ipPct > maxPct {
+		maxPct = ipPct
+	}
+	minSamples := effectiveMinSamples(maxPct)
+	if samples < minSamples {
 		for key, allowed := range map[string]bool{"dst_port": allowDst, "src_port": allowSrc, "src_ip": allowIP} {
 			if allowed {
 				delete(body, key)
 			}
 		}
-		hints = append(hints, fmt.Sprintf("shape: samples %d < %d", samples, cfg.MinSamplePackets))
+		hints = append(hints, fmt.Sprintf("shape: samples %d < %d", samples, minSamples))
 	} else {
 		keepDst := allowDst && dstPct >= cfg.NarrowPct && xdropShapePortSet(body["dst_port"])
 		keepSrc := allowSrc && srcPct >= cfg.NarrowPct && xdropShapePortSet(body["src_port"])

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 var errValidationLookup = errors.New("validation lookup failed")

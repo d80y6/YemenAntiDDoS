@@ -31,6 +31,9 @@
   --scrim: rgba(0,0,0,.32);
   --tint-ok: rgba(27,138,76,.10);
   --tint-warn: rgba(184,110,0,.08);
+  --l7-http: #3198f9;
+  --l7-tls: #e66c9d;
+  --l7-slowloris: #f0743c;
 }
 :root[data-theme="dark"] {
   --bg: #0f1216;
@@ -52,6 +55,9 @@
   --tint-crit: rgba(240,96,96,.16);
   --tint-fwd: rgba(80,200,120,.16);
   --tint-neutral: rgba(200,208,216,.12);
+  --l7-http: #1585e4;
+  --l7-tls: #b3346d;
+  --l7-slowloris: #f0743c;
   --on-solid: #ffffff;
   --slot1: #1585e4;
   --slot2: #b3346d;
@@ -81,6 +87,9 @@
   --tint-crit: rgba(240,96,96,.16);
   --tint-fwd: rgba(80,200,120,.16);
   --tint-neutral: rgba(200,208,216,.12);
+  --l7-http: #1585e4;
+  --l7-tls: #b3346d;
+  --l7-slowloris: #f0743c;
   --on-solid: #ffffff;
   --slot1: #1585e4;
   --slot2: #b3346d;

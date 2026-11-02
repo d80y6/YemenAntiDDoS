@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 const shellWaitDelay = 2 * time.Second

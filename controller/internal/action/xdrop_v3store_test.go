@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/store/storetest"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/storetest"
 )
 
 // Embedding makes any unimplemented repository call fail instead of silently

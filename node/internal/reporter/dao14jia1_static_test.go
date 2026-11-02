@@ -8,7 +8,7 @@ import (
 	"go/token"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/node/internal/collector"
+	"github.com/d80y6/YemenDDoS/node/internal/collector"
 )
 
 func dao14ReporterText(n ast.Node) string {

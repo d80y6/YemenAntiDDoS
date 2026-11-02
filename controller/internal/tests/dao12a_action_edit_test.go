@@ -28,9 +28,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
 )
 
 // Copy at repository boundaries, including recorded arguments, so the mock's
@@ -524,7 +524,7 @@ func TestDao12a_G2p(t *testing.T) {
 		source := `package api
 import (
 	"testing"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 func TestDao12aCloneOverlay(t *testing.T) {
 	w, s, b, p := 1, 2, 3, 4

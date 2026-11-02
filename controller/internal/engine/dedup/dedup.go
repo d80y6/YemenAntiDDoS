@@ -15,7 +15,7 @@ package dedup
 import (
 	"sync"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
 )
 
 // suppressedBy maps each decoder to the set of more-specific decoders that suppress it.

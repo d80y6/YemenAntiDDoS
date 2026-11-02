@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/littlewolf9527/xsight/node/internal/bpf"
-	"github.com/littlewolf9527/xsight/node/internal/sampler"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/node/internal/bpf"
+	"github.com/d80y6/YemenDDoS/node/internal/sampler"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // ----- configuration constants -----

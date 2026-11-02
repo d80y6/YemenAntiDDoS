@@ -4,7 +4,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/littlewolf9527/xsight/controller/internal/config"
+	"github.com/d80y6/YemenDDoS/controller/internal/config"
 )
 
 func TestDao7yi_R1_DataPointSizeMatchesEstimate(t *testing.T) {

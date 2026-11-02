@@ -22,6 +22,24 @@ const capture = lookup(() => identity() && props.row.mode !== 'flow' ? identity(
   request<Row>('/api/nodes/' + encodeURIComponent(props.row.id) + '/status', { signal, allow: [404] }))
 const flow = lookup(() => identity() && props.row.mode === 'flow' ? identity() : '', signal =>
   api<Row[] | null>('flow-listeners', { node_id: props.row.id }, signal))
+interface CertInfo {
+  subject?: string; issuer?: string; serial_number?: string
+  not_before?: string; not_after?: string
+  dns_names?: string[]; uris?: string[]; fingerprint_sha256?: string; is_ca?: boolean
+}
+interface TlsState {
+  node_id: string
+  enabled: boolean
+  warnings: string[]
+  server?: { cert: CertInfo; min_version: string; days_remaining: number; not_after: string }
+  node?: { present: boolean; mtls?: boolean; verified?: boolean; identity?: string
+    days_remaining?: number; seen_at?: string; cert?: CertInfo }
+}
+const tls = lookup(() => props.modelValue ? props.row.id : '', signal =>
+  request<TlsState>('/api/nodes/' + encodeURIComponent(props.row.id) + '/tls', { signal }))
+const expiry = (days?: number) => days === undefined ? '—'
+  : t(days < 0 ? 'nodes.tls.expired' : 'nodes.tls.days', { n: days })
+const expiryTone = (days?: number) => days === undefined ? '' : days < 0 ? 'crit' : days <= 30 ? 'warn' : 'ok'
 const traffic = lookup(() => identity() && props.row.online ? identity() : '', signal =>
   api<Row[] | null>('stats/total-timeseries', { node_id: props.row.id, direction: 'receives', resolution: '5s',
     from: new Date(Date.now() - 900000).toISOString() }, signal))
@@ -58,6 +76,50 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
       </template>
       <dt>{{ t('nodes.registered') }}</dt><dd class="num">{{ fullDateTime(row.created_at) }}</dd>
     </dl>
+    <div class="dh"><h3>{{ t('nodes.tls.title') }}</h3>
+      <span v-if="tls.data.value && !tls.data.value.enabled" class="sub">{{ t('nodes.tls.plaintext') }}</span></div>
+    <p v-if="tls.loading.value" class="sub">{{ t('common.loading') }}</p>
+    <p v-else-if="tls.error.value" class="crit mono" role="alert">{{ message(tls.error.value) }}</p>
+    <template v-else-if="tls.data.value">
+      <p v-if="!tls.data.value.enabled" class="sub">{{ t('nodes.tls.disabledDesc') }}</p>
+      <template v-else>
+        <ul v-if="tls.data.value.warnings.length" class="warns">
+          <li v-for="w in tls.data.value.warnings" :key="w" class="crit">
+            {{ t('nodes.tls.warn.' + w) }}</li>
+        </ul>
+        <dl class="kv">
+          <dt>{{ t('nodes.tls.server') }}</dt>
+          <dd><span class="pill ok">TLS</span>
+            <span class="sub">{{ t('nodes.tls.minVersion', { v: tls.data.value.server?.min_version || '—' }) }}</span>
+            <span class="sub" :class="expiryTone(tls.data.value.server?.days_remaining)">
+              {{ t('nodes.tls.expires', { when: tls.data.value.server?.not_after
+                ? fullDateTime(tls.data.value.server.not_after) : '—',
+                left: expiry(tls.data.value.server?.days_remaining) }) }}</span></dd>
+          <dt>{{ t('nodes.tls.issuer') }}</dt>
+          <dd class="mono">{{ tls.data.value.server?.cert.issuer || '—' }}</dd>
+          <dt>{{ t('nodes.tls.fingerprint') }}</dt>
+          <dd class="mono fp">{{ tls.data.value.server?.cert.fingerprint_sha256 || '—' }}</dd>
+          <dt>{{ t('nodes.tls.node') }}</dt>
+          <dd v-if="!tls.data.value.node?.present" class="sub">{{ t('nodes.tls.noCert') }}</dd>
+          <dd v-else><span class="pill" :class="tls.data.value.node.verified ? 'ok' : 'warn'">
+            {{ t(tls.data.value.node.verified ? 'nodes.tls.verified' : 'nodes.tls.unverified') }}</span>
+            <span class="sub" :class="expiryTone(tls.data.value.node.days_remaining)">
+              {{ expiry(tls.data.value.node.days_remaining) }}</span></dd>
+          <template v-if="tls.data.value.node?.present">
+            <dt>{{ t('nodes.tls.subject') }}</dt>
+            <dd class="mono">{{ tls.data.value.node.cert?.subject || '—' }}</dd>
+            <dt>{{ t('nodes.tls.identity') }}</dt>
+            <dd class="mono">{{ tls.data.value.node.identity || '—' }}</dd>
+            <dt>{{ t('nodes.tls.sans') }}</dt>
+            <dd class="mono sans">{{ [...(tls.data.value.node.cert?.uris || []),
+              ...(tls.data.value.node.cert?.dns_names || [])].join(', ') || '—' }}</dd>
+            <dt>{{ t('nodes.tls.seen') }}</dt>
+            <dd class="num">{{ tls.data.value.node.seen_at
+              ? fullDateTime(tls.data.value.node.seen_at) : '—' }}</dd>
+          </template>
+        </dl>
+      </template>
+    </template>
     <div class="dh"><h3>{{ t('nodes.traffic') }}</h3><span v-if="reading" class="num">
       {{ pps(reading.pps) }} pps · {{ bps(reading.bps) }}</span></div>
     <p v-if="!row.online" class="empty">{{ t('nodes.offlineRecent') }}</p>
@@ -77,6 +139,9 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 <style scoped>
 .kv { grid-template-columns: 100px minmax(0, 1fr); }
 .capture { white-space: pre-line; }
+.fp, .sans { overflow-wrap: anywhere; font-size: 11.5px; }
+.warns { list-style: none; padding: 0; margin: 0 0 6px; }
+.warns li { font-size: 12px; }
 .dh { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 18px; }
 h3 { font-size: 13px; font-weight: 500; }
 .danger-zone { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }

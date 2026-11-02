@@ -6,7 +6,7 @@ syntax = "proto3";
 
 package xsight;
 
-option go_package = "github.com/littlewolf9527/xsight/node/internal/pb";
+option go_package = "github.com/d80y6/YemenDDoS/node/internal/pb";
 
 import "google/protobuf/empty.proto";
 

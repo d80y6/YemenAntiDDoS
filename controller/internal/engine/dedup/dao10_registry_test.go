@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 func TestDao10_K3_SuppressionRegistry(t *testing.T) {

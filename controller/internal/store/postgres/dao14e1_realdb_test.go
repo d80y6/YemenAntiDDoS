@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/littlewolf9527/xsight/controller/internal/api"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/api"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 func TestDao14e1_RealDB_R1(t *testing.T) {

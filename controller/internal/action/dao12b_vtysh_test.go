@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 func dao12bWant(t *testing.T, name string, yes bool, detail any) {

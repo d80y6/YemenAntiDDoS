@@ -1,7 +1,7 @@
 package flow
 
 import (
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // MaxDecoderHits is the maximum number of decoder indices a single packet

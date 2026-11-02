@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // PGStore implements store.Store backed by PostgreSQL.
@@ -1507,6 +1507,10 @@ var migrations = []string{
 	 ORDER BY l.attack_id, l.action_id, l.connector_id, l.external_rule_id, l.executed_at DESC
 	 ON CONFLICT DO NOTHING`,
 	`ALTER TABLE bgp_announcements ADD COLUMN IF NOT EXISTS gen INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE bgp_announcements ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'rtbh'`,
+	`ALTER TABLE bgp_announcements ADD COLUMN IF NOT EXISTS rule_spec TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE bgp_connectors ADD COLUMN IF NOT EXISTS vendor TEXT NOT NULL DEFAULT 'frr'`,
+	`ALTER TABLE bgp_connectors ADD COLUMN IF NOT EXISTS flowspec_enabled BOOLEAN NOT NULL DEFAULT false`,
 	`DO $$ BEGIN
 	  IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'bgp_connectors'::regclass
 	             AND attname = 'bgp_asn' AND atttypid = 'int4'::regtype) THEN

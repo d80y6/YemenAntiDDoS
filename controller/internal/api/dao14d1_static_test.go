@@ -256,7 +256,7 @@ func TestDao14d1_G3(t *testing.T) {
 	}
 	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
 	config := types.Config{Importer: importer.ForCompiler(fset, "source", nil)}
-	pkg, err := config.Check("github.com/littlewolf9527/xsight/controller/internal/api", fset, parsed, info)
+	pkg, err := config.Check("github.com/d80y6/YemenDDoS/controller/internal/api", fset, parsed, info)
 	if err != nil {
 		t.Fatalf("type-check scanner input: %v", err)
 	}

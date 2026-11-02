@@ -12,7 +12,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/ringbuf"
-	"github.com/littlewolf9527/xsight/node/internal/bpf"
+	"github.com/d80y6/YemenDDoS/node/internal/bpf"
 )
 
 // Sampler reads raw packet bytes from the BPF ring buffer.

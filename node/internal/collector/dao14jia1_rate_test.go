@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/node/internal/bpf"
+	"github.com/d80y6/YemenDDoS/node/internal/bpf"
 )
 
 // Expected traces come from the independent rate_cells.out oracle.

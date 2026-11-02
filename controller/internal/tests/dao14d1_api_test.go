@@ -19,16 +19,16 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/api"
-	"github.com/littlewolf9527/xsight/controller/internal/configpub"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/baseline"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/threshold"
-	"github.com/littlewolf9527/xsight/controller/internal/ingestion"
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/api"
+	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/baseline"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/threshold"
+	"github.com/d80y6/YemenDDoS/controller/internal/ingestion"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
 )
 
 // Faults and captured values belong to one request fixture. Embedded repositories
@@ -1157,6 +1157,10 @@ func TestDao14d1_G4Fixture(t *testing.T) {
 		"/api/flow-listeners/:id":                   "/api/flow-listeners/1",
 		"/api/flow-sources":                         "/api/flow-sources?listener_id=1",
 		"/api/flow-sources/:id":                     "/api/flow-sources/1",
+		"/api/flowspec/announcements":               "/api/flowspec/announcements",
+		"/api/l7/summary":                           "/api/l7/summary?window_minutes=5",
+		"/api/l7/events":                            "/api/l7/events?limit=10",
+		"/api/nodes/:id/tls":                     "/api/nodes/dao14-n1/tls",
 	}
 	count := 0
 	for _, route := range r.Routes() {
@@ -1178,8 +1182,8 @@ func TestDao14d1_G4Fixture(t *testing.T) {
 			}
 		})
 	}
-	if count != 50 || count != len(paths) {
-		t.Fatalf("probed=%d inventory=%d want=50", count, len(paths))
+	if count != 54 || count != len(paths) {
+		t.Fatalf("probed=%d inventory=%d want=54", count, len(paths))
 	}
 	t.Logf("probed %d GET routes", count)
 }

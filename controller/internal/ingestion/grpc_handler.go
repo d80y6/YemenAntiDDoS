@@ -2,22 +2,26 @@ package ingestion
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/shared/tlsconf"
 )
 
 // StatsCallback is invoked for each received StatsReport.
@@ -76,6 +80,66 @@ func peerAddr(ctx context.Context) string {
 	return ""
 }
 
+// peerCertNodeID returns the node identity asserted by the verified client
+// certificate, if the connection is mutually authenticated. In plaintext mode
+// it reports ok=false, which keeps the historical peer-address mapping as the
+// only available identity source.
+func peerCertNodeID(ctx context.Context) (string, bool) {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.AuthInfo == nil {
+		return "", false
+	}
+	info, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return "", false
+	}
+	for _, cert := range info.State.PeerCertificates {
+		if id, err := tlsconf.NodeIDFromCert(cert); err == nil && id != "" {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// peerCert returns the leaf client certificate of a mutually authenticated
+// connection, or ok=false for plaintext/one-way TLS links.
+func peerCert(ctx context.Context) (*x509.Certificate, bool) {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.AuthInfo == nil {
+		return nil, false
+	}
+	info, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(info.State.PeerCertificates) == 0 {
+		return nil, false
+	}
+	return info.State.PeerCertificates[0], true
+}
+
+// recordPeerTLS stores the client certificate for the node-management view.
+func (h *GRPCHandler) recordPeerTLS(ctx context.Context, nodeID string) {
+	cert, ok := peerCert(ctx)
+	if !ok {
+		return
+	}
+	desc := tlsconf.DescribeCert(cert)
+	identity, _ := tlsconf.NodeIDFromCert(cert)
+	info := PeerTLS{
+		Verified:    identity != "" && identity == nodeID,
+		Identity:    identity,
+		Subject:     desc.Subject,
+		Issuer:      desc.Issuer,
+		Serial:      desc.SerialNumber,
+		DNSNames:    desc.DNSNames,
+		URIs:        desc.URIs,
+		Fingerprint: desc.Fingerprint,
+		IsCA:        desc.IsCA,
+		NotBefore:   cert.NotBefore,
+		NotAfter:    cert.NotAfter,
+		SeenAt:      time.Now(),
+	}
+	h.nodeState.NotePeerTLS(nodeID, info)
+}
+
 // --- 1.2 Handshake ---
 
 func (h *GRPCHandler) Handshake(ctx context.Context, req *pb.NodeHandshake) (*pb.HandshakeResponse, error) {
@@ -90,6 +154,14 @@ func (h *GRPCHandler) Handshake(ctx context.Context, req *pb.NodeHandshake) (*pb
 		log.Printf("grpc: handshake reject: node %q bad api_key", req.NodeId)
 		return &pb.HandshakeResponse{Accepted: false, RejectReason: "invalid api_key"}, nil
 	}
+	// When the link is mutually authenticated, the certificate identity is
+	// authoritative. A node may only speak for the node_id baked into its URI
+	// SAN, regardless of what the message claims.
+	if certID, ok := peerCertNodeID(ctx); ok && certID != req.NodeId {
+		metrics.GRPCIdentityRejects.WithLabelValues("handshake").Inc()
+		log.Printf("grpc: handshake reject: certificate identity %q != node_id %q", certID, req.NodeId)
+		return &pb.HandshakeResponse{Accepted: false, RejectReason: "certificate identity mismatch"}, nil
+	}
 	if !node.Enabled {
 		return &pb.HandshakeResponse{Accepted: false, RejectReason: "node disabled"}, nil
 	}
@@ -100,6 +172,7 @@ func (h *GRPCHandler) Handshake(ctx context.Context, req *pb.NodeHandshake) (*pb
 		h.peerNodes[addr] = req.NodeId
 		h.peerNodesMu.Unlock()
 	}
+	h.recordPeerTLS(ctx, req.NodeId)
 
 	watchConfig, err := h.buildWatchConfig(ctx)
 	if err != nil {
@@ -256,7 +329,15 @@ func (h *GRPCHandler) appendFlowConfig(ctx context.Context, wc *pb.WatchConfig, 
 
 // --- 1.3 StatsStream ---
 
-func (h *GRPCHandler) requireHandshake(nodeID, stream string) error {
+func (h *GRPCHandler) requireHandshake(ctx context.Context, nodeID, stream string) error {
+	// Certificate identity, when present, overrides the self-declared node_id.
+	// This closes the Sybil hole where a peer that won one handshake could
+	// report statistics for any node_id it typed into the message.
+	if certID, ok := peerCertNodeID(ctx); ok && certID != nodeID {
+		metrics.GRPCIdentityRejects.WithLabelValues(stream).Inc()
+		log.Printf("WARN grpc: %s rejected node=%s: certificate identity %q mismatch", stream, nodeID, certID)
+		return status.Error(codes.PermissionDenied, "certificate identity mismatch")
+	}
 	h.peerNodesMu.RLock()
 	_, ok := h.handshaked[nodeID]
 	h.peerNodesMu.RUnlock()
@@ -327,7 +408,7 @@ func (h *GRPCHandler) StatsStream(stream grpc.ClientStreamingServer[pb.StatsRepo
 			break
 		}
 
-		if err := h.requireHandshake(msg.NodeId, "stats"); err != nil {
+		if err := h.requireHandshake(stream.Context(), msg.NodeId, "stats"); err != nil {
 			recvErr = err
 			break
 		}
@@ -389,7 +470,7 @@ func (h *GRPCHandler) SampleStream(stream grpc.ClientStreamingServer[pb.SampleBa
 			return err
 		}
 
-		if err := h.requireHandshake(msg.NodeId, "sample"); err != nil {
+		if err := h.requireHandshake(stream.Context(), msg.NodeId, "sample"); err != nil {
 			return err
 		}
 		h.SamplesReceived.Add(uint64(len(msg.Samples)))
@@ -412,7 +493,7 @@ func (h *GRPCHandler) CriticalEventStream(stream grpc.ClientStreamingServer[pb.C
 			return err
 		}
 
-		if err := h.requireHandshake(msg.NodeId, "critical"); err != nil {
+		if err := h.requireHandshake(stream.Context(), msg.NodeId, "critical"); err != nil {
 			return err
 		}
 		h.EventsReceived.Add(1)
@@ -428,15 +509,20 @@ func (h *GRPCHandler) CriticalEventStream(stream grpc.ClientStreamingServer[pb.C
 // --- 1.6 ControlStream ---
 
 func (h *GRPCHandler) ControlStream(stream grpc.BidiStreamingServer[pb.ControlMessage, pb.ControlMessage]) error {
-	// Resolve nodeID from peer address (registered during Handshake).
+	// Resolve nodeID: the verified certificate identity is authoritative when
+	// the connection is mutually authenticated. Fall back to the peer-address
+	// mapping registered during Handshake for plaintext deployments.
 	addr := peerAddr(stream.Context())
-	h.peerNodesMu.RLock()
-	nodeID := h.peerNodes[addr]
-	h.peerNodesMu.RUnlock()
+	nodeID, certVerified := peerCertNodeID(stream.Context())
+	if !certVerified {
+		h.peerNodesMu.RLock()
+		nodeID = h.peerNodes[addr]
+		h.peerNodesMu.RUnlock()
+	}
 
 	if nodeID != "" {
 		h.nodeState.SetControlStream(nodeID, stream)
-		log.Printf("grpc: control stream opened for node=%s (peer=%s)", nodeID, addr)
+		log.Printf("grpc: control stream opened for node=%s (peer=%s cert_verified=%t)", nodeID, addr, certVerified)
 	} else {
 		log.Printf("grpc: control stream opened from unknown peer=%s (no prior handshake?)", addr)
 	}

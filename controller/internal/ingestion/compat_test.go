@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // TestOldNodeFixedFields verifies that a StatsReport using deprecated fixed fields

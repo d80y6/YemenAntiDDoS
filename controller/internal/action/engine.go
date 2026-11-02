@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
 )
 
 // v1.2 PR-1: Structured skip_reason values written to action_execution_log when

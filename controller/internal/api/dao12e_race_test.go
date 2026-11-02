@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/baseline"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/baseline"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 )
 
 const dao12eNode, dao12ePrefix = "dao12e", "192.0.2.0/24"

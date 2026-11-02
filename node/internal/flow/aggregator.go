@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/littlewolf9527/xsight/node/internal/pb"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/node/internal/pb"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 const sourceOfflineTimeout = 60 // seconds — source considered offline if no packets for this long

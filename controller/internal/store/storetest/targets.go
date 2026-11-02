@@ -1,6 +1,6 @@
 package storetest
 
-import "github.com/littlewolf9527/xsight/controller/internal/store"
+import "github.com/d80y6/YemenDDoS/controller/internal/store"
 
 // TargetsDone is the in-memory repository model shared by the test stores.
 // Callers hold the mutex that owns logs.

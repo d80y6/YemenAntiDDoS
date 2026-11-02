@@ -8,9 +8,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/netutil"
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/netutil"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // FlowWriter receives StatsReports and bulk-inserts top_flows into flow_logs.

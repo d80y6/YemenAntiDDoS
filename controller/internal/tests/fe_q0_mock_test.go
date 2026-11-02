@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // TestFEQ0_SharedMockFilter keeps the shared mock in step with buildAttackWhere (fe-q0 authorization #1).

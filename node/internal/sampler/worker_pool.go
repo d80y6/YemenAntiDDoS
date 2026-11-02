@@ -11,8 +11,10 @@ package sampler
 
 import (
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -20,12 +22,21 @@ const (
 	parsedChSize = 2048
 )
 
+// L7Observer receives bounded application payloads for Layer 7 inspection.
+// Implementations must be safe for concurrent use: with workers>1 the
+// aggregator calls Observe from a single goroutine, but Tick may run in
+// another. sampler deliberately does not import the collector package.
+type L7Observer interface {
+	Observe(srcIP, dstIP net.IP, srcPort, dstPort uint16, tcpFlags uint8, payload []byte, at time.Time)
+}
+
 // WorkerPool manages the reader → workers → aggregator pipeline.
 type WorkerPool struct {
 	workers   int
 	flowTable *FlowTable
 	batcher   *Batcher
 	erspan    bool // fixed at construction for the lifetime of queued samples
+	l7        L7Observer
 
 	// metrics
 	DispatchDropped atomic.Uint64
@@ -61,6 +72,17 @@ func (wp *WorkerPool) Start(s *Sampler) {
 // Workers returns the configured worker count.
 func (wp *WorkerPool) Workers() int { return wp.workers }
 
+// SetL7 attaches an application-layer observer. It must be called before Start.
+func (wp *WorkerPool) SetL7(o L7Observer) { wp.l7 = o }
+
+func (wp *WorkerPool) observe(ps PacketSample) {
+	if wp.l7 == nil || len(ps.Payload) == 0 {
+		return
+	}
+	wp.l7.Observe(ps.SrcIP, ps.DstIP, uint16(ps.SrcPort), uint16(ps.DstPort),
+		uint8(ps.TCPFlags), ps.Payload, time.Now())
+}
+
 // runDirect is the single-threaded fast path (workers=1).
 // No channels, no extra goroutines — identical to the original code path.
 func (wp *WorkerPool) runDirect(s *Sampler) {
@@ -72,6 +94,7 @@ func (wp *WorkerPool) runDirect(s *Sampler) {
 			return
 		}
 		wp.ParsedTotal.Add(1)
+		wp.observe(ps)
 		wp.batcher.Add(ps)
 		wp.flowTable.Add(ps)
 	})
@@ -156,6 +179,7 @@ func (wp *WorkerPool) workerLoop(id int, rawCh <-chan Sample, parsedCh chan<- Pa
 // and feeds them to FlowTable + Batcher. Single-threaded — no lock contention.
 func (wp *WorkerPool) aggregatorLoop(parsedCh <-chan PacketSample) {
 	for ps := range parsedCh {
+		wp.observe(ps)
 		wp.batcher.Add(ps)
 		wp.flowTable.Add(ps)
 	}

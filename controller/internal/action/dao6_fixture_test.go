@@ -5,10 +5,10 @@ import (
 	"net"
 	"sync"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/dedup"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/dedup"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
 )
 
 type dao6Barrier struct {

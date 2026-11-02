@@ -5,9 +5,9 @@ import (
 	"net"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/node/internal/bpf"
-	"github.com/littlewolf9527/xsight/node/internal/collector"
-	pb "github.com/littlewolf9527/xsight/node/internal/pb"
+	"github.com/d80y6/YemenDDoS/node/internal/bpf"
+	"github.com/d80y6/YemenDDoS/node/internal/collector"
+	pb "github.com/d80y6/YemenDDoS/node/internal/pb"
 )
 
 func TestDao8_N7_PrefixWireFormat(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/store/storetest"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/storetest"
 )
 
 func TestDao5_C1_V3Schedules(t *testing.T) {

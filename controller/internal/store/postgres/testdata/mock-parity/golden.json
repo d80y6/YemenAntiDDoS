@@ -1064,9 +1064,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1075,9 +1077,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -1134,9 +1138,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1145,9 +1151,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -1175,9 +1183,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1186,9 +1196,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1197,9 +1209,11 @@
           "created_at": "\u003cts\u003e",
           "description": "memo",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 3,
           "name": "qg BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "frr",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -1227,9 +1241,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1238,9 +1254,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1249,9 +1267,11 @@
           "created_at": "\u003cts\u003e",
           "description": "memo",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 3,
           "name": "qg BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "frr",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -1279,9 +1299,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1290,9 +1312,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1301,9 +1325,11 @@
           "created_at": "\u003cts\u003e",
           "description": "memo",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 3,
           "name": "qg BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "frr",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -1312,9 +1338,11 @@
           "created_at": "\u003cts\u003e",
           "description": "memo",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 5,
           "name": "qg BGP next",
           "updated_at": "\u003cts\u003e",
+          "vendor": "frr",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -2455,9 +2483,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -2466,9 +2496,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -2477,9 +2509,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 3,
           "name": "qg BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "frr",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -2488,9 +2522,11 @@
           "created_at": "\u003cts\u003e",
           "description": "memo",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 5,
           "name": "qg BGP next",
           "updated_at": "\u003cts\u003e",
+          "vendor": "frr",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -2518,9 +2554,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -2529,9 +2567,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -2540,9 +2580,11 @@
           "created_at": "\u003cts\u003e",
           "description": "memo",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 5,
           "name": "qg BGP next",
           "updated_at": "\u003cts\u003e",
+          "vendor": "frr",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -2570,9 +2612,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -2581,9 +2625,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -2611,9 +2657,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -2622,9 +2670,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         }
       ]
@@ -13328,9 +13378,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": true,
+          "flowspec_enabled": false,
           "id": 1,
           "name": "Edge BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         },
         {
@@ -13339,9 +13391,11 @@
           "created_at": "\u003cts\u003e",
           "description": "",
           "enabled": false,
+          "flowspec_enabled": false,
           "id": 2,
           "name": "Disabled BGP",
           "updated_at": "\u003cts\u003e",
+          "vendor": "",
           "vtysh_path": "/mock/missing"
         }
       ]

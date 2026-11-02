@@ -15,6 +15,7 @@ import (
 // Mirrors the protobuf PacketSample message from brainstorm-node.md.
 type PacketSample struct {
 	RawHeader      []byte // original captured bytes
+	Payload        []byte // bounded L7 payload (TCP/UDP, see MaxL7Payload)
 	SrcIP          net.IP
 	DstIP          net.IP
 	Protocol       uint32 // IP protocol (TCP=6, UDP=17, ICMP=1)
@@ -27,6 +28,11 @@ type PacketSample struct {
 	ICMPType       uint32
 	ICMPCode       uint32
 }
+
+// MaxL7Payload bounds how many application bytes are retained per sample for
+// Layer 7 inspection. HTTP request lines and TLS ClientHellos fit comfortably;
+// larger payloads add no detection value and would multiply memory traffic.
+const MaxL7Payload = 1024
 
 // greDecoder records each GRE sequence flag before a deeper GRE layer can
 // overwrite the shared decoding struct. Entries match successfully decoded GREs.
@@ -171,10 +177,22 @@ func (p *PacketParser) ParseMode(raw []byte, pktLen uint32, erspan bool) PacketS
 				flags |= 0x20
 			}
 			ps.TCPFlags = flags
+			if n := len(p.tcp.Payload); n > 0 {
+				if n > MaxL7Payload {
+					n = MaxL7Payload
+				}
+				ps.Payload = p.tcp.Payload[:n]
+			}
 
 		case layers.LayerTypeUDP:
 			ps.SrcPort = uint32(p.udp.SrcPort)
 			ps.DstPort = uint32(p.udp.DstPort)
+			if n := len(p.udp.Payload); n > 0 {
+				if n > MaxL7Payload {
+					n = MaxL7Payload
+				}
+				ps.Payload = p.udp.Payload[:n]
+			}
 
 		case layers.LayerTypeICMPv4:
 			ps.ICMPType = uint32(p.icmpv4.TypeCode.Type())

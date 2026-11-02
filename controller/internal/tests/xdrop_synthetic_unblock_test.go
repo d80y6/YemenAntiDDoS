@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // Focused integration test (PR-8 audit suggestion): the synthetic-ID short

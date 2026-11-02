@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // DAO14D2_HEAD=1 selects only the two baseline-specific fixture checks in B/F.

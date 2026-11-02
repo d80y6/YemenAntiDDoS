@@ -24,6 +24,34 @@ bpf:
 controller:
   address: "controller:50051"   # gRPC server address
 
+tls:
+  # Mutual TLS to the Controller. Enable only after the Controller is serving
+  # TLS and this node holds a certificate issued by the deployment CA.
+  # If server_name is empty the host part of controller.address is used.
+  # See docs/MTLS.md.
+  enabled: false
+  ca_file: "/etc/xsight/pki/ca.crt"          # verifies the CONTROLLER certificate
+  cert_file: "/etc/xsight/pki/my-node-01.crt" # issued with: xsight-cert issue --node-id my-node-01
+  key_file: "/etc/xsight/pki/my-node-01.key"
+  server_name: "controller"
+  allow_legacy_tls12: false
+
+l7:
+  # Application-layer inspection (HTTP flood, Slowloris, TLS ClientHello).
+  # Requires sample_bytes >= 512 on every XDP interface so a TLS ClientHello
+  # is not truncated. Aggregated on the Node and pushed to the Controller as
+  # CriticalEventStream messages; the Console renders the L7 dashboard from
+  # the in-memory store (controller/internal/l7store).
+  enabled: false
+  window_seconds: 1          # aggregation window, default 1
+  http_rps: 1000             # HTTP requests/s per destination
+  tls_hsps: 500              # ClientHellos/s per destination
+  slowloris_conns: 50        # slow-open connections per destination
+  max_tracked_destinations: 4096
+  max_flows: 8192
+  max_open_fragments: 256
+  sample_bytes: 512
+
 auth:
   # Must equal the API key entered when this node_id was registered on the Controller
   # (not the Controller's auth.api_key). Generate one with: openssl rand -hex 32

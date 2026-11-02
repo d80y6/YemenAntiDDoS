@@ -3,7 +3,7 @@ package tracker
 import (
 	"testing"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // TestDecoderToAttackType_AllRegisteredDecodersMapped guards the gap that

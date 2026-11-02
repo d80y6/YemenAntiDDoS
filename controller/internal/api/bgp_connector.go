@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 var vtyshHTTPTimeout = 25 * time.Second
@@ -68,6 +68,8 @@ func createBGPConnector(deps Dependencies) gin.HandlerFunc {
 			AddressFamily string `json:"address_family"`
 			Enabled       *bool  `json:"enabled"`
 			Description   string `json:"description"`
+			Vendor        string `json:"vendor"`
+			Flowspec      *bool  `json:"flowspec_enabled"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
@@ -93,13 +95,24 @@ func createBGPConnector(deps Dependencies) gin.HandlerFunc {
 		if req.Enabled != nil {
 			enabled = *req.Enabled
 		}
+		vendor, vErr := normalizeVendor(req.Vendor)
+		if vErr != nil {
+			errResponse(c, http.StatusBadRequest, vErr.Error())
+			return
+		}
+		flowspecEnabled := false
+		if req.Flowspec != nil {
+			flowspecEnabled = *req.Flowspec
+		}
 		conn := &store.BGPConnector{
-			Name:          req.Name,
-			VtyshPath:     req.VtyshPath,
-			BGPASN:        int(*req.BGPASN),
-			AddressFamily: req.AddressFamily,
-			Enabled:       enabled,
-			Description:   req.Description,
+			Name:            req.Name,
+			VtyshPath:       req.VtyshPath,
+			BGPASN:          int(*req.BGPASN),
+			AddressFamily:   req.AddressFamily,
+			Enabled:         enabled,
+			Description:     req.Description,
+			Vendor:          string(vendor),
+			FlowspecEnabled: flowspecEnabled,
 		}
 		id, err := deps.Store.BGPConnectors().Create(c, conn)
 		if err != nil {
@@ -127,6 +140,8 @@ func updateBGPConnector(deps Dependencies) gin.HandlerFunc {
 			AddressFamily string  `json:"address_family"`
 			Enabled       *bool   `json:"enabled"`
 			Description   *string `json:"description"`
+			Vendor        *string `json:"vendor"`
+			Flowspec      *bool   `json:"flowspec_enabled"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			errResponse(c, http.StatusBadRequest, err.Error())
@@ -154,6 +169,17 @@ func updateBGPConnector(deps Dependencies) gin.HandlerFunc {
 		}
 		if req.Description != nil {
 			conn.Description = *req.Description
+		}
+		if req.Vendor != nil {
+			vendor, vErr := normalizeVendor(*req.Vendor)
+			if vErr != nil {
+				errResponse(c, http.StatusBadRequest, vErr.Error())
+				return
+			}
+			conn.Vendor = string(vendor)
+		}
+		if req.Flowspec != nil {
+			conn.FlowspecEnabled = *req.Flowspec
 		}
 		if err := deps.Store.BGPConnectors().Update(c, conn); err != nil {
 			dbError(c, "", err)

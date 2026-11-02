@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // TestMigrations_FragBPSColumn asserts that the v1.3 Phase 1a migration adds

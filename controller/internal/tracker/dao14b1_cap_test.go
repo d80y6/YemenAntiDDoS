@@ -7,8 +7,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/dedup"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/dedup"
 )
 
 type g4Cap struct {

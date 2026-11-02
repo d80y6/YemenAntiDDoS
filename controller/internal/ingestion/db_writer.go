@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // DBWriter periodically flushes ring buffer data to ts_stats via pgx.CopyFrom.

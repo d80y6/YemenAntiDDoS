@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/api"
-	"github.com/littlewolf9527/xsight/controller/internal/configpub"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/api"
+	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // The contract backend skips before any connection when XSIGHT_TEST_ADMIN_DSN

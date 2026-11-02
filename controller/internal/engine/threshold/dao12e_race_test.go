@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 )
 
 func TestDao12e_G2_R1(t *testing.T) { dao12eTickRace(t, "subnet", "receives") }

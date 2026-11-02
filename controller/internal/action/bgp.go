@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // addressFamilyForPrefix returns the FRR address-family string based on the prefix's IP version.
@@ -136,6 +136,10 @@ func executeBGP(ctx context.Context, s store.Store, engine *Engine, act store.Re
 		} else {
 			dstIP = dstIP + "/32"
 		}
+	}
+
+	if conn.FlowspecEnabled {
+		return executeBGPFlowspec(ctx, s, conn, act, attack, dstIP, attackDBID, responseName, triggerPhase)
 	}
 
 	switch triggerPhase {

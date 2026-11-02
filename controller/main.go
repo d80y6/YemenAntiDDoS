@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,28 +24,30 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/api"
-	"github.com/littlewolf9527/xsight/controller/internal/config"
-	"github.com/littlewolf9527/xsight/controller/internal/configpub"
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/baseline"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/classifier"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/dedup"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/threshold"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/api"
+	"github.com/d80y6/YemenDDoS/controller/internal/config"
+	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/baseline"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/classifier"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/dedup"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/threshold"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/littlewolf9527/xsight/controller/internal/ingestion"
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	"github.com/littlewolf9527/xsight/controller/internal/netutil"
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/retention"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/store/postgres"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
-	"github.com/littlewolf9527/xsight/controller/internal/watchdog"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/controller/internal/ingestion"
+	"github.com/d80y6/YemenDDoS/controller/internal/l7store"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
+	"github.com/d80y6/YemenDDoS/controller/internal/netutil"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/retention"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/postgres"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/watchdog"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/tlsconf"
 )
 
 var (
@@ -213,6 +216,7 @@ func main() {
 		ExpiryMaxScale:          cfg.Detection.ExpiryMaxScale,
 		MaxActiveAttacks:        cfg.Detection.MaxActiveAttacks,
 		ManualExpireHoldSeconds: cfg.Detection.ResolvedManualExpireHoldSeconds(),
+		FastPathMultiplier:      cfg.Action.FastPathMultiplier,
 	}
 	// --- Phase 5: Action Engine ---
 	// Wrap the concrete postgres store with a metrics-instrumented decorator
@@ -223,6 +227,7 @@ func main() {
 	// Postgres-specific methods (AutoMigrate, Close) still use `db` directly.
 	iStore := metrics.InstrumentStore(db)
 	action.SetXDropShapeConfig(cfg.Action.XDropNarrowPct, cfg.Action.XDropMinSamplePackets)
+	action.SetXDropAdaptiveSamples(cfg.Action.XDropAdaptiveSamples)
 	action.SetXDropTopKConfig(cfg.Action.XDropTopKPct, cfg.Action.XDropTopKMax)
 	actionEngine := action.NewEngine(iStore, cfg.Action.Mode)
 	actionEngine.Start()
@@ -345,9 +350,14 @@ func main() {
 			gs.GetTotalPkts(), gs.GetMatchedPkts(), pc, ic)
 	}
 
+	// Layer-7 aggregation: bounded in-memory view of HTTP flood, Slowloris and
+	// TLS ClientHello events reported by Nodes over CriticalEventStream.
+	l7Store := l7store.New(5000)
+
 	onCritical := func(nodeID string, event *pb.CriticalEvent) {
 		log.Printf("critical: node=%s type=%s dst=%v",
 			nodeID, event.EventType, net.IP(event.DstIp))
+		l7Store.Observe(nodeID, unixTime(event.Timestamp), event.EventType, net.IP(event.DstIp).String(), event.Counters)
 	}
 
 	handler := ingestion.NewGRPCHandler(ingestion.GRPCHandlerConfig{
@@ -358,7 +368,22 @@ func main() {
 		OnCritical: onCritical,
 	})
 
-	grpcSrv := ingestion.NewServer(handler)
+	var grpcTLS *tls.Config
+	if cfg.TLS.Enabled {
+		tlsCfg, err := tlsconf.ServerConfig(tlsconf.FileConfig{
+			CAFile:           cfg.TLS.CAFile,
+			CertFile:         cfg.TLS.CertFile,
+			KeyFile:          cfg.TLS.KeyFile,
+			ServerName:       cfg.TLS.ServerName,
+			AllowLegacyTLS12: cfg.TLS.AllowLegacyTLS12,
+		})
+		if err != nil {
+			log.Fatalf("tls server config: %v", err)
+		}
+		grpcTLS = tlsCfg
+		log.Println("tls: controller gRPC listener enabled (mTLS)")
+	}
+	grpcSrv := ingestion.NewServer(handler, grpcTLS)
 	go func() {
 		if err := grpcSrv.Serve(cfg.Listen.GRPC); err != nil {
 			log.Fatalf("grpc server fatal: %v", err)
@@ -371,6 +396,24 @@ func main() {
 
 	// --- Phase 7: REST API ---
 	jwtSecret := cfg.Auth.APIKey + "-jwt" // derive JWT secret from API key
+	tlsFileCfg := tlsconf.FileConfig{
+		CAFile:           cfg.TLS.CAFile,
+		CertFile:         cfg.TLS.CertFile,
+		KeyFile:          cfg.TLS.KeyFile,
+		ServerName:       cfg.TLS.ServerName,
+		AllowLegacyTLS12: cfg.TLS.AllowLegacyTLS12,
+	}
+	tlsInfo := func() (tlsconf.CertInfo, string, bool) {
+		if !cfg.TLS.Enabled {
+			return tlsconf.CertInfo{}, "", false
+		}
+		info, err := tlsFileCfg.Describe()
+		if err != nil {
+			log.Printf("tls: describe server certificate: %v", err)
+			return tlsconf.CertInfo{}, minTLSVersion(cfg.TLS.AllowLegacyTLS12), true
+		}
+		return info, minTLSVersion(cfg.TLS.AllowLegacyTLS12), true
+	}
 	router := api.NewRouter(api.Dependencies{
 		Store:         iStore,
 		ConfigPub:     configPub,
@@ -383,6 +426,8 @@ func main() {
 		APIKey:        cfg.Auth.APIKey,
 		JWTSecret:     jwtSecret,
 		FlowLogsDays:  cfg.Retention.FlowLogsDays,
+		L7:            l7Store,
+		TLSInfo:       tlsInfo,
 	})
 	// Serve embedded Vue SPA (Phase 8)
 	webFS, _ := fs.Sub(webDist, webRoot)
@@ -647,4 +692,27 @@ func dynamicBreaches(nodes, prefixes []string, rings *ring.RingStore, pe *baseli
 		}
 	}
 	return exceeded
+}
+
+// unixTime converts a Node-reported unix timestamp (seconds, or nanoseconds
+// when the Node sends them) to a time.Time. Mirrors the tolerance used by the
+// ingestion path so a mis-scaled clock cannot push events outside the window.
+func unixTime(ts int64) time.Time {
+	if ts > 1e15 {
+		return time.Unix(0, ts)
+	}
+	if ts > 1e12 {
+		return time.UnixMilli(ts)
+	}
+	if ts <= 0 {
+		return time.Now()
+	}
+	return time.Unix(ts, 0)
+}
+
+func minTLSVersion(allowLegacy bool) string {
+	if allowLegacy {
+		return "TLS 1.2"
+	}
+	return "TLS 1.3"
 }

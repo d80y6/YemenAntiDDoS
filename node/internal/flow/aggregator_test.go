@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/node/internal/pb"
+	"github.com/d80y6/YemenDDoS/node/internal/pb"
 )
 
 func newTestAggregator(prefixes []string) *FlowAggregator {

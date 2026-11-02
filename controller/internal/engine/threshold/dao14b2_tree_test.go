@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 func TestDao14b2_C6(t *testing.T) {

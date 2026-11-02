@@ -7,7 +7,7 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
 )
 
 func dao14c1Signal(t *testing.T, script string, unknown, heal bool, label string) {

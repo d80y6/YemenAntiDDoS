@@ -10,8 +10,8 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/littlewolf9527/xsight/node/internal/bpf"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/node/internal/bpf"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // No attachment, pinning, socket, or dependency on a physical interface.

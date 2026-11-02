@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/netutil"
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/controller/internal/netutil"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 const malformedWarnInterval = time.Minute

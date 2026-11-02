@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
-	"github.com/littlewolf9527/xsight/controller/internal/store/ring"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 )
 
 func dao12dPrefixes(t *testing.T, cidrs []string) []*pb.PrefixStatsMsg {

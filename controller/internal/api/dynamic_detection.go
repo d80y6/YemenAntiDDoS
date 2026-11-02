@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/baseline"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/baseline"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // timeNow is a package-level var for testing.

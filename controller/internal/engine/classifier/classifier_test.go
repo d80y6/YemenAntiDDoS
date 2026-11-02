@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
 )
 
 func TestAccumulatorBounds(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/littlewolf9527/xsight/controller/internal/engine"
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
 )
 
 const (

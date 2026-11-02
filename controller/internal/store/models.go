@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/littlewolf9527/xsight/shared/decoder"
+	"github.com/d80y6/YemenDDoS/shared/decoder"
 )
 
 // Node represents a Node registered with the Controller.
@@ -232,8 +232,13 @@ type BGPConnector struct {
 	AddressFamily string    `json:"address_family"`
 	Enabled       bool      `json:"enabled"`
 	Description   string    `json:"description"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	// Vendor selects the Flowspec CLI dialect (frr, cisco_xr, juniper, arista).
+	Vendor string `json:"vendor"`
+	// FlowspecEnabled switches BGP actions on this connector from RTBH
+	// (whole-prefix blackhole) to a narrower Flowspec rule.
+	FlowspecEnabled bool      `json:"flowspec_enabled"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // ActionExecutionLog records the execution of a response action.
@@ -277,6 +282,10 @@ type BGPAnnouncement struct {
 	DelayMinutes   int        `json:"delay_minutes"`
 	WithdrawnAt    *time.Time `json:"withdrawn_at,omitempty"`
 	ErrorMessage   string     `json:"error_message,omitempty"`
+	// Kind is "rtbh" (default) or "flowspec". Flowspec announcements store the
+	// stable rule name in RouteMap and the rendered rule JSON in RuleSpec.
+	Kind     string `json:"kind"`
+	RuleSpec string `json:"rule_spec,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 }
 

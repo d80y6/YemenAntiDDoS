@@ -20,8 +20,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/api"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/api"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // ── recordable mocks ──────────────────────────────────────────────────────────

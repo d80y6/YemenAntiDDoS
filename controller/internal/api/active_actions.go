@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/metrics"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 func queryXDropDelivery(deps Dependencies) gin.HandlerFunc {
@@ -70,6 +70,12 @@ type ActiveResponseAction struct {
 	// rather than the per-artifact force-remove flow.
 	IsOrphan       bool `json:"is_orphan,omitempty"`
 	AnnouncementID int  `json:"announcement_id,omitempty"` // BGP: PR-5 announcement row ID
+	// BGP: "rtbh" (whole-prefix blackhole) or "flowspec" (narrower match).
+	// Flowspec rows also carry the rendered CLI so the operator can inspect
+	// and copy the exact rule that is live in FRR.
+	Kind     string   `json:"kind,omitempty"`
+	Vendor   string   `json:"vendor,omitempty"`
+	Commands []string `json:"commands,omitempty"`
 	// BGP: list of all attacks that have attached to this announcement (history
 	// + currently attached). Operators need this to see which attack(s) are
 	// referencing a shared announcement when refcount > 1. attack_id in the
@@ -248,10 +254,24 @@ func buildActiveBGPFromAnnouncements(ctx *gin.Context, s store.Store) ([]ActiveR
 		}
 		// Connector name.
 		connName := ""
+		var connRef *store.BGPConnector
 		if conn, err := s.BGPConnectors().Get(ctx, ann.ConnectorID); err == nil && conn != nil {
 			connName = conn.Name
+			connRef = conn
 		}
 		externalRuleID := ann.Prefix + "|" + ann.RouteMap
+
+		kind := ann.Kind
+		if kind == "" {
+			kind = "rtbh"
+		}
+		vendor := ""
+		var commands []string
+		if kind == "flowspec" {
+			view := buildFlowspecView(ann, connRef)
+			vendor = view.Vendor
+			commands = view.Commands
+		}
 
 		result = append(result, ActiveResponseAction{
 			AttackID:        attackID,
@@ -268,6 +288,9 @@ func buildActiveBGPFromAnnouncements(ctx *gin.Context, s store.Store) ([]ActiveR
 			RouteMap:        ann.RouteMap,
 			IsOrphan:        isOrphan,
 			AnnouncementID:  ann.ID,
+			Kind:            kind,
+			Vendor:          vendor,
+			Commands:        commands,
 			AttachedAttacks: attachedAttacks,
 		})
 	}

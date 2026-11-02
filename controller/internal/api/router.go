@@ -12,13 +12,15 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/littlewolf9527/xsight/controller/internal/action"
-	"github.com/littlewolf9527/xsight/controller/internal/configpub"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/baseline"
-	"github.com/littlewolf9527/xsight/controller/internal/engine/threshold"
-	"github.com/littlewolf9527/xsight/controller/internal/ingestion"
-	"github.com/littlewolf9527/xsight/controller/internal/store"
-	"github.com/littlewolf9527/xsight/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/controller/internal/action"
+	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/baseline"
+	"github.com/d80y6/YemenDDoS/controller/internal/engine/threshold"
+	"github.com/d80y6/YemenDDoS/controller/internal/ingestion"
+	"github.com/d80y6/YemenDDoS/controller/internal/l7store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
+	"github.com/d80y6/YemenDDoS/shared/tlsconf"
 )
 
 // Dependencies holds all dependencies injected into the API layer.
@@ -34,6 +36,10 @@ type Dependencies struct {
 	APIKey        string
 	JWTSecret     string
 	FlowLogsDays  int // flow_logs retention days, exposed to API for expired hint
+	// L7 exposes the in-memory layer-7 aggregation fed by CriticalEventStream.
+	L7 *l7store.Store
+	// TLSInfo reports the gRPC server certificate (info, min TLS version, enabled).
+	TLSInfo func() (tlsconf.CertInfo, string, bool)
 }
 
 // NewRouter creates and returns a configured gin.Engine.
@@ -161,6 +167,18 @@ func NewRouter(deps Dependencies) *gin.Engine {
 		api.POST("/active-actions/bgp/orphan-dismiss", orphanDismiss(deps))
 		api.GET("/active-actions/bgp/dismissed-orphans", listDismissedOrphans(deps))
 		api.POST("/active-actions/bgp/orphan-undismiss", orphanUndismiss(deps))
+
+		// BGP Flowspec management: multi-vendor rule inspection + force withdraw.
+		api.GET("/flowspec/announcements", listFlowspecAnnouncements(deps))
+		api.POST("/flowspec/preview", previewFlowspecRule(deps))
+		api.POST("/flowspec/announcements/:id/withdraw", forceWithdrawFlowspec(deps))
+
+		// Layer 7 (HTTP flood / Slowloris / TLS ClientHello) in-memory view.
+		api.GET("/l7/summary", getL7Summary(deps))
+		api.GET("/l7/events", listL7Events(deps))
+
+		// Mutual TLS posture for the node management drawer.
+		api.GET("/nodes/:id/tls", getNodeTLS(deps))
 
 		// Audit log
 		api.GET("/audit-log", listAuditLog(deps))

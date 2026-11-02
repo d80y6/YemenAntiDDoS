@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 const dao9aEchoArgsEnv = "XSIGHT_DAO9A_ECHO_ARGS"

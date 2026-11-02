@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 func TestDao13e_G2_DuplicateSQL(t *testing.T) {

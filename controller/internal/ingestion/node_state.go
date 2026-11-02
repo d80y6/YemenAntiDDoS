@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/littlewolf9527/xsight/controller/internal/pb"
+	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
 )
 
 // FlowMetrics holds the last-received flow node health metrics.
@@ -47,6 +47,25 @@ type NodeState struct {
 	flowMetrics      map[string]*FlowMetrics                         // nodeID → last flow metrics
 	sourceStatuses   map[string][]SourceStatus                       // nodeID → per-source statuses
 	listenerStatuses map[string][]ListenerStatus                     // nodeID → per-listener statuses
+	peerTLS          map[string]PeerTLS                              // nodeID → last verified client certificate
+}
+
+// PeerTLS describes the client certificate a Node presented during the gRPC
+// handshake. It is populated only when the Controller's gRPC listener runs
+// with mutual TLS; plaintext deployments never set it.
+type PeerTLS struct {
+	Verified    bool      `json:"verified"`
+	Identity    string    `json:"identity,omitempty"` // node id extracted from the URI SAN
+	Subject     string    `json:"subject,omitempty"`
+	Issuer      string    `json:"issuer,omitempty"`
+	Serial      string    `json:"serial,omitempty"`
+	DNSNames    []string  `json:"dns_names,omitempty"`
+	URIs        []string  `json:"uris,omitempty"`
+	NotBefore   time.Time `json:"not_before,omitempty"`
+	NotAfter    time.Time `json:"not_after,omitempty"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	IsCA        bool      `json:"is_ca,omitempty"`
+	SeenAt      time.Time `json:"seen_at"`
 }
 
 func NewNodeState() *NodeState {
@@ -59,7 +78,38 @@ func NewNodeState() *NodeState {
 		flowMetrics:      make(map[string]*FlowMetrics),
 		sourceStatuses:   make(map[string][]SourceStatus),
 		listenerStatuses: make(map[string][]ListenerStatus),
+		peerTLS:          make(map[string]PeerTLS),
 	}
+}
+
+// NotePeerTLS records the client certificate seen at handshake time so the
+// console can show mTLS status and certificate expiry per Node.
+func (ns *NodeState) NotePeerTLS(nodeID string, info PeerTLS) {
+	if nodeID == "" {
+		return
+	}
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	ns.peerTLS[nodeID] = info
+}
+
+// GetPeerTLS returns the last recorded client certificate for a Node.
+func (ns *NodeState) GetPeerTLS(nodeID string) (PeerTLS, bool) {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+	info, found := ns.peerTLS[nodeID]
+	return info, found
+}
+
+// AllPeerTLS returns a copy of every recorded Node certificate.
+func (ns *NodeState) AllPeerTLS() map[string]PeerTLS {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+	out := make(map[string]PeerTLS, len(ns.peerTLS))
+	for k, v := range ns.peerTLS {
+		out[k] = v
+	}
+	return out
 }
 
 // NoteHandshake replaces collection state after a handshake has been accepted.

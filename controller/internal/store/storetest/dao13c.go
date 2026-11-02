@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/littlewolf9527/xsight/controller/internal/store"
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 // RunDao13cF5 exercises the same atomic claim contract on Mock and PostgreSQL.

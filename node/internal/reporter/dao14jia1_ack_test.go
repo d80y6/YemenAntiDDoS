@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/littlewolf9527/xsight/node/internal/collector"
-	"github.com/littlewolf9527/xsight/node/internal/pb"
+	"github.com/d80y6/YemenDDoS/node/internal/collector"
+	"github.com/d80y6/YemenDDoS/node/internal/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
