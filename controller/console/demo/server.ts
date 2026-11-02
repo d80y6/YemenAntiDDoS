@@ -309,6 +309,15 @@ export function createServer(data: Dataset = createData()): Server {
       || r.entity_type === q.get('entity_type')) && (!q.has('user_id') || r.user_id === number('user_id', 0))
       && (!q.has('from') || Date.parse(r.created_at) >= Date.parse(q.get('from')!))
       && (!q.has('to') || Date.parse(r.created_at) <= Date.parse(q.get('to')!)))))
+    if (path === '/api/flowspec/announcements') return send({ announcements: [], vendors: [{ id: 'frr', name: 'FRR (local)', executable: true }] })
+    if (path === '/api/l7/summary') return send({ generated_at: new Date().toISOString(), window_minutes: 5, bucket_seconds: 60,
+      totals: { 'l7_http_flood': 0, 'l7_tls_clienthello': 0, 'l7_slowloris': 0 }, rates: {}, series: [], targets: [],
+      sources: [], nodes: [], recent: [], dropped: 0 })
+    if (path === '/api/l7/events') return send([])
+    if (/^\/api\/nodes\/[^/]+\/tls$/.test(path)) return send({ server: { min_version: 'TLS 1.3', expires_at: new Date(Date.now()+86400000).toISOString(),
+      issuer: 'YemenAntiDDoS CA', fingerprint: 'aa:bb:cc:dd', serial: '1', not_before: new Date().toISOString() },
+      node: { verified: true, subject: 'CN=flow-c', identity: 'flow-c', sans: ['flow-c'], expires_at: new Date(Date.now()+86400000).toISOString(),
+      seen_at: new Date().toISOString() }, warnings: [] })
     const tables: Record<string, Row[]> = { nodes: data.nodes, prefixes: data.prefixes, thresholds: data.rules,
       'threshold-templates': data.templates, responses: data.responses, users: data.users, 'flow-sources': data.sources }
     const tablePath = /^\/api\/([^/]+)(?:\/(\d+))?$/.exec(path)
