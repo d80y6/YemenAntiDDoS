@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
+	"github.com/gin-gonic/gin"
 )
 
 func listAttacks(deps Dependencies) gin.HandlerFunc {

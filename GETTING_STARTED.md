@@ -51,7 +51,7 @@ Outside a git checkout, set `XSIGHT_VERSION` before `npm run build`; `./scripts/
 
 ### 2.2 Node
 
-The BPF program includes `vmlinux.h`, which is not in the repository. Generate it from the running kernel's BTF, then generate the Go bindings and build:
+The BPF program includes `vmlinux.h`, which is tracked in the repository (generated for Debian 13 / kernel 6.12). Regenerate it only when building on a different kernel with BTF, then generate the Go bindings and build:
 
 ```bash
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > node/bpf/vmlinux.h
@@ -245,7 +245,7 @@ If you use BGP actions, the controller's user must be able to run `vtysh` (path 
 | Port | Who connects | Notes |
 |---|---|---|
 | TCP 8080 | browsers, API clients, Prometheus | Web UI, REST API, unauthenticated `/metrics` |
-| TCP 50051 | nodes | gRPC **without TLS**: node API keys and traffic reports travel in clear text. Run it only on a trusted network or inside a VPN / tunnel. |
+| TCP 50051 | nodes | Node gRPC. Plaintext by default — enable mutual TLS (`tls.enabled: true` on both sides) to upgrade to TLS 1.3 with certificate-pinned node identity (see [docs/MTLS.md](docs/MTLS.md)). Without TLS, run it only on a trusted network or inside a VPN / tunnel. |
 | 127.0.0.1:6060 | local only | controller pprof, always on |
 | 127.0.0.1:6061 | local only | node pprof, only with `pprof: true` |
 

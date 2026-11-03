@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.0 — 2026-11-02
+
+### Highlights (enterprise upgrade)
+
+- Enterprise hardening across five pillars: mTLS on the Controller↔Node gRPC link, zero-touch fast-path mitigation, Layer 7 visibility (`shared/l7`), multi-vendor BGP Flowspec with FRR, and an Arabic (RTL) console UI.
+- Mutual TLS: `tls.enabled` upgrades the gRPC link to TLS 1.3 with node identity taken from the client certificate's URI SAN (`spiffe://xsight/node/<node_id>`); the `xsight-cert` helper generates CA/leaf material. Rollout and rotation: [docs/MTLS.md](docs/MTLS.md) (AR: [docs/MTLS.ar.md](docs/MTLS.ar.md)).
+- Action engine: `action_engine.fast_path_multiplier` (default 5.0) confirms an attack on the first detection tick when the measured rate is that many times the threshold, and `action_engine.xdrop_adaptive_samples` lowers the sample floor for unambiguous samples. Both are documented in `controller/config.example.yaml`.
+- Layer 7: the Node's `l7` block enables HTTP-flood, Slowloris and TLS ClientHello detection (requires `sample_bytes >= 512` on every XDP interface); events stream to the Controller's in-memory L7 store and the L7 dashboard — [docs/L7.md](docs/L7.md).
+- BGP Flowspec: BGP connectors gain `vendor` (frr, cisco_xr, juniper, arista) and `flowspec_enabled`; FRR connectors apply rules via vtysh, the other vendors render export-only install/withdraw commands. New Mitigations → Flowspec tab with preview and force-withdraw — [docs/FLOWSPEC.md](docs/FLOWSPEC.md) (AR: [docs/FLOWSPEC.ar.md](docs/FLOWSPEC.ar.md)).
+- Console: full Arabic (RTL) localization with an EN/AR toggle (`controller/console/src/i18n/{en,ar}.ts`).
+- Docker: added `Dockerfile` (controller), `deploy/docker/Dockerfile.node` (node), `docker-compose.yml` (TimescaleDB + controller + optional node profile) and `.dockerignore`.
+
 ## v1.4.0 — 2026-10-31
 
 ### Upgrade notes (read first)

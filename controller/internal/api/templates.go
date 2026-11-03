@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/gin-gonic/gin"
 )
 
 func listTemplates(deps Dependencies) gin.HandlerFunc {

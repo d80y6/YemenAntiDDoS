@@ -17,8 +17,6 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/d80y6/YemenDDoS/controller/internal/action"
 	"github.com/d80y6/YemenDDoS/controller/internal/api"
 	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
@@ -29,6 +27,8 @@ import (
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Faults and captured values belong to one request fixture. Embedded repositories
@@ -1160,7 +1160,7 @@ func TestDao14d1_G4Fixture(t *testing.T) {
 		"/api/flowspec/announcements":               "/api/flowspec/announcements",
 		"/api/l7/summary":                           "/api/l7/summary?window_minutes=5",
 		"/api/l7/events":                            "/api/l7/events?limit=10",
-		"/api/nodes/:id/tls":                     "/api/nodes/dao14-n1/tls",
+		"/api/nodes/:id/tls":                        "/api/nodes/dao14-n1/tls",
 	}
 	count := 0
 	for _, route := range r.Routes() {

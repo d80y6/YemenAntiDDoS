@@ -1,10 +1,20 @@
 # xSight Controller configuration
 #
 # Unknown or misspelled keys are silently ignored, so check spelling carefully.
+#
+# Enterprise feature references:
+#   mTLS (tls block)           -> docs/MTLS.md / docs/MTLS.ar.md
+#   fast-path + adaptive xDrop -> action_engine block below
+#   BGP Flowspec (multi-vendor)-> Console > Settings > BGP Connectors (see block at the bottom)
+#   Layer 7 inspection         -> configured on the Node (node/config.example.yaml, l7 block)
 
 listen:
-  grpc: ":50051"           # Node gRPC ingestion
-  http: ":8080"            # Web UI + REST API
+  grpc: ":50051"           # Node gRPC ingestion (mTLS when tls.enabled=true)
+  http: ":8080"            # Web UI + REST API (+ unauthenticated /metrics — firewall it)
+
+log:
+  level: "info"            # debug | info | warn | error — parsed for forward compatibility
+                           # but currently has no effect on log output (documented in docs/architecture.md)
 
 database:
   driver: "postgres"       # only postgres is supported (PostgreSQL 15+ with TimescaleDB)
@@ -51,8 +61,10 @@ action_engine:
   # measured value is at least this multiple of the threshold (0 disables).
   # A hit-and-run flood that lasts 2-3 seconds would otherwise never satisfy
   # hard_threshold_confirm_seconds. Only affects attack confirmation; xDrop is
-  # still gated by mode=auto.
+  # still gated by mode=auto. Must be 0 (disabled) or >= 1 (startup rejects 0<x<1).
   fast_path_multiplier: 5.0
+  # Legacy keys xdrop_api / xdrop_api_key are parsed but have no effect — the
+  # xDrop v3 endpoint is configured per action/connector in the Web UI.
 
 detection:
   hard_threshold_confirm_seconds: 3     # consecutive per-second breaching data points to confirm (one missing second tolerated)
@@ -85,3 +97,24 @@ retention:
   attacks_days: 90           # ended attack records (active attacks are never deleted)
   audit_log_days: 180        # configuration change audit trail
   interval_hours: 24         # cleanup runs once per day
+
+# ============================================================
+# BGP Flowspec / RTBH — configured in the Web Console, not here
+# ============================================================
+# BGP connectors live in the database (Console > Settings > BGP Connectors) and
+# are pushed to nodes/actions at runtime. Per-connector fields:
+#
+#   vendor           : frr (default) | cisco_xr | juniper | arista
+#                      (aliases accepted: cisco, ios_xr -> cisco_xr; junos -> juniper;
+#                       eos -> arista; empty -> frr)
+#   flowspec_enabled : true  -> attacks on this connector announce BGP Flowspec rules
+#                      (kind='flowspec', rule stored as JSON rule_spec)
+#                      false -> classic RTBH blackhole announcements
+#   bgp_asn          : local AS number (required)
+#   vtysh_path       : FRR vtysh binary used for local apply (frr vendor only)
+#   address_family   : ipv4 | ipv6
+#
+# FRR connectors apply/withdraw rules through vtysh; Cisco XR, Juniper and Arista
+# connectors are export-only — the Console renders vendor-specific install and
+# withdraw commands in the Mitigations > Flowspec drawer for manual application.
+# See docs/FLOWSPEC.md (EN) / docs/FLOWSPEC.ar.md (AR).

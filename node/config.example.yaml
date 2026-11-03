@@ -1,13 +1,18 @@
 # xSight Node configuration
 # Two modes: xdp (default, BPF/XDP mirror) and flow (sFlow/NetFlow/IPFIX receiver)
 # Unknown or misspelled keys are silently ignored, so check spelling carefully.
+#
+# Enterprise feature references:
+#   mTLS (tls block)      -> docs/MTLS.md / docs/MTLS.ar.md
+#   Layer 7 inspection    -> l7 block below (docs/L7.md)
+#   Fast-path / XDrop     -> Controller-side (controller/config.example.yaml action_engine)
 
 # ============================================================
 # XDP Mode (default) — BPF/XDP packet capture from mirror port
 # ============================================================
 
 # mode: xdp                       # 'xdp' (default) | 'flow'
-node_id: "my-node-01"             # must be registered on the Controller first (Web UI Nodes page)
+node_id: "edg-01"             # must be registered on the Controller first (Web UI Nodes page)
 
 interfaces:
   # All interfaces must have identical mode, sample_bytes and upstream_sample_rate.
@@ -20,15 +25,18 @@ interfaces:
 
 bpf:
   max_entries: 1000000          # ip_stats map size (note: prealloc memory)
+  # path: "/opt/xsight/node/xsight_x86_bpfel.o"  # manual BPF ELF path — parsed but has no effect
+                                                 # (the object is embedded in the binary)
 
 controller:
-  address: "controller:50051"   # gRPC server address
+  address: "xsight-controller:50051"   # gRPC server address
 
 tls:
   # Mutual TLS to the Controller. Enable only after the Controller is serving
   # TLS and this node holds a certificate issued by the deployment CA.
   # If server_name is empty the host part of controller.address is used.
-  # See docs/MTLS.md.
+  # Rollout order and rotation: docs/MTLS.md (EN) / docs/MTLS.ar.md (AR).
+  # Generate material with: xsight-cert init-ca ... && xsight-cert issue ...
   enabled: false
   ca_file: "/etc/xsight/pki/ca.crt"          # verifies the CONTROLLER certificate
   cert_file: "/etc/xsight/pki/my-node-01.crt" # issued with: xsight-cert issue --node-id my-node-01
@@ -47,15 +55,15 @@ l7:
   http_rps: 1000             # HTTP requests/s per destination
   tls_hsps: 500              # ClientHellos/s per destination
   slowloris_conns: 50        # slow-open connections per destination
-  max_tracked_destinations: 4096
-  max_flows: 8192
-  max_open_fragments: 256
-  sample_bytes: 512
+  max_tracked_destinations: 4096   # destinations tracked per window (default 4096)
+  max_tracked_flows: 8192          # slow-open connections kept for Slowloris (default 65536)
+  max_open_fragments: 256          # reassembly slots (default 20)
+  sample_bytes: 512                # per-interface capture window, 128-512 (default 256)
 
 auth:
   # Must equal the API key entered when this node_id was registered on the Controller
   # (not the Controller's auth.api_key). Generate one with: openssl rand -hex 32
-  node_api_key: "CHANGE_ME"
+  node_api_key: "06b4aa408c07a0a3e4aa385f6a5aea2f02b421424349c1c97b88de8af3200c0d"
 
 # Performance tuning (optional, xdp mode only)
 # parse_workers: 4              # parallel packet parse workers (default = NumCPU/2, range 1-16)

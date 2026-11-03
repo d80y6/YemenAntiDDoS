@@ -1,5 +1,17 @@
 # 更新日志
 
+## v1.5.0 — 2026-11-02
+
+### 重点变化（企业级升级）
+
+- 五大支柱的企业级加固：Controller↔Node gRPC 链路的 mTLS、零接触 fast-path 缓解、L7 可见性（`shared/l7`）、多厂商 BGP Flowspec（含 FRR），以及控制台阿拉伯语（RTL）界面。
+- 双向 TLS：`tls.enabled` 将 gRPC 链路升级为 TLS 1.3，节点身份取自客户端证书的 URI SAN（`spiffe://xsight/node/<node_id>`）；`xsight-cert` 工具生成 CA / 叶子证书。上线与轮换见 [docs/MTLS.md](docs/MTLS.md)（阿文：[docs/MTLS.ar.md](docs/MTLS.ar.md)）。
+- 动作引擎：`action_engine.fast_path_multiplier`（缺省 5.0）在实测速率达到阈值该倍数时于第一个检测周期即确认攻击；`action_engine.xdrop_adaptive_samples` 对明确的样本降低采样下限。两者均记录在 `controller/config.example.yaml`。
+- L7：Node 的 `l7` 配置块启用 HTTP Flood、Slowloris 与 TLS ClientHello 检测（每个 XDP 接口需 `sample_bytes >= 512`）；事件流入 Controller 的内存 L7 存储并呈现在 L7 仪表盘 — [docs/L7.md](docs/L7.md)。
+- BGP Flowspec：BGP 连接器新增 `vendor`（frr、cisco_xr、juniper、arista）与 `flowspec_enabled`；FRR 连接器经 vtysh 本地应用规则，其余厂商仅生成导出用的安装 / 撤回命令。新增 Mitigations → Flowspec 页签，支持预览与强制撤回 — [docs/FLOWSPEC.md](docs/FLOWSPEC.md)（阿文：[docs/FLOWSPEC.ar.md](docs/FLOWSPEC.ar.md)）。
+- 控制台：完整阿拉伯语（RTL）本地化，EN/AR 切换（`controller/console/src/i18n/{en,ar}.ts`）。
+- Docker：新增 `Dockerfile`（controller）、`deploy/docker/Dockerfile.node`（node）、`docker-compose.yml`（TimescaleDB + controller + 可选 node profile）与 `.dockerignore`。
+
 ## v1.4.0 — 2026-10-31
 
 ### 升级注意（先读）

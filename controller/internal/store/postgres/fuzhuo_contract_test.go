@@ -2,8 +2,8 @@ package postgres
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/d80y6/YemenDDoS/controller/internal/store/storetest"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"testing"
 )
 

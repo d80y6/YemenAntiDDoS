@@ -2,7 +2,7 @@
 
 > رؤية هندسية موحّدة لرفع xSight من منصة رصد إلى منصة تخفيف هجومية ذاتية (Autonomous Mitigation)
 > قادرة على العمل بثبات في بيئة إنتاجية نظيفة بسعة **10Gbps** وأحمال **64-byte** عالية الحزم (PPS).
-> مرجع الكود: `github.com/d80y6/YemenDDoS` (Controller + Node + shared + console).
+> مرجع الكود: `github.com/d80y6/YemenAntiDDoS` (Controller + Node + shared + console؛ مسار وحدات Go الداخلي `github.com/d80y6/YemenDDoS/...`).
 
 ---
 
@@ -32,7 +32,7 @@
 | mTLS (حزمة + ربط + أداة شهادات) | ✅ منفّذ ومُختبَر | `shared/tlsconf/`، `controller/cmd/xsight-cert/`، `docs/MTLS.md` |
 | Fast-path للتأكيد | ✅ منفّذ ومُختبَر | `controller/internal/tracker/tracker.go`، `fastpath_test.go` |
 | عتبة عينات تكيفية | ✅ منفّذة (اختيارية) | `controller/internal/action/xdrop_shape.go`، `xdrop_adaptive_test.go` |
-| تحليل L7 (HTTP/Slowloris/TLS) | ✅ حزمة مُختبَرة (الربط بالـ Node قيد العمل) | `shared/l7/` |
+| تحليل L7 (HTTP/Slowloris/TLS) | ✅ منفّذ ومُختبَر (Node + Controller + Console) | `shared/l7/`، `node/internal/l7collector/`، `controller/internal/l7store/`، `docs/L7.md` |
 | مُولّد أوامر BGP Flowspec | ✅ مُختبَر (FRR + قوالب موردين) | `controller/internal/action/flowspec/` |
 | اختبار الضغط وسيناريوهات الفوضى | ✅ أدوات ووثائق | `scripts/stress-10g.sh`، `docs/CHAOS-TESTS.md` |
 
@@ -106,7 +106,8 @@
 | `node/internal/reporter/reporter.go` | `transportCredentials(tls)` بدل `insecure` |
 | `node/main.go` / `node/flow_main.go` | بناء `ClientConfig` لوضعي xdp وflow |
 | `controller/cmd/xsight-cert/main.go` | أداة `init-ca` / `issue` / `verify` |
-| `docs/MTLS.md` | دليل النشر والتدوير والإلغاء |
+| `docs/MTLS.md` | دليل النشر والتدوير والإلغاء (النسخة الإنجليزية) |
+| `docs/MTLS.ar.md` | دليل النشر والتدوير والإلغاء (هذه النسخة العربية) |
 
 ### 3.4 التحقّق
 

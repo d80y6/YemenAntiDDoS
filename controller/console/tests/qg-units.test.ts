@@ -8,6 +8,7 @@ import { sourceText } from './r1-files.mjs'
 import zh from '../src/i18n/ar'
 import en from '../src/i18n/en'
 const base: Form = { name: '  Edge  ', bgp_asn: 65001, vtysh_path: ' /usr/bin/vtysh ', description: ' memo ',
+  vendor: 'arista', flowspec_enabled: true,
   api_url: ' https://xdrop.example.com/api/v1// ', api_key: ' key1234 ', url: ' https://hooks.example.net/notify ',
   method: 'PATCH', headers: '', timeout_ms: 1500, global: true, command: ' /bin/true ',
   default_args: ' --ip {dst_ip} ', enabled: false }
@@ -15,9 +16,11 @@ const row = { id: 2, name: 'Old', enabled: false, created_at: 'a', updated_at: '
   api_url: 'https://xdrop.example.com/api/v1', api_key: '***1234', timeout_ms: 500,
   headers: { Authorization: '******' }, url: 'https://hooks.example.net/notify', method: 'PUT', global: true,
   command: '/bin/true', default_args: '--ip {dst_ip}', pass_stdin: true,
-  bgp_asn: 4294967295, vtysh_path: '/mock/missing', description: ' old ' }
+  bgp_asn: 4294967295, vtysh_path: '/mock/missing', description: ' old ',
+  vendor: 'juniper', flowspec_enabled: true }
 const expected: Record<Kind, Record<string, unknown>> = {
-  bgp: { name: 'Edge', bgp_asn: 65001, vtysh_path: '/usr/bin/vtysh', description: ' memo ', enabled: false },
+  bgp: { name: 'Edge', bgp_asn: 65001, vtysh_path: '/usr/bin/vtysh', description: ' memo ',
+    vendor: 'arista', flowspec_enabled: true, enabled: false },
   xdrop: { name: 'Edge', api_url: 'https://xdrop.example.com/api/v1', api_key: 'key1234', timeout_ms: 1500 },
   webhook: { name: 'Edge', url: 'https://hooks.example.net/notify', method: 'PATCH', headers: {},
     timeout_ms: 1500, global: true },
@@ -46,16 +49,16 @@ it('G-units Webhook empty object and unchanged masked edit payload W5 W6', () =>
       headers: { Authorization: '******', 'X-ID': 'abc' }, timeout_ms: 1500, global: true, enabled: false })
 })
 it.each([
-  ['bgp', { name: ' ', vtysh_path: '' }, 'nameRequired', '请输入名称'],
-  ['shell', { name: ' ', command: '' }, 'shellNameRequired', '名称为必填项'],
-  ['webhook', { name: ' ', url: '' }, 'nameRequired', '请输入名称'],
-  ['xdrop', { name: ' ', api_url: '', api_key: '' }, 'nameRequired', '请输入名称'],
-  ['bgp', { vtysh_path: ' ' }, 'vtyshRequired', '请输入 vtysh 路径'],
-  ['xdrop', { api_url: ' /// ', api_key: '' }, 'apiUrlRequired', '请输入 API 地址'],
-  ['xdrop', { api_key: ' ' }, 'apiKeyRequired', '请输入 API 密钥'],
-  ['webhook', { url: ' ', headers: '[' }, 'urlRequired', '请输入 URL'],
-  ['webhook', { headers: '[' }, 'headersInvalid', 'Headers 必须是 JSON 对象，且每个值都是字符串。'],
-  ['shell', { command: 'relative.sh' }, 'commandValidation', '命令必须以 / 开头'],
+  ['bgp', { name: ' ', vtysh_path: '' }, 'nameRequired', 'الرجاء إدخال اسم'],
+  ['shell', { name: ' ', command: '' }, 'shellNameRequired', 'الاسم مطلوب'],
+  ['webhook', { name: ' ', url: '' }, 'nameRequired', 'الرجاء إدخال اسم'],
+  ['xdrop', { name: ' ', api_url: '', api_key: '' }, 'nameRequired', 'الرجاء إدخال اسم'],
+  ['bgp', { vtysh_path: ' ' }, 'vtyshRequired', 'الرجاء إدخال مسار vtysh'],
+  ['xdrop', { api_url: ' /// ', api_key: '' }, 'apiUrlRequired', 'الرجاء إدخال عنوان API'],
+  ['xdrop', { api_key: ' ' }, 'apiKeyRequired', 'الرجاء إدخال مفتاح API'],
+  ['webhook', { url: ' ', headers: '[' }, 'urlRequired', 'الرجاء إدخال رابط'],
+  ['webhook', { headers: '[' }, 'headersInvalid', 'يجب أن تكون الترويسات كائن JSON بقيم نصية.'],
+  ['shell', { command: 'relative.sh' }, 'commandValidation', 'يجب أن يبدأ الأمر بـ /'],
 ])('G-units validation order %s %j', (kind, overrides, key, literal) => {
   const check = connectorCheck(kind as Kind, { ...base, ...overrides })
   expect(check?.key).toBe(key)
@@ -69,28 +72,29 @@ it.each(['null', '[]', '123', 'true', '"text"', '{"k":1}', '{"k":null}', '{"k":{
 it('G-units edit checks URL then mask own keys W2 W7', () => {
   expect(connectorCheck('xdrop', { ...base, api_url: 'https://new.example.com', api_key: '' }, row)?.key)
     .toBe('keyChanged')
-  expect(zh.connectors.keyChanged).toBe('已改 API 地址，必须重新填写密钥。')
+  expect(zh.connectors.keyChanged).toBe('تغيّر عنوان API؛ أعد إدخال مفتاح API.')
   const form = { ...base, url: 'https://new.example.com', headers: '{"Missing":"******"}' }
   expect(connectorCheck('webhook', form, row)?.key).toBe('headersChanged')
-  expect(zh.connectors.headersChanged).toBe('改了 URL，请重新填写所有 Header 的值。')
+  expect(zh.connectors.headersChanged).toBe('تغيّر الرابط؛ أعد إدخال قيمة كل ترويسة.')
   for (const key of ['Missing', 'authorization', 'toString', 'constructor', '__proto__']) {
     const result = connectorCheck('webhook', { ...base, headers: `{"${key}":"******"}` }, row)
     expect(result).toEqual({ key: 'headerMissing', args: { key } })
   }
-  expect(zh.connectors.headerMissing).toBe('Header {key} 没有已保存的原值，请填写真实值。')
+  expect(zh.connectors.headerMissing).toBe('الترويسة {key} ليس لها أصل مخزَّن؛ أدخل قيمتها الحقيقية.')
   expect(connectorCheck('webhook', { ...base, headers: '{"Authorization":"******"}' }, row)).toBeUndefined()
   expect(connectorCheck('webhook', { ...base, url: 'https://new.example.com', headers: '{}' }, row)).toBeUndefined()
   expect(connectorCheck('shell', { ...base, default_args: '{unknown}' })).toBeUndefined()
 })
 it.each(['bgp', 'xdrop', 'webhook', 'shell'] as const)('G-units %s all default fields and refill', kind => {
   expect(fillForm(kind)).toEqual({ name: '', bgp_asn: 65000, vtysh_path: '/usr/bin/vtysh', description: '',
+    vendor: 'frr', flowspec_enabled: false,
     api_url: '', api_key: '', url: '', method: 'POST', headers: '', timeout_ms: kind === 'shell' ? 30000 : 10000,
     global: false, command: '', default_args: '', enabled: true })
   const form = fillForm(kind, row)
   expect(form.name).toBe('Old')
   expect(form.enabled).toBe(false)
-  if (kind === 'bgp') expect([form.bgp_asn, form.vtysh_path, form.description])
-    .toEqual([4294967295, '/mock/missing', ' old '])
+  if (kind === 'bgp') expect([form.bgp_asn, form.vtysh_path, form.description, form.vendor, form.flowspec_enabled])
+    .toEqual([4294967295, '/mock/missing', ' old ', 'juniper', true])
   if (kind === 'webhook') expect([form.url, form.method, form.headers, form.global])
     .toEqual(['https://hooks.example.net/notify', 'PUT', '{\n  "Authorization": "******"\n}', true])
   if (kind === 'shell') expect([form.command, form.default_args]).toEqual(['/bin/true', '--ip {dst_ip}'])

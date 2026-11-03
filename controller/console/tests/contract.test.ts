@@ -37,7 +37,7 @@ describe('G-contract three states and exact optional whitelist', () => {
     const result = await checkContract(contract, async (endpoint: string) => mockReply(endpoint).body,
       { attack: 2, node: 'edge-a', response: 3, listener: 1, mock: true })
     expect(result.passed).toBe(true)
-    expect(result.paths).toBe(641)
+    expect(result.paths).toBe(643)
     expect(result.requests).toBe(43)
   })
 })

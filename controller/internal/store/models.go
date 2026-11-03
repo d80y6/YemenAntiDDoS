@@ -225,13 +225,13 @@ type ShellConnector struct {
 
 // BGPConnector stores a local FRR BGP instance configuration.
 type BGPConnector struct {
-	ID            int       `json:"id"`
-	Name          string    `json:"name"`
-	VtyshPath     string    `json:"vtysh_path"`
-	BGPASN        int       `json:"bgp_asn"`
-	AddressFamily string    `json:"address_family"`
-	Enabled       bool      `json:"enabled"`
-	Description   string    `json:"description"`
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	VtyshPath     string `json:"vtysh_path"`
+	BGPASN        int    `json:"bgp_asn"`
+	AddressFamily string `json:"address_family"`
+	Enabled       bool   `json:"enabled"`
+	Description   string `json:"description"`
 	// Vendor selects the Flowspec CLI dialect (frr, cisco_xr, juniper, arista).
 	Vendor string `json:"vendor"`
 	// FlowspecEnabled switches BGP actions on this connector from RTBH
@@ -284,9 +284,9 @@ type BGPAnnouncement struct {
 	ErrorMessage   string     `json:"error_message,omitempty"`
 	// Kind is "rtbh" (default) or "flowspec". Flowspec announcements store the
 	// stable rule name in RouteMap and the rendered rule JSON in RuleSpec.
-	Kind     string `json:"kind"`
-	RuleSpec string `json:"rule_spec,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
+	Kind      string    `json:"kind"`
+	RuleSpec  string    `json:"rule_spec,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // v1.2 PR-5: BGPAnnouncementAttack is an attack→announcement attachment.

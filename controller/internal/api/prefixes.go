@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 )
 
 // isIPv4MappedPrefix checks the original address independently of mask syntax.

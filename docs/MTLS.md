@@ -1,5 +1,8 @@
 # mTLS for the Controller ↔ Node gRPC Link
 
+> العربية: [docs/MTLS.ar.md](MTLS.ar.md)
+
+
 This document covers the mutual-TLS transport added in Pillar 1 of the
 enterprise-hardening plan. It replaces the plaintext gRPC channel and the
 `node_id`-from-message identity model described in the README's
@@ -42,7 +45,19 @@ should live offline or in an HSM; it is only needed to issue/rotate leaves.
 
 ## Generating material
 
-A helper is provided (`cmd/xsight-cert`). Typical flow:
+A helper is provided (`cmd/xsight-cert`). It is bundled in the Controller image at
+`/usr/local/bin/xsight-cert`, so no host Go toolchain is needed — run it through the
+container, where `/etc/xsight/pki` is the mounted `./pki` directory:
+
+```bash
+# 0. Optional: build from source instead of using the image
+(cd controller && go build -o /usr/local/bin/xsight-cert ./cmd/xsight-cert)
+
+# From the repository root, prefix every command below with:
+alias xsight-cert='docker compose exec controller xsight-cert'
+```
+
+Typical flow:
 
 ```bash
 # 1. Create the deployment CA (once, keep ca.key offline afterwards)
@@ -61,6 +76,21 @@ xsight-cert issue --ca /etc/xsight/pki --node-id node-01 \
 xsight-cert verify --ca /etc/xsight/pki/ca.crt \
   --cert /etc/xsight/pki/node-01.crt --node-id node-01
 ```
+
+The helper is baked into the image, but the Compose volume mount is **read-only** for the
+running Controller (it only ever needs to read `ca.crt` / `*.crt` / `*.key`). Generate material
+with a one-off container that mounts `./pki` read-write:
+
+```bash
+mkdir -p pki
+docker compose run --rm -v "$PWD/pki:/etc/xsight/pki" --entrypoint xsight-cert \
+  controller init-ca --out /etc/xsight/pki --cn "xSight Deployment CA"
+# repeat with: issue --ca /etc/xsight/pki --cn controller ...   and   --node-id <id>
+```
+
+The image runs as UID 10001, so have that UID own the directory the Controller must read
+(`sudo chown -R 10001:10001 pki && chmod 700 pki`, `chmod 600 pki/*.key`) before starting the
+service. Keep `ca.key` offline afterwards.
 
 ## Controller configuration
 

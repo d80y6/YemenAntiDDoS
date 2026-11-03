@@ -15,9 +15,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/d80y6/YemenDDoS/controller/internal/api"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const feData = "testdata/mock-parity"

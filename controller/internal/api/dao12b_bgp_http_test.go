@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/gin-gonic/gin"
 )
 
 func dao12bWant(t *testing.T, name string, yes bool, detail any) {

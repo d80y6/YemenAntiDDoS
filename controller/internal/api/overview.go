@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 	"github.com/d80y6/YemenDDoS/shared/decoder"
+	"github.com/gin-gonic/gin"
 )
 
 type nodeInfo struct {

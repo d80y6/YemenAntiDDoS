@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/jackc/pgx/v5"
 )
 
 func qjCreate(t *testing.T, db *PGStore, name, role string, enabled bool) store.User {

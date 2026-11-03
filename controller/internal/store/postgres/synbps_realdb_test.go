@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/shared/decoder"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func synBPSFixture(t *testing.T) *dao14d2Fixture {

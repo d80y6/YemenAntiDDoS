@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/shared/decoder"
+	"github.com/gin-gonic/gin"
 )
 
 // validThresholdDecoders returns the set of decoder_family values accepted by

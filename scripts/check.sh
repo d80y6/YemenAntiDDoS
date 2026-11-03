@@ -26,8 +26,18 @@ run() {
 }
 
 check_fmt() {
-    local fmt_dir enum_status count file count_status output_status io_status fmt_status
+    local fmt_dir enum_status count file count_status output_status io_status fmt_status gofmt_bin
     local -a statuses
+    # Resolve gofmt even when only the `go` binary is on PATH (common with a
+    # bare /usr/local/bin/go symlink): fall back to GOROOT's bundled gofmt.
+    gofmt_bin=$(command -v gofmt || true)
+    if [ -z "$gofmt_bin" ] && command -v go >/dev/null 2>&1; then
+        gofmt_bin="$(go env GOROOT)/bin/gofmt"
+    fi
+    if [ -z "$gofmt_bin" ] || [ ! -x "$gofmt_bin" ]; then
+        printf '%s\n' 'fmt: gofmt not found on PATH or in $(go env GOROOT)/bin'
+        return 1
+    fi
     fmt_dir=$(mktemp -d) || return 1
     git ls-files -z -- 'controller/*.go' 'node/*.go' 'shared/*.go' >"$fmt_dir/files" 2>"$fmt_dir/enum.err"
     enum_status=$?
@@ -40,7 +50,7 @@ check_fmt() {
     output_status=$?
     statuses=(1 1)
     {
-        git ls-files -z -- 'controller/*.go' 'node/*.go' 'shared/*.go' | xargs -0 gofmt -l
+        git ls-files -z -- 'controller/*.go' 'node/*.go' 'shared/*.go' | xargs -0 "$gofmt_bin" -l
         statuses=("${PIPESTATUS[@]}")
     } >"$fmt_dir/out" 2>"$fmt_dir/err"
     io_status=$?
@@ -70,7 +80,9 @@ in_module() {
 run fmt check_fmt
 run ctl-vet in_module controller go vet ./...
 run ctl-test in_module controller go test ./... -count=1
-run ctl-race in_module controller go test -race ./... -count=1
+# The internal/api race suite alone measures ~10.5 min — above go test's
+# default 10-minute package timeout — so the race pass raises the budget.
+run ctl-race in_module controller go test -race ./... -count=1 -timeout=20m
 run shared-vet in_module shared go vet ./...
 run shared-test in_module shared go test ./... -count=1
 

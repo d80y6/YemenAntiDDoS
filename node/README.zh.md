@@ -78,7 +78,7 @@ Node 是 **gRPC 客户端**，主动连接 Controller。不暴露 REST API；除
 
 - 运行 XDP 模式需要 Linux 5.18+（XDP 程序使用 `bpf_xdp_load_bytes`）；在 Debian 13 / kernel 6.12 上验证
 - Go 1.24+、`clang`、`llvm-strip`、`bpftool` 与 libbpf 头文件（如 `libbpf-dev`）
-- `bpf/vmlinux.h`，仓库中不带。请在带 BTF 的主机上生成：
+- `bpf/vmlinux.h` — 已随仓库提供（在 Debian 13 / kernel 6.12 上生成）。仅当在带 BTF 的不同内核上编译时才需要重新生成：
 
 ```bash
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h

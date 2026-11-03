@@ -12,7 +12,7 @@ import XEmpty from '../../components/XEmpty.vue'
 import XConfirm from '../../components/XConfirm.vue'
 import XDrawer from '../../components/XDrawer.vue'
 import ConnectorDrawer from './ConnectorDrawer.vue'
-import { kinds, kindName, deletionHint, testResult } from './data'
+import { kinds, kindName, deletionHint, testResult, vendorName } from './data'
 import type { Kind, ConnectorRow, LegacyRow, ProbeResult, TestKind } from './data'
 import { bgpRoutes, testConnector } from './probe'
 const { t } = useI18n()
@@ -61,18 +61,21 @@ function open(kind: Kind, row?: ConnectorRow, event?: MouseEvent) {
   drawer.value = true
 }
 const columns: Record<Kind, string[]> = {
-  bgp: ['id', 'name', 'bgp_asn', 'vtysh_path'],
+  bgp: ['id', 'name', 'bgp_asn', 'vendor', 'vtysh_path', 'flowspec_enabled'],
   xdrop: ['id', 'name', 'api_url', 'api_key', 'timeout_ms'],
   webhook: ['id', 'name', 'url', 'method', 'global'],
   shell: ['id', 'name', 'command', 'default_args'],
 }
 const labels: Record<string, string> = { name: 'name', bgp_asn: 'asn', vtysh_path: 'vtysh',
+  vendor: 'vendor', flowspec_enabled: 'flowspec',
   api_url: 'apiURL', api_key: 'apiKey', timeout_ms: 'timeout', url: 'url', method: 'method',
   global: 'global', command: 'command', default_args: 'defaultArgs' }
 function cell(row: ConnectorRow, key: string) {
   const value = (row as unknown as Record<string, unknown>)[key]
   if (key === 'timeout_ms') return Number(value) > 0 ? value : 10000
-  return key === 'global' ? t(value ? 'connectors.yes' : 'connectors.no') : value
+  if (key === 'vendor') return vendorName[(value as string) as keyof typeof vendorName] ?? (value || 'FRR')
+  return key === 'global' || key === 'flowspec_enabled'
+    ? t(value ? 'connectors.yes' : 'connectors.no') : value
 }
 const rowKey = (kind: Kind, row: ConnectorRow) => `${kind}-${row.id}`
 const confirm = ref('')

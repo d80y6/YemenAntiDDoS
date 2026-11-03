@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/gin-gonic/gin"
 )
 
 func listNodes(deps Dependencies) gin.HandlerFunc {

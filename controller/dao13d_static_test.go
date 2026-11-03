@@ -355,18 +355,30 @@ func TestDao13d_G2(t *testing.T) {
 		}
 		bgp := dao13dFn(t, dao13dParse(t, "internal/action/bgp.go"), "bgpAnnounce")
 		protected := 0
-		ast.Inspect(bgp, func(n ast.Node) bool {
-			if c, ok := n.(*ast.CallExpr); ok && dao13dName(c) == "retryBGPStateWrite" && len(c.Args) == 1 {
-				if lit, ok := c.Args[0].(*ast.FuncLit); ok {
-					protected += dao13dCalls(lit, "MarkFailedAnnounce")
+		protectedCount := func(fn *ast.FuncDecl) int {
+			count := 0
+			ast.Inspect(fn, func(n ast.Node) bool {
+				if c, ok := n.(*ast.CallExpr); ok && dao13dName(c) == "retryBGPStateWrite" && len(c.Args) == 1 {
+					if lit, ok := c.Args[0].(*ast.FuncLit); ok {
+						count += dao13dCalls(lit, "MarkFailedAnnounce")
+					}
 				}
-			}
-			return true
-		})
+				return true
+			})
+			return count
+		}
+		protected = protectedCount(bgp)
+		// Flowspec pillar: markFlowspecAnnounceFailed is the second sanctioned
+		// production call site — also wrapped in retryBGPStateWrite.
+		flowspecMark := dao13dFn(t, dao13dParse(t, "internal/action/bgp_flowspec.go"), "markFlowspecAnnounceFailed")
+		flowspecCalls := dao13dCalls(flowspecMark, "MarkFailedAnnounce")
+		flowspecProtected := protectedCount(flowspecMark)
 		engine := dao13dParse(t, "internal/action/engine.go")
 		engineCalls := dao13dCalls(engine, "MarkFailedAnnounce")
-		if total != 1 || dao13dCalls(bgp, "MarkFailedAnnounce") != 1 || protected != 1 || engineCalls != 0 {
-			t.Errorf("S7 compensation calls total=%d protected=%d engine=%d; want 1/1/0", total, protected, engineCalls)
+		if total != 2 || dao13dCalls(bgp, "MarkFailedAnnounce") != 1 || protected != 1 ||
+			flowspecCalls != 1 || flowspecProtected != 1 || engineCalls != 0 {
+			t.Errorf("S7 compensation calls total=%d protected=%d flowspec=%d/%d engine=%d; want 2/1/1/1/0",
+				total, protected, flowspecCalls, flowspecProtected, engineCalls)
 		}
 		retry := dao13dFn(t, engine, "retryBGPAnnounce")
 		warnings := 0

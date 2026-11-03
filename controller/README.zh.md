@@ -47,7 +47,7 @@ Controller 提供 REST API、gRPC 数据接入、实时检测引擎、自动化�
 
 外观提供 **自动 / 浅 / 深** 三档；字体为 **IBM Plex Sans / Mono**。
 
-UI 支持中英文切换。开发说明见[控制台 README（中文）](console/README.md)。
+UI 支持英文 / 阿拉伯文（RTL）切换。开发说明见[控制台 README（中文）](console/README.md)。
 
 ## 构建
 

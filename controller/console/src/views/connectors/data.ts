@@ -5,6 +5,11 @@ export const kinds = ['bgp', 'xdrop', 'webhook', 'shell'] as const
 export type Kind = typeof kinds[number]
 export type TestKind = Exclude<Kind, 'shell'>
 export const kindName: Record<Kind, string> = { bgp: 'BGP', xdrop: 'XDrop', webhook: 'Webhook', shell: 'Shell' }
+export const vendors = ['frr', 'cisco_xr', 'juniper', 'arista'] as const
+export type Vendor = typeof vendors[number]
+export const vendorName: Record<Vendor, string> = {
+  frr: 'FRR', cisco_xr: 'Cisco IOS XR', juniper: 'Juniper Junos', arista: 'Arista EOS',
+}
 interface CommonRow {
   id: number
   name: string
@@ -17,6 +22,8 @@ export interface BGPRow extends CommonRow {
   vtysh_path: string
   description: string
   address_family: string
+  vendor: string
+  flowspec_enabled: boolean
 }
 export interface XDropRow extends CommonRow {
   api_url: string
@@ -43,6 +50,8 @@ export interface Form {
   bgp_asn: number
   vtysh_path: string
   description: string
+  vendor: string
+  flowspec_enabled: boolean
   api_url: string
   api_key: string
   url: string
@@ -61,7 +70,8 @@ const objectHeaders = (value: unknown): value is Record<string, string> => !!val
   && Object.values(value).every(v => typeof v === 'string')
 export function fillForm(kind: Kind, row?: ConnectorRow): Form {
   const form: Form = {
-    name: '', bgp_asn: 65000, vtysh_path: '/usr/bin/vtysh', description: '', api_url: '', api_key: '',
+    name: '', bgp_asn: 65000, vtysh_path: '/usr/bin/vtysh', description: '',
+    vendor: 'frr', flowspec_enabled: false, api_url: '', api_key: '',
     url: '', method: methods[0], headers: '', timeout_ms: kind === 'shell' ? 30000 : 10000,
     global: false, command: '', default_args: '', enabled: true,
   }
@@ -73,6 +83,8 @@ export function fillForm(kind: Kind, row?: ConnectorRow): Form {
     form.bgp_asn = bgp.bgp_asn
     form.vtysh_path = bgp.vtysh_path
     form.description = bgp.description
+    form.vendor = bgp.vendor || 'frr'
+    form.flowspec_enabled = bgp.flowspec_enabled === true
   } else {
     const timed = row as XDropRow | WebhookRow | ShellRow
     form.timeout_ms = timed.timeout_ms > 0 ? Math.min(timed.timeout_ms, timeoutMax(kind)) : form.timeout_ms
@@ -124,7 +136,8 @@ export function connectorBody(kind: Kind, form: Form, row?: ConnectorRow): Recor
   const name = form.name.trim()
   if (kind === 'bgp') return {
     name, bgp_asn: form.bgp_asn, vtysh_path: form.vtysh_path.trim(),
-    description: form.description, enabled: form.enabled,
+    description: form.description, vendor: form.vendor, flowspec_enabled: form.flowspec_enabled,
+    enabled: form.enabled,
   }
   const edit = row ? { enabled: form.enabled } : {}
   if (kind === 'xdrop') return {

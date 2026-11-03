@@ -10,13 +10,14 @@ import XPassword from '../../components/XPassword.vue'
 import XListbox from '../../components/XListbox.vue'
 import XSwitch from '../../components/XSwitch.vue'
 import XTip from '../../components/XTip.vue'
-import { saveConnector, methods, connectorCheck, fillForm, kinds, kindName, normalizeURL, timeoutMax } from './data'
+import { saveConnector, methods, connectorCheck, fillForm, kinds, kindName, normalizeURL, timeoutMax, vendors, vendorName } from './data'
 import type { ConnectorRow, Kind, XDropRow } from './data'
 const props = defineProps<{ modelValue: boolean; kind: Kind; row?: ConnectorRow }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; saved: [kind: Kind] }>()
 const { t } = useI18n()
 const globalId = useId()
 const enabledId = useId()
+const flowspecId = useId()
 const kind = ref<Kind>(props.kind)
 const form = ref(fillForm(kind.value))
 const busy = ref(false)
@@ -27,6 +28,7 @@ const disabled = computed(() => busy.value || !isAdmin())
 const changedURL = computed(() => props.row && kind.value === 'xdrop'
   && normalizeURL(form.value.api_url) !== (props.row as XDropRow).api_url)
 const options = computed(() => kinds.map(value => ({ value, label: kindName[value], disabled: disabled.value })))
+const vendorOptions = vendors.map(value => ({ value, label: vendorName[value] }))
 const title = computed(() => t('connectors.' + (!isAdmin() ? 'view' : props.row ? 'edit' : 'create')))
 watch(() => props.modelValue, async open => {
   if (!open) return
@@ -80,6 +82,14 @@ async function save() {
         <label class="field"><span>{{ t('connectors.asn') }}</span>
           <XNumber v-model="form.bgp_asn" :label="t('connectors.asn')" :min="1" :max="4294967295"
             :digits="0" :disabled="disabled" /></label>
+        <div class="field"><span>{{ t('connectors.vendor') }}</span>
+          <XListbox v-model="form.vendor" :label="t('connectors.vendor')" :disabled="disabled"
+            :options="vendorOptions" />
+          <small class="sub">{{ t('connectors.vendorTip') }}</small></div>
+        <label class="field" :for="flowspecId">
+          <span>{{ t('connectors.flowspec') }} <XTip :text="t('connectors.flowspecTip')" wide /></span>
+          <XSwitch :id="flowspecId" v-model="form.flowspec_enabled" :label="t('connectors.flowspec')"
+            :disabled="disabled" /></label>
         <label class="field"><span>{{ t('connectors.vtysh') }}</span>
           <input v-model="form.vtysh_path" class="mono" autocomplete="off" :disabled="disabled"
             placeholder="/usr/bin/vtysh"></label>

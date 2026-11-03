@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/d80y6/YemenDDoS/controller/internal/action/flowspec"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/gin-gonic/gin"
 )
 
 var vtyshHTTPTimeout = 25 * time.Second
@@ -40,7 +41,7 @@ func listBGPConnectors(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		list, err := deps.Store.BGPConnectors().List(c)
 		if err != nil {
-			dbError(c, "", err)
+			dbError(c, "bgp connector ", err)
 			return
 		}
 		ok(c, list)
@@ -104,6 +105,13 @@ func createBGPConnector(deps Dependencies) gin.HandlerFunc {
 		if req.Flowspec != nil {
 			flowspecEnabled = *req.Flowspec
 		}
+		// Only FRR is driven over vtysh; other vendors are export-only and need
+		// flowspec_enabled, otherwise a Flowspec action silently becomes RTBH.
+		if vendor != flowspec.VendorFRR && !flowspecEnabled {
+			errResponse(c, http.StatusBadRequest, fmt.Sprintf(
+				"vendor %q is export-only: set flowspec_enabled=true (RTBH cannot be applied to a non-FRR speaker)", vendor))
+			return
+		}
 		conn := &store.BGPConnector{
 			Name:            req.Name,
 			VtyshPath:       req.VtyshPath,
@@ -116,7 +124,7 @@ func createBGPConnector(deps Dependencies) gin.HandlerFunc {
 		}
 		id, err := deps.Store.BGPConnectors().Create(c, conn)
 		if err != nil {
-			dbError(c, "", err)
+			dbError(c, "bgp connector ", err)
 			return
 		}
 		conn.ID = id
@@ -181,8 +189,15 @@ func updateBGPConnector(deps Dependencies) gin.HandlerFunc {
 		if req.Flowspec != nil {
 			conn.FlowspecEnabled = *req.Flowspec
 		}
+		if vendor, vErr := normalizeVendor(conn.Vendor); vErr != nil || vendor != flowspec.VendorFRR {
+			if !conn.FlowspecEnabled {
+				errResponse(c, http.StatusBadRequest, fmt.Sprintf(
+					"vendor %q is export-only: set flowspec_enabled=true (RTBH cannot be applied to a non-FRR speaker)", conn.Vendor))
+				return
+			}
+		}
 		if err := deps.Store.BGPConnectors().Update(c, conn); err != nil {
-			dbError(c, "", err)
+			dbError(c, "bgp connector ", err)
 			return
 		}
 		if conn.Enabled && deps.ActionEngine != nil {
@@ -199,7 +214,7 @@ func deleteBGPConnector(deps Dependencies) gin.HandlerFunc {
 		// In-use guard: reject if any response action references this connector
 		count, err := deps.Store.Responses().CountActionsByBGPConnector(c, id)
 		if err != nil {
-			dbError(c, "", err)
+			dbError(c, "bgp connector ", err)
 			return
 		}
 		if count > 0 {
@@ -208,7 +223,7 @@ func deleteBGPConnector(deps Dependencies) gin.HandlerFunc {
 		}
 		live, err := deps.Store.BGPAnnouncements().CountLiveByConnector(c, id)
 		if err != nil {
-			dbError(c, "", err)
+			dbError(c, "bgp connector ", err)
 			return
 		}
 		if live > 0 {
@@ -217,7 +232,7 @@ func deleteBGPConnector(deps Dependencies) gin.HandlerFunc {
 		}
 		old, _ := deps.Store.BGPConnectors().Get(c, id)
 		if err := deps.Store.BGPConnectors().Delete(c, id); err != nil {
-			dbError(c, "", err)
+			dbError(c, "bgp connector ", err)
 			return
 		}
 		if old != nil {

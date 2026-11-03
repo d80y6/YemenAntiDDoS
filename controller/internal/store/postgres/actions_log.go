@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
 
 type actionsLogRepo struct{ pool *pgxpool.Pool }

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/controller/internal/store/storetest"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestDao5_C2_PostgresContention(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/gin-gonic/gin"
 )
 
 func queryTimeseries(deps Dependencies) gin.HandlerFunc {

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/controller/internal/store/storetest"
+	"github.com/jackc/pgx/v5"
 )
 
 type postgresContractBackend struct{ db *PGStore }

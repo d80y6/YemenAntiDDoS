@@ -292,7 +292,7 @@ An admin can also select Force Unblock on a failed-create row and confirm **Clos
 
 ## 4. Web UI by Feature
 
-The console offers Auto / Light / Dark appearance and English / Chinese language options. Non-admin users see read-only pages with write controls hidden or disabled and no connector Test action; BGP Routes remains available.
+The console offers Auto / Light / Dark appearance and English / Arabic (RTL) language options. Non-admin users see read-only pages with write controls hidden or disabled and no connector Test action; BGP Routes remains available.
 
 The sidebar can collapse, shows Actions: Auto / Observe with help text, and refreshes active-attack and offline-node badges every 30 seconds. About shows the version, project link and third-party licenses.
 

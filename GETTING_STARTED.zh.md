@@ -51,7 +51,7 @@ cd ..
 
 ### 2.2 Node
 
-BPF 程序引用 `vmlinux.h`，该文件不在仓库里。先从当前内核的 BTF 生成它，再生成 Go 绑定并编译：
+BPF 程序引用的 `vmlinux.h` 已随仓库提供（在 Debian 13 / kernel 6.12 上生成）。仅当在带 BTF 的不同内核上编译时才需重新生成，然后再生成 Go 绑定并编译：
 
 ```bash
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > node/bpf/vmlinux.h
@@ -245,7 +245,7 @@ sudo systemctl enable --now xsight-node      # 以 root 运行，LimitMEMLOCK=in
 | 端口 | 谁来连接 | 说明 |
 |---|---|---|
 | TCP 8080 | 浏览器、API 客户端、Prometheus | Web UI、REST API、无认证的 `/metrics` |
-| TCP 50051 | 各 node | gRPC **不加密（无 TLS）**：节点 API Key 和流量上报以明文传输。只能在可信网络内或 VPN / 隧道中使用。 |
+| TCP 50051 | 各 node | node gRPC。默认明文——在两端设置 `tls.enabled: true` 可升级为 TLS 1.3 双向认证 mTLS，节点身份来自证书（见 [docs/MTLS.md](docs/MTLS.md)）。不启用 TLS 时只能在可信网络内或 VPN / 隧道中使用。 |
 | 127.0.0.1:6060 | 仅本机 | controller 的 pprof，始终开启 |
 | 127.0.0.1:6061 | 仅本机 | node 的 pprof，仅在 `pprof: true` 时开启 |
 

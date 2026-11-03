@@ -48,6 +48,7 @@ const (
 	SkipReasonIncompleteConfig         = "incomplete_config"
 	SkipReasonConnectorLookupFailed    = "connector_lookup_failed"
 	SkipReasonNoRulesToUnblock         = "no_rules_to_unblock"
+	SkipReasonVendorExportOnly         = "vendor_export_only"
 	// Non-ended outbound attacks must not block their internal source host.
 	SkipReasonOutboundBlockForbidden = "outbound_block_forbidden"
 )

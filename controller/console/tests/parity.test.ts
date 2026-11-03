@@ -258,9 +258,11 @@ it('C5 empty/null connector bodies retain aa1275a literals in both mock entry po
     ],
     bgp: [
       { id: 1, name: 'Edge BGP', enabled: true, created_at: at, updated_at: at,
-        bgp_asn: 64512, vtysh_path: '/mock/missing', address_family: 'ipv4', description: '' },
+        bgp_asn: 64512, vtysh_path: '/mock/missing', address_family: 'ipv4', description: '',
+        vendor: '', flowspec_enabled: false },
       { id: 2, name: 'Disabled BGP', enabled: false, created_at: at, updated_at: at,
-        bgp_asn: 64512, vtysh_path: '/mock/missing', address_family: 'ipv4', description: '' },
+        bgp_asn: 64512, vtysh_path: '/mock/missing', address_family: 'ipv4', description: '',
+        vendor: '', flowspec_enabled: false },
     ],
     xdrop: [
       { id: 1, name: 'Edge XDrop', enabled: true, api_url: 'http://mock-xdrop.invalid', api_key: '***abcd',

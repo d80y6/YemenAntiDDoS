@@ -32,18 +32,18 @@ func getL7Summary(deps Dependencies) gin.HandlerFunc {
 		}
 		snap := deps.L7.Snapshot(time.Duration(minutes)*time.Minute, time.Now())
 		ok(c, gin.H{
-			"enabled":        true,
-			"generated_at":   snap.GeneratedAt,
-			"window_minutes": snap.WindowMinutes,
-			"bucket_seconds": snap.BucketSeconds,
-			"totals":         snap.Totals,
+			"enabled":          true,
+			"generated_at":     snap.GeneratedAt,
+			"window_minutes":   snap.WindowMinutes,
+			"bucket_seconds":   snap.BucketSeconds,
+			"totals":           snap.Totals,
 			"rates_per_second": snap.Rates,
-			"series":         snap.Series,
-			"targets":        snap.Targets,
-			"sources":        snap.Sources,
-			"nodes":          snap.Nodes,
-			"recent":         snap.Recent,
-			"dropped":        snap.Dropped,
+			"series":           snap.Series,
+			"targets":          snap.Targets,
+			"sources":          snap.Sources,
+			"nodes":            snap.Nodes,
+			"recent":           snap.Recent,
+			"dropped":          snap.Dropped,
 		})
 	}
 }
@@ -66,8 +66,8 @@ func listL7Events(deps Dependencies) gin.HandlerFunc {
 		}
 		events, dropped := deps.L7.Stats()
 		ok(c, gin.H{
-			"events":       deps.L7.Recent(limit),
-			"buffered":     events,
+			"events":        deps.L7.Recent(limit),
+			"buffered":      events,
 			"total_dropped": dropped,
 		})
 	}
@@ -95,10 +95,10 @@ func getNodeTLS(deps Dependencies) gin.HandlerFunc {
 			if info, minVersion, enabled := deps.TLSInfo(); enabled {
 				resp["enabled"] = true
 				server := gin.H{
-					"cert":            info,
-					"min_version":     minVersion,
-					"days_remaining":  daysUntil(info.NotAfter),
-					"not_after":       info.NotAfter,
+					"cert":           info,
+					"min_version":    minVersion,
+					"days_remaining": daysUntil(info.NotAfter),
+					"not_after":      info.NotAfter,
 				}
 				if d := daysUntil(info.NotAfter); d >= 0 && d <= 30 {
 					warnings = append(warnings, "controller_server_cert_expiring")
@@ -118,15 +118,15 @@ func getNodeTLS(deps Dependencies) gin.HandlerFunc {
 					"days_remaining": days,
 					"seen_at":        peer.SeenAt,
 					"cert": gin.H{
-						"subject":          peer.Subject,
-						"issuer":           peer.Issuer,
-						"serial_number":    peer.Serial,
-						"not_before":       peer.NotBefore,
-						"not_after":        peer.NotAfter,
-						"dns_names":        peer.DNSNames,
-						"uris":             peer.URIs,
+						"subject":            peer.Subject,
+						"issuer":             peer.Issuer,
+						"serial_number":      peer.Serial,
+						"not_before":         peer.NotBefore,
+						"not_after":          peer.NotAfter,
+						"dns_names":          peer.DNSNames,
+						"uris":               peer.URIs,
 						"fingerprint_sha256": peer.Fingerprint,
-						"is_ca":            peer.IsCA,
+						"is_ca":              peer.IsCA,
 					},
 				}
 				if days >= 0 && days <= 30 {

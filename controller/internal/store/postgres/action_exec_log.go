@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type actionExecLogRepo struct{ pool *pgxpool.Pool }

@@ -85,6 +85,9 @@ xSight 是一套分布式 DDoS 检测与响应平台，融合了 XDP/eBPF 线速
 - **共享 BGP 公告（Wanguard 风格）** — 多个攻击落到同一 `(prefix, route_map)` 时复用同一条 FRR 路由。所有 attach 攻击的 MAX 延迟、`SELECT FOR UPDATE` 下的原子 attach/detach
 - **持久化延迟任务** — `scheduled_actions` 表跨 Controller 重启；启动时 re-arm pending timer、立即 fire 逾期任务、retry 执行中途崩溃的任务
 - **FRR 孤儿检测** — 启动扫 FRR，发现没有对应攻击的残留路由并交给运维处理
+- **BGP Flowspec** — 多厂商 BGP Flowspec 规则生成与管理（Cisco XR、Juniper、Arista、FRR），支持控制台预览、检查与强制撤回。见 [docs/FLOWSPEC.md](docs/FLOWSPEC.md)（阿文：[docs/FLOWSPEC.ar.md](docs/FLOWSPEC.ar.md)）。
+- **L7 检测** — 在 Node 上检测 HTTP Flood、Slowloris 与 TLS ClientHello 异常，内存聚合并在控制台提供专属 L7 仪表盘。见 [docs/L7.md](docs/L7.md)。
+- **mTLS 管理** — 节点管理页展示对端证书与安全态势指标。配置指南：[docs/MTLS.md](docs/MTLS.md)（阿文：[docs/MTLS.ar.md](docs/MTLS.ar.md)）。
 
 ### 活跃缓解与逐攻击下钻
 - 「缓解」页在同一页展示「BGP 宣告」与「XDrop 规则」分区；详情抽屉包含字段、XDrop 的「下发」与「执行时间线」，下发状态按需查询各节点。
@@ -101,7 +104,7 @@ xSight 是一套分布式 DDoS 检测与响应平台，融合了 XDP/eBPF 线速
 
 ### Web UI
 - **外观** — 自动 / 浅 / 深
-- **国际化** — 完整的中英文支持（ZH/EN 切换）
+- **国际化** — 完整的英文 / 阿拉伯文（RTL）界面（EN/AR 切换）
 - **实时仪表盘** — 流量概览、逐 IP 下钻、告警时间线、响应历史
 - **配置管理** — 在浏览器中管理检测配置、响应动作和节点配置
 
@@ -124,7 +127,7 @@ xsight/
 ├── shared/              # 共享解码器包
 ├── proto/               # gRPC 服务定义
 ├── scripts/             # 编译与服务管理脚本
-├── deploy/              # systemd 服务文件
+├── deploy/              # systemd 服务文件 + Docker 文件（deploy/docker/Dockerfile.node）
 └── .github/assets/      # Logo、截图、赞助商
 ```
 
@@ -201,6 +204,19 @@ sudo ./scripts/node.sh start
 ./scripts/node.sh status
 ```
 
+### 4. 或使用 Docker 部署
+
+```bash
+cp controller/config.example.yaml controller/config.yaml
+# 编辑：database.dsn -> postgres://xsight:<PASSWORD>@db:5432/xsight?sslmode=disable
+#       auth.api_key / auth.initial_admin_password（占位值会被拒绝）
+
+export POSTGRES_PASSWORD=<与 database.dsn 相同的密码>
+docker compose up -d db controller
+```
+
+`docker-compose.yml` 提供 TimescaleDB 16 服务、Controller 镜像（Web UI `:8080`、node gRPC `:50051`），以及可选的特权 Node 镜像（`--profile node`，host 网络用于 XDP/Flow 采集）。mTLS 需挂载 `./pki` 并在两端设置 `tls.enabled: true` — 见 [docs/MTLS.md](docs/MTLS.md)。
+
 首次启动前，将 `auth.initial_admin_password` 设为 8–72 字节的独立密码（不能为 `admin`）。Web UI 地址为 `http://<controller-host>:8080`，使用用户名 `admin` 和该配置密码登录。初始化成功后可删除此字段。
 
 升级已有数据库时，如果任何 `admin` 角色账号仍使用旧默认密码，重启前需设置此字段。启动时会轮换这些账号的密码（包括改名或已停用的管理员），保留用户名、角色和启停状态；未配置时拒绝启动。已经改过的密码不会被覆盖。本次升级后所有用户需重新登录。
@@ -217,11 +233,11 @@ sudo ./scripts/node.sh start
 
 ### Controller 与 Node 之间的链路不加密
 
-Node 与 Controller 之间的 gRPC 是明文；某节点首次握手成功后，Controller 按每条消息里自报的 `node_id` 接收统计。Controller 与 Node 只应部署在可信网络内，或放进 VPN / 加密隧道，并用防火墙限制 gRPC 端口（缺省 50051）。详见 [Node gRPC 接口 — 安全说明](node/API.zh.md#安全说明)。
+Node 与 Controller 之间的 gRPC 默认明文。在两端设置 `tls.enabled` 后，链路使用 TLS 1.3 双向认证（mTLS），Controller 从客户端证书的 URI SAN（`spiffe://xsight/node/<node_id>`）获取节点身份，而不是消息里的 `node_id` 字段。未启用 mTLS 时，某节点首次握手成功后，Controller 仍会按每条消息里自报的 `node_id` 接收统计，因此只能部署在可信网络内，或放进 VPN / 加密隧道，并用防火墙限制 gRPC 端口（缺省 50051）。配置、轮换与吊销见 [docs/MTLS.md](docs/MTLS.md)（阿文：[docs/MTLS.ar.md](docs/MTLS.ar.md)）。
 
 ### xDrop 端口字段依赖 Flow 采样
 
-xDrop 规则的端口和源 IP 字段（`{dominant_dst_port}`、`{dominant_src_port}`、`{src_ip}`）在动作执行时按攻击的 Flow 采样填写。只有采样包数不少于 `action_engine.xdrop_min_sample_packets`（缺省 1000）、且主导值占比不低于 `xdrop_narrow_pct`（缺省 80%）时，该字段才保留。否则字段被丢弃，或把排名靠前的端口拆成多条规则（最多 `xdrop_topk_max` 条，缺省 8）。`drop` 规则若最终没有任何收窄字段，会退成按攻击 pps 阈值的 `rate_limit`。因此攻击刚开始时，规则可能比模板看上去的更宽。若要等出现明确的主导端口再动作，可加前置条件，例如：
+xDrop 规则的端口和源 IP 字段（`{dominant_dst_port}`、`{dominant_src_port}`、`{src_ip}`）在动作执行时按攻击的 Flow 采样填写。只有采样包数不少于 `action_engine.xdrop_min_sample_packets`（缺省 1000）、且主导值占比不低于 `xdrop_narrow_pct`（缺省 80%）时，该字段才保留。设置 `action_engine.xdrop_adaptive_samples: true` 时，主导占比达到 90%（95%）会把样本下限降到 base/10（base/20），让短促的 hit-and-run 攻击也能收窄而不是退成宽规则；`action_engine.fast_path_multiplier`（缺省 5.0）还会在实测速率达到阈值的该倍数时，于第一个检测周期就确认攻击。否则字段被丢弃，或把排名靠前的端口拆成多条规则（最多 `xdrop_topk_max` 条，缺省 8）。`drop` 规则若最终没有任何收窄字段，会退成按攻击 pps 阈值的 `rate_limit`。因此攻击刚开始时，规则可能比模板看上去的更宽。若要等出现明确的主导端口再动作，可加前置条件，例如：
 
 ```
 dominant_dst_port_pct  gte  40

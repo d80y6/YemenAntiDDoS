@@ -65,9 +65,14 @@ func flowspecRuleFor(dstIP string, attack *store.Attack) flowspec.Rule {
 	return r
 }
 
+// connectorVendor maps the stored vendor to a renderer. An empty or "frr"
+// value is the documented default for rows created before Flowspec existed;
+// anything else that fails to parse is a data error the API rejects on write,
+// so it is logged rather than silently executed as FRR.
 func connectorVendor(conn *store.BGPConnector) flowspec.Vendor {
 	v, err := flowspec.ParseVendor(conn.Vendor)
 	if err != nil {
+		log.Printf("WARN action: bgp connector %d has unknown vendor %q; treating as frr", conn.ID, conn.Vendor)
 		return flowspec.VendorFRR
 	}
 	return v

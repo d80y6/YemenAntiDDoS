@@ -85,9 +85,9 @@ The system has two components:
 - **Shared BGP announcements (Wanguard-style)** — multiple attacks sharing a `(prefix, route_map)` ref a single FRR route. MAX delay across attached attacks, atomic attach/detach under `SELECT FOR UPDATE`.
 - **Persisted delayed tasks** — `scheduled_actions` table survives controller restart; startup reconciliation re-arms pending timers, fires overdue tasks, retries in-flight crashed tasks.
 - **FRR orphan detection** — startup scan surfaces FRR routes with no backing YemenAntiDDoS attack so operators can withdraw or dismiss them.
-- **BGP Flowspec** — Multi-vendor BGP Flowspec rule generation and management (Cisco, Juniper, Arista, FRR) with console preview, inspection, and force-withdraw.
-- **Layer 7 Inspection** — HTTP flood, Slowloris, and TLS ClientHello detection on the Node with in-memory aggregation and a dedicated L7 dashboard in the console.
-- **mTLS Management** — Peer certificate tracking and posture indicators in the node management UI.
+- **BGP Flowspec** — Multi-vendor BGP Flowspec rule generation and management (Cisco XR, Juniper, Arista, FRR) with console preview, inspection, and force-withdraw. See [docs/FLOWSPEC.md](docs/FLOWSPEC.md) (AR: [docs/FLOWSPEC.ar.md](docs/FLOWSPEC.ar.md)).
+- **Layer 7 Inspection** — HTTP flood, Slowloris, and TLS ClientHello detection on the Node with in-memory aggregation and a dedicated L7 dashboard in the console. See [docs/L7.md](docs/L7.md).
+- **mTLS Management** — Peer certificate tracking and posture indicators in the node management UI. Setup guide: [docs/MTLS.md](docs/MTLS.md) (AR: [docs/MTLS.ar.md](docs/MTLS.ar.md)).
 
 ### Active Mitigations & Per-Attack Drilldown
 - Dedicated `Active Mitigations` page showing BGP Routing and XDrop Rules sections on one page, with a detail drawer per artifact (fields, Delivery for xDrop, Execution Timeline); Delivery queries current per-node xDrop state.
@@ -104,7 +104,7 @@ The system has two components:
 
 ### Web UI
 - **Appearance** — Auto / Light / Dark
-- **Internationalization** — full English and Chinese (ZH/EN toggle)
+- **Internationalization** — full English and Arabic (RTL) UI with an EN/AR toggle
 - **Real-time dashboards** — traffic overview, per-IP drilldown, alert timeline, response history
 - **Config management** — detection profiles, response actions, and node configuration from the browser
 
@@ -127,7 +127,7 @@ yemenantiddos/
 ├── shared/              # Shared decoder package
 ├── proto/               # gRPC service definition
 ├── scripts/             # Build & service management
-├── deploy/              # systemd unit files
+├── deploy/              # systemd unit files + Docker files (deploy/docker/Dockerfile.node)
 └── .github/assets/      # Logo, screenshots, sponsor
 ```
 
@@ -204,6 +204,28 @@ sudo ./scripts/node.sh start
 ./scripts/node.sh status
 ```
 
+### 4. Or deploy with Docker
+
+```bash
+cp controller/config.example.yaml controller/config.yaml
+# Edit: database.dsn -> postgres://xsight:<PASSWORD>@db:5432/xsight?sslmode=disable
+#       auth.api_key / auth.initial_admin_password (placeholders are rejected)
+
+export POSTGRES_PASSWORD=<the same password as in database.dsn>
+docker compose up -d db controller
+```
+
+`docker-compose.yml` ships a TimescaleDB 16 service, the Controller image (Web UI `:8080`, node gRPC `:50051`), and an optional privileged Node image (`--profile node`, host networking for XDP/flow capture). For mTLS mount `./pki` and set `tls.enabled: true` on both sides — see [docs/MTLS.md](docs/MTLS.md).
+
+The Controller image bundles `xsight-cert`, so the deployment CA and leaves can be generated without a Go toolchain on the host. `./pki` is mounted read-only into the running Controller; use a one-off container that mounts it read-write:
+
+```bash
+docker compose run --rm -v "$PWD/pki:/etc/xsight/pki" --entrypoint xsight-cert \
+  controller init-ca --out /etc/xsight/pki --cn "xSight Deployment CA"
+# then: issue --ca /etc/xsight/pki --cn controller ... and --node-id <id> ...
+sudo chown -R 10001:10001 pki && chmod 700 pki && chmod 600 pki/*.key
+```
+
 Before first startup, set `auth.initial_admin_password` to a unique password of 8–72 bytes (not `admin`). The Web UI is available at `http://<controller-host>:8080`; sign in as `admin` with that configured password. The field can be removed after successful initialization.
 
 When upgrading an existing database, set this field before restarting if any account with role `admin` still uses the legacy default password. Startup rotates those passwords, including renamed or disabled admins, without changing their names, roles, or enabled states. Without the setting, startup refuses to run while such an account exists. Already changed passwords are preserved. All users must sign in again after this upgrade.
@@ -220,7 +242,7 @@ The last enabled admin cannot be deleted, demoted or disabled; the API returns 4
 
 ### The Controller–Node link is plaintext unless mTLS is enabled
 
-gRPC between Node and Controller defaults to plaintext. When `tls.enabled` is set on both sides, the link uses TLS 1.3 mutual authentication and the Controller takes the node identity from the client certificate's URI SAN (`spiffe://xsight/node/<node_id>`) instead of the `node_id` field in each message. Without mTLS, after a node's first successful handshake the Controller still accepts statistics by the `node_id` written in each message, so deploy only on a trusted network or inside a VPN / encrypted tunnel and firewall the gRPC port (default 50051). Setup, rotation and revocation: [docs/MTLS.md](docs/MTLS.md).
+gRPC between Node and Controller defaults to plaintext. When `tls.enabled` is set on both sides, the link uses TLS 1.3 mutual authentication and the Controller takes the node identity from the client certificate's URI SAN (`spiffe://xsight/node/<node_id>`) instead of the `node_id` field in each message. Without mTLS, after a node's first successful handshake the Controller still accepts statistics by the `node_id` written in each message, so deploy only on a trusted network or inside a VPN / encrypted tunnel and firewall the gRPC port (default 50051). Setup, rotation and revocation: [docs/MTLS.md](docs/MTLS.md) (AR: [docs/MTLS.ar.md](docs/MTLS.ar.md)).
 
 ### xDrop port fields depend on flow samples
 

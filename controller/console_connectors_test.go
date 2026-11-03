@@ -15,19 +15,25 @@ func consoleConnectorsScope(t *testing.T, lang string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := regexp.MustCompile(`(?m)^\s*decoderScopeBody:\s*'([^'\n]*)',`).FindAllStringSubmatch(string(raw), -1)
+	// Locale files mix styles: en.ts uses unquoted keys + single-quoted values,
+	// ar.ts uses double-quoted keys + double-quoted values. Accept both.
+	entries := regexp.MustCompile(`(?m)^\s*"?decoderScopeBody"?:\s*('([^'\n]*)'|"([^"\n]*)"),`).FindAllStringSubmatch(string(raw), -1)
 	if len(entries) != 1 {
 		t.Fatalf("connectors.decoderScopeBody count=%d want 1", len(entries))
 	}
+	body := entries[0][2]
+	if body == "" {
+		body = entries[0][3]
+	}
 	for _, name := range decoder.Names {
-		if name != "" && action.IsXDropCompatibleDecoder(name) && !dao10HasIdentifier(entries[0][1], name) {
+		if name != "" && action.IsXDropCompatibleDecoder(name) && !dao10HasIdentifier(body, name) {
 			t.Errorf("missing complete decoder identifier %s", name)
 		}
 	}
-	if dao10ObsoleteAnomalyClaim(entries[0][1]) {
+	if dao10ObsoleteAnomalyClaim(body) {
 		t.Error("obsolete anomaly/rate_limit skip claim")
 	}
 }
 
-func TestConsoleConnectorsZhScope(t *testing.T) { consoleConnectorsScope(t, "zh") }
+func TestConsoleConnectorsArScope(t *testing.T) { consoleConnectorsScope(t, "ar") }
 func TestConsoleConnectorsEnScope(t *testing.T) { consoleConnectorsScope(t, "en") }

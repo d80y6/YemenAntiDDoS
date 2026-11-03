@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/d80y6/YemenDDoS/controller/internal/action"
 	"github.com/d80y6/YemenDDoS/controller/internal/api"
 	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
@@ -23,6 +21,8 @@ import (
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type dao14d1Route struct {

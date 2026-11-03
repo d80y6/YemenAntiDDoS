@@ -47,7 +47,7 @@ The web console uses Vue 3 + TypeScript + Vite, custom controls, SVG charts and 
 
 Appearance has three modes: **Auto / Light / Dark**. Fonts are **IBM Plex Sans / Mono**.
 
-The UI supports English and Chinese. Development details are in the [console README (Chinese)](console/README.md).
+The UI supports English and Arabic (RTL). Development details are in the [console README (Chinese)](console/README.md).
 
 ## Build
 

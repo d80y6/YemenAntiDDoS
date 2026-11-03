@@ -556,7 +556,8 @@ export function fixtureState(now: number) {
     shell: [1, 2].map(id => ({ ...connector(id, id === 1 ? 'Local shell' : 'Disabled shell', id === 1),
       command: '/bin/true', default_args: '', timeout_ms: 10000, pass_stdin: id === 2 })),
     bgp: [1, 2].map(id => ({ ...connector(id, id === 1 ? 'Edge BGP' : 'Disabled BGP', id === 1),
-      bgp_asn: 64512, vtysh_path: '/mock/missing', address_family: 'ipv4', description: '' })),
+      bgp_asn: 64512, vtysh_path: '/mock/missing', address_family: 'ipv4', description: '',
+      vendor: '', flowspec_enabled: false })),
     xdrop: [
     { id: 1, name: 'Edge XDrop', enabled: true, api_url: 'http://mock-xdrop.invalid', api_key: '***abcd',
       timeout_ms: 10000, created_at, updated_at: new Date(now - 5000).toISOString() },
@@ -1215,7 +1216,7 @@ export function connectorSession(mode: string, now: number, s = fixtureState(now
     if (!create && !old) return fail(kind + ' connector not found', 404)
     let next: any = create ? { name: '', enabled: true } : { ...old }
     const fields: Record<string, string[]> = {
-      bgp: ['name', 'bgp_asn', 'vtysh_path', 'description', 'enabled'],
+      bgp: ['name', 'bgp_asn', 'vtysh_path', 'description', 'vendor', 'flowspec_enabled', 'enabled'],
       xdrop: ['name', 'api_url', 'timeout_ms', 'enabled'],
       webhook: ['name', 'url', 'method', 'headers', 'timeout_ms', 'global', 'enabled'],
       shell: ['name', 'command', 'default_args', 'timeout_ms', 'enabled'],
@@ -1233,6 +1234,8 @@ export function connectorSession(mode: string, now: number, s = fixtureState(now
       next.vtysh_path ||= '/usr/bin/vtysh'
       next.address_family ??= 'auto'
       next.description ??= ''
+      next.vendor ||= 'frr'
+      next.flowspec_enabled ??= false
     }
     if (kind === 'xdrop') {
       next.api_url = (next.api_url ?? '').replace(/\/+$/, '')

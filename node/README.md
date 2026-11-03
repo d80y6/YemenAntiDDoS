@@ -78,7 +78,7 @@ The Node is built for **Linux x86_64** in both modes (bpf2go runs with `-target 
 
 - Linux 5.18+ to run XDP mode (the XDP program uses `bpf_xdp_load_bytes`); verified on Debian 13 / kernel 6.12
 - Go 1.24+, `clang`, `llvm-strip`, `bpftool` and libbpf headers (e.g. `libbpf-dev`)
-- `bpf/vmlinux.h`, which is not in the repository. Generate it on a host with BTF:
+- `bpf/vmlinux.h` — tracked in the repository (generated for Debian 13 / kernel 6.12). Regenerate it only when building on a different kernel with BTF:
 
 ```bash
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h

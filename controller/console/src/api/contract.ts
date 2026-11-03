@@ -1181,6 +1181,8 @@ export const contract = [
   {"endpoint": "/api/settings/bgp-connectors", "path": "[].name"},
   {"endpoint": "/api/settings/bgp-connectors", "path": "[].enabled"},
   {"endpoint": "/api/settings/bgp-connectors", "path": "[].bgp_asn"},
+  {"endpoint": "/api/settings/bgp-connectors", "path": "[].vendor"},
+  {"endpoint": "/api/settings/bgp-connectors", "path": "[].flowspec_enabled"},
   {"endpoint": "/api/settings/bgp-connectors", "path": "[].vtysh_path"},
   {"endpoint": "/api/settings/bgp-connectors", "path": "[].description"},
   {"endpoint": "/api/settings/xdrop-connectors", "path": "[].api_url"},

@@ -14,10 +14,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/action"
 	"github.com/d80y6/YemenDDoS/controller/internal/configpub"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
+	"github.com/gin-gonic/gin"
 )
 
 // Reads and snapshots are independent copies. Every implemented write counts

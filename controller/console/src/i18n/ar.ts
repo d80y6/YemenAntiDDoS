@@ -865,6 +865,10 @@ export default {
     "apiKey": "مفتاح API",
     "timeout": "المهلة (مللي ثانية)",
     "asn": "رقم BGP ASN",
+    "vendor": "المورّد",
+    "vendorTip": "منصة التوجيه التي تُصيَّر لها الإعلانات. FRR وحده يُنفَّذ محليًا عبر vtysh، بينما Cisco IOS XR وJuniper Junos وArista EOS للتصدير فقط، فتعرض الوحدة أوامرها لتطبيقها يدويًا.",
+    "flowspec": "BGP Flowspec",
+    "flowspecTip": "عند التمكين يُعلن هذا الموصّل قواعد Flowspec (إسقاط أو تحديد معدّل لكل تدفق) بدلًا من null-route العادي. يطبّقها FRR مباشرة، بينما يصدّرها بقية المورّدين لتحكمها الخاص.",
     "vtysh": "مسار vtysh",
     "description": "الوصف",
     "url": "الرابط",
@@ -1162,6 +1166,9 @@ export default {
     "empty": "لا توجد بيانات",
     "dropped": "سُقطت {n} أحداث (المخزن المؤقت ممتلئ)",
     "window": "النافذة",
+    "window.5": "5 دقائق",
+    "window.15": "15 دقيقة",
+    "window.60": "60 دقيقة",
     "loading": "جارٍ التحميل…"
   },
   "flowspec": {

@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/d80y6/YemenDDoS/controller/internal/action"
 	"github.com/d80y6/YemenDDoS/controller/internal/engine/baseline"
 	"github.com/d80y6/YemenDDoS/controller/internal/engine/dedup"
@@ -24,6 +23,7 @@ import (
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 	"github.com/d80y6/YemenDDoS/controller/internal/store/ring"
 	"github.com/d80y6/YemenDDoS/controller/internal/tracker"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Only explicitly implemented repository methods may be called by these GETs.

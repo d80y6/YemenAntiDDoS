@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/d80y6/YemenDDoS/controller/internal/action/flowspec"
 	"github.com/d80y6/YemenDDoS/controller/internal/metrics"
 	"github.com/d80y6/YemenDDoS/controller/internal/store"
 )
@@ -140,6 +141,23 @@ func executeBGP(ctx context.Context, s store.Store, engine *Engine, act store.Re
 
 	if conn.FlowspecEnabled {
 		return executeBGPFlowspec(ctx, s, conn, act, attack, dstIP, attackDBID, responseName, triggerPhase)
+	}
+
+	// RTBH below injects routes into a local FRR through vtysh. Any other
+	// vendor is export-only (see executeBGPFlowspec), so refuse instead of
+	// pushing FRR syntax at a Cisco/Juniper/Arista box.
+	if vendor, vErr := flowspec.ParseVendor(conn.Vendor); vErr != nil || vendor != flowspec.VendorFRR {
+		return recordSkip(&store.ActionExecutionLog{
+			AttackID:      attackDBID,
+			ActionID:      act.ID,
+			ActionType:    "bgp",
+			TriggerPhase:  triggerPhase,
+			ResponseName:  responseName,
+			ConnectorName: conn.Name,
+			Status:        "skipped",
+			ErrorMessage:  fmt.Sprintf("vendor %q is export-only for RTBH; enable flowspec_enabled on this connector", conn.Vendor),
+			ExecutedAt:    time.Now(),
+		}, SkipReasonVendorExportOnly), nil
 	}
 
 	switch triggerPhase {

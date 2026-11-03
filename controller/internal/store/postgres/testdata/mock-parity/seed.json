@@ -1721,7 +1721,9 @@
         "bgp_asn": 64512,
         "vtysh_path": "/mock/missing",
         "address_family": "ipv4",
-        "description": ""
+        "description": "",
+        "vendor": "",
+        "flowspec_enabled": false
       },
       {
         "id": 2,
@@ -1732,7 +1734,9 @@
         "bgp_asn": 64512,
         "vtysh_path": "/mock/missing",
         "address_family": "ipv4",
-        "description": ""
+        "description": "",
+        "vendor": "",
+        "flowspec_enabled": false
       }
     ],
     "xdrop": [

@@ -12,7 +12,7 @@
 
 [Unit]
 Description=xSight Controller — DDoS Detection System (Controller)
-Documentation=https://github.com/d80y6/YemenDDoS
+Documentation=https://github.com/d80y6/YemenAntiDDoS
 After=network-online.target postgresql.service
 Wants=network-online.target
 

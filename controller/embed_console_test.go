@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/d80y6/YemenDDoS/controller/internal/api"
+	"github.com/gin-gonic/gin"
 )
 
 func TestConsoleEmbed(t *testing.T) {

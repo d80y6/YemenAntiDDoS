@@ -1,5 +1,8 @@
 # BGP Flowspec Management
 
+> العربية: [docs/FLOWSPEC.ar.md](FLOWSPEC.ar.md)
+
+
 ## Overview
 
 YemenAntiDDoS can announce BGP Flowspec rules (multi-vendor) instead of falling back to
@@ -31,3 +34,20 @@ executes it via FRR when applicable, and marks the announcement withdrawn.
 
 `normalizeVendor` accepts `frr`, `cisco`, `juniper`, `arista` (case-insensitive) and defaults
 to `frr` when empty. Unknown values return an error.
+
+## Connector settings
+
+BGP connectors are configured from the Console (**Settings → BGP Connectors**), not from
+YAML. Fields per connector:
+
+| Field | Values |
+|---|---|
+| `vendor` | `frr` (default) \| `cisco_xr` \| `juniper` \| `arista` |
+| `flowspec_enabled` | `true` = announce Flowspec rules, `false` = RTBH only |
+| `bgp_asn` | local autonomous system number (required) |
+| `vtysh_path` | path to the FRR `vtysh` binary (`frr` vendor only) |
+| `address_family` | `ipv4` \| `ipv6` |
+
+Rules are applied locally for `frr` connectors through `vtysh`; Cisco XR, Juniper and
+Arista connectors stay export-only — the console renders the vendor-specific commands in
+the **Mitigations → Flowspec** drawer for manual application.
