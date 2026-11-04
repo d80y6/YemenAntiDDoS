@@ -324,3 +324,9 @@ Deleting expired ended attacks also deletes their execution logs and related sta
 - **XDP mode is x86_64 only** and needs Linux 5.18 or later.
 - **xDrop expiry.** xSight never sets an expiry on xDrop rules. Until xDrop provides per-holder expiry, sharing a rule with another system can invalidate the expiry that system set.
 - **No xDrop orphan scan.** xSight does not scan xDrop for rules it lost track of; remove those in the xDrop interface.
+
+---
+
+## 8. Carrier-Grade Inline Mitigation
+
+For an in-depth specification and implementation roadmap covering wire-speed inline scrubbing (`xdp_filter`), stateless SYN cookies, sub-second burst triggers via `CriticalEventStream`, and SmartNIC offload, see [docs/INLINE-CARRIER-GRADE-AR.md](INLINE-CARRIER-GRADE-AR.md).
