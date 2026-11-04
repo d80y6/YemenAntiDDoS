@@ -49,14 +49,18 @@ func TestProtocolForDecoder(t *testing.T) {
 	}
 }
 
-func TestConnectorVendorFallsBackToFRR(t *testing.T) {
-	for _, in := range []string{"", "frr", "bogus", "FRR"} {
-		if got := connectorVendor(&store.BGPConnector{Vendor: in}); got != flowspec.VendorFRR {
-			t.Errorf("connectorVendor(%q) = %q, want frr", in, got)
+func TestConnectorVendorDefaultsToFRRAndFailsClosed(t *testing.T) {
+	for _, in := range []string{"", "frr", "FRR"} {
+		got, err := connectorVendor(&store.BGPConnector{Vendor: in})
+		if err != nil || got != flowspec.VendorFRR {
+			t.Errorf("connectorVendor(%q) = %q, %v; want frr", in, got, err)
 		}
 	}
-	if got := connectorVendor(&store.BGPConnector{Vendor: "cisco_xr"}); got != flowspec.VendorCisco {
-		t.Errorf("connectorVendor(cisco_xr) = %q, want cisco_xr", got)
+	if got, err := connectorVendor(&store.BGPConnector{Vendor: "cisco_xr"}); err != nil || got != flowspec.VendorCisco {
+		t.Errorf("connectorVendor(cisco_xr) = %q, %v; want cisco_xr", got, err)
+	}
+	if got, err := connectorVendor(&store.BGPConnector{ID: 7, Vendor: "bogus"}); err == nil || got != "" {
+		t.Errorf("connectorVendor(bogus) = %q, %v; want empty vendor and error", got, err)
 	}
 }
 

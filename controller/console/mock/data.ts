@@ -1234,8 +1234,16 @@ export function connectorSession(mode: string, now: number, s = fixtureState(now
       next.vtysh_path ||= '/usr/bin/vtysh'
       next.address_family ??= 'auto'
       next.description ??= ''
-      next.vendor ||= 'frr'
+      const aliases: Record<string, string> = { '': 'frr', frr: 'frr', cisco: 'cisco_xr', cisco_xr: 'cisco_xr',
+        ios_xr: 'cisco_xr', juniper: 'juniper', junos: 'juniper', arista: 'arista', eos: 'arista' }
+      const vendor = aliases[String(next.vendor ?? '').toLowerCase().trim()]
+      if (!vendor) return fail(`flowspec: unsupported vendor "${next.vendor}" (want frr, cisco_xr, juniper, arista)`)
+      next.vendor = vendor
       next.flowspec_enabled ??= false
+      if (vendor !== 'frr' && !next.flowspec_enabled) {
+        return fail(`vendor "${vendor}" is export-only: set flowspec_enabled=true `
+          + '(RTBH cannot be applied to a non-FRR speaker)')
+      }
     }
     if (kind === 'xdrop') {
       next.api_url = (next.api_url ?? '').replace(/\/+$/, '')
@@ -1296,7 +1304,9 @@ export function connectorSession(mode: string, now: number, s = fixtureState(now
       }
       next.created_at = at
     }
-    if (rows.some(c => c.id !== next.id && c.name === next.name)) return fail('already exists', 409)
+    if (rows.some(c => c.id !== next.id && c.name === next.name)) {
+      return fail(kind === 'bgp' ? 'bgp connector already exists' : 'already exists', 409)
+    }
     next.updated_at = at
     if (create) rows.push(next)
     else s.connectors[kind] = rows.map(c => c.id === id ? next : c)

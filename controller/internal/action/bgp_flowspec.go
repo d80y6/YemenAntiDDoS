@@ -66,16 +66,17 @@ func flowspecRuleFor(dstIP string, attack *store.Attack) flowspec.Rule {
 }
 
 // connectorVendor maps the stored vendor to a renderer. An empty or "frr"
-// value is the documented default for rows created before Flowspec existed;
-// anything else that fails to parse is a data error the API rejects on write,
-// so it is logged rather than silently executed as FRR.
-func connectorVendor(conn *store.BGPConnector) flowspec.Vendor {
+// value is the documented default for rows created before Flowspec existed.
+// Anything else that fails to parse is a data error (the API rejects it on
+// write), so it fails closed instead of silently executing FRR syntax on a
+// speaker that may not understand it.
+func connectorVendor(conn *store.BGPConnector) (flowspec.Vendor, error) {
 	v, err := flowspec.ParseVendor(conn.Vendor)
 	if err != nil {
-		log.Printf("WARN action: bgp connector %d has unknown vendor %q; treating as frr", conn.ID, conn.Vendor)
-		return flowspec.VendorFRR
+		log.Printf("ERROR action: bgp connector %d has unknown vendor %q: %v", conn.ID, conn.Vendor, err)
+		return "", fmt.Errorf("bgp connector %d: %w", conn.ID, err)
 	}
-	return v
+	return v, nil
 }
 
 // executeBGPFlowspec is the Flowspec counterpart of bgpAnnounce/bgpWithdraw.
@@ -168,7 +169,23 @@ func flowspecAnnounce(ctx context.Context, s store.Store, conn *store.BGPConnect
 		}, nil
 	}
 
-	vendor := connectorVendor(conn)
+	vendor, vErr := connectorVendor(conn)
+	if vErr != nil {
+		markFlowspecAnnounceFailed(ctx, s, attachResult, vErr)
+		return &store.ActionExecutionLog{
+			AttackID:       attackDBID,
+			ActionID:       act.ID,
+			ActionType:     "bgp",
+			TriggerPhase:   triggerPhase,
+			ResponseName:   responseName,
+			ConnectorName:  conn.Name,
+			ConnectorID:    &connID,
+			Status:         "failed",
+			ErrorMessage:   vErr.Error(),
+			ExternalRuleID: externalRuleID,
+			ExecutedAt:     time.Now(),
+		}, vErr
+	}
 	lines, rErr := flowspec.Render(vendor, rule)
 	if rErr != nil {
 		markFlowspecAnnounceFailed(ctx, s, attachResult, rErr)
@@ -365,7 +382,22 @@ func flowspecWithdraw(ctx context.Context, s store.Store, conn *store.BGPConnect
 		}, nil
 	}
 
-	vendor := connectorVendor(conn)
+	vendor, vErr := connectorVendor(conn)
+	if vErr != nil {
+		return &store.ActionExecutionLog{
+			AttackID:       attackDBID,
+			ActionID:       act.ID,
+			ActionType:     "bgp",
+			TriggerPhase:   triggerPhase,
+			ResponseName:   responseName,
+			ConnectorName:  conn.Name,
+			ConnectorID:    &connID,
+			Status:         "failed",
+			ErrorMessage:   vErr.Error(),
+			ExternalRuleID: externalRuleID,
+			ExecutedAt:     time.Now(),
+		}, vErr
+	}
 	lines, rErr := flowspec.RenderWithdraw(vendor, rule)
 	if rErr != nil {
 		return &store.ActionExecutionLog{

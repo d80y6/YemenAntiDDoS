@@ -77,6 +77,8 @@ function cell(row: ConnectorRow, key: string) {
   return key === 'global' || key === 'flowspec_enabled'
     ? t(value ? 'connectors.yes' : 'connectors.no') : value
 }
+const probeable = (kind: Kind, row: ConnectorRow) => kind !== 'bgp'
+  || ((row as { vendor?: string }).vendor || 'frr') === 'frr'
 const rowKey = (kind: Kind, row: ConnectorRow) => `${kind}-${row.id}`
 const confirm = ref('')
 const deleteMessage = reactive({ title: '', hint: '' })
@@ -168,11 +170,14 @@ async function routes(row: ConnectorRow) {
                 </td><td><XPill :tone="row.enabled ? 'ok' : 'neutral'">
                   {{ t('connectors.' + (row.enabled ? 'enabled' : 'disabled')) }}</XPill></td>
                 <td><div class="actions">
-                  <button v-if="kind !== 'shell' && isAdmin()" class="btn sm ghost"
+                  <button v-if="kind !== 'shell' && isAdmin() && probeable(kind, row)" class="btn sm ghost"
                     :disabled="testing[kind] !== undefined" @click="test(kind, row)">
                     {{ t('connectors.' + (testing[kind] === row.id ? 'testing' : 'test')) }}</button>
-                  <button v-if="kind === 'bgp'" class="btn sm ghost" :disabled="routesBusy !== undefined"
+                  <button v-if="kind === 'bgp' && probeable(kind, row)" class="btn sm ghost"
+                    :disabled="routesBusy !== undefined"
                     @click="routes(row)">{{ t('connectors.routes') }}</button>
+                  <span v-if="kind === 'bgp' && !probeable(kind, row)" class="sub"
+                    :title="t('connectors.exportOnlyTip')">{{ t('connectors.exportOnly') }}</span>
                   <button v-if="isAdmin()" class="btn sm ghost" @click="confirmDelete(kind, row)">
                     {{ t('connectors.delete') }}</button>
                 </div></td>

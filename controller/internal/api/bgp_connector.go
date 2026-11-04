@@ -37,6 +37,14 @@ func runVtyshHTTP(ctx context.Context, path string, args ...string) ([]byte, err
 	return out, err
 }
 
+// executableBGPConnector reports whether the local vtysh can drive this
+// connector. Non-FRR vendors are export-only, so probes must not run FRR
+// commands on the host and pretend they tested the remote speaker.
+func executableBGPConnector(conn *store.BGPConnector) bool {
+	v, err := flowspec.ParseVendor(conn.Vendor)
+	return err == nil && v == flowspec.VendorFRR
+}
+
 func listBGPConnectors(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		list, err := deps.Store.BGPConnectors().List(c)
@@ -253,6 +261,11 @@ func listBGPRoutes(deps Dependencies) gin.HandlerFunc {
 			errResponse(c, http.StatusNotFound, "bgp connector not found")
 			return
 		}
+		if !executableBGPConnector(conn) {
+			errResponse(c, http.StatusConflict, fmt.Sprintf(
+				"vendor %q is export-only: BGP probes run only for FRR connectors", conn.Vendor))
+			return
+		}
 		// Show both IPv4 and IPv6 BGP RIB — partial success is OK
 		var out4, out6 []byte
 		var err4, err6 error
@@ -294,6 +307,11 @@ func testBGPConnector(deps Dependencies) gin.HandlerFunc {
 		conn, err := deps.Store.BGPConnectors().Get(c, id)
 		if err != nil {
 			errResponse(c, http.StatusNotFound, "bgp connector not found")
+			return
+		}
+		if !executableBGPConnector(conn) {
+			errResponse(c, http.StatusConflict, fmt.Sprintf(
+				"vendor %q is export-only: BGP probes run only for FRR connectors", conn.Vendor))
 			return
 		}
 		out, err := runVtyshHTTP(ctx, conn.VtyshPath, "-c", "show bgp summary")

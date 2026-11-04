@@ -44,7 +44,7 @@ it.each(['paired_with', 'auto_generated'])(
 it('G-contract complete actionView and connector paths mock hits; conditions DTO full keys', async () => {
   const r = await checkContract(contract, async (p: string) => mockReply(p).body,
     { attack: 2, node: 'edge-a', response: 3, listener: 1, mock: true })
-  expect(r.paths).toBe(641)
+  expect(r.paths).toBe(643)
   expect(r.requests).toBe(43)
   expect(r.passed).toBe(true)
   const conditions = mockReply('/api/actions/15/preconditions', 'qf').body

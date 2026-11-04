@@ -313,7 +313,7 @@ export function createServer(data: Dataset = createData()): Server {
     if (path === '/api/l7/summary') return send({ generated_at: new Date().toISOString(), window_minutes: 5, bucket_seconds: 60,
       totals: { 'l7_http_flood': 0, 'l7_tls_clienthello': 0, 'l7_slowloris': 0 }, rates: {}, series: [], targets: [],
       sources: [], nodes: [], recent: [], dropped: 0 })
-    if (path === '/api/l7/events') return send([])
+    if (path === '/api/l7/events') return send({ events: [], buffered: 0, total_dropped: 0 })
     if (/^\/api\/nodes\/[^/]+\/tls$/.test(path)) return send({ server: { min_version: 'TLS 1.3', expires_at: new Date(Date.now()+86400000).toISOString(),
       issuer: 'YemenAntiDDoS CA', fingerprint: 'aa:bb:cc:dd', serial: '1', not_before: new Date().toISOString() },
       node: { verified: true, subject: 'CN=flow-c', identity: 'flow-c', sans: ['flow-c'], expires_at: new Date(Date.now()+86400000).toISOString(),

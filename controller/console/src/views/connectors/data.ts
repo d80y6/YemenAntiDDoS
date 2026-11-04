@@ -107,7 +107,10 @@ export interface Message { key: string; args?: Record<string, string | number> }
 export function connectorCheck(kind: Kind, form: Form, row?: ConnectorRow): Message | undefined {
   const error = (key: string, args?: Message['args']) => ({ key, args })
   if (!form.name.trim()) return error(kind === 'shell' ? 'shellNameRequired' : 'nameRequired')
-  if (kind === 'bgp' && !form.vtysh_path.trim()) return error('vtyshRequired')
+  if (kind === 'bgp' && form.vendor === 'frr' && !form.vtysh_path.trim()) return error('vtyshRequired')
+  if (kind === 'bgp' && form.vendor !== 'frr' && !form.flowspec_enabled) {
+    return error('vendorNeedsFlowspec', { vendor: vendorName[form.vendor as Vendor] ?? form.vendor })
+  }
   if (kind === 'xdrop') {
     if (!normalizeURL(form.api_url)) return error('apiUrlRequired')
     if (!row && !form.api_key.trim()) return error('apiKeyRequired')

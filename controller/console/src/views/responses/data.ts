@@ -1,7 +1,7 @@
 export type Row = Record<string, any>
 export type Phase = 'on_detected' | 'on_expired'
 export type Condition = { attribute: string; operator: string; value: string }
-export type Connector = { id: number; name: string; enabled: boolean }
+export type Connector = { id: number; name: string; enabled: boolean; vendor?: string; flowspec_enabled?: boolean }
 export interface Form {
   id: number | null
   action_type: string

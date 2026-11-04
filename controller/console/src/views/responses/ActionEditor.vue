@@ -12,6 +12,8 @@ import XSwitch from '../../components/XSwitch.vue'
 import XTip from '../../components/XTip.vue'
 import { attributes, operators, exampleKey, matching, saveAction, validate } from './data'
 import type { Form, Connector, Phase, Send } from './data'
+import { vendorName } from '../connectors/data'
+import type { Vendor } from '../connectors/data'
 const props = defineProps<{
   modelValue: boolean; form: Form; phase: Phase; responseID: number
   connectors: Record<string, Connector[]>; viewing?: boolean
@@ -27,9 +29,16 @@ const options = (values: string[], prefix = '') =>
   values.map(value => ({ value, label: t('responses.' + prefix + value) }))
 const types = computed(() => options(props.phase === 'on_expired'
   ? ['webhook', 'shell'] : ['webhook', 'xdrop', 'shell', 'bgp'], 'type_'))
+function connectorLabel(c: Connector) {
+  const base = c.name + (c.enabled === false ? t('responses.disabledConnector') : '')
+  if (props.form.action_type !== 'bgp') return base
+  const vendor = c.vendor && c.vendor !== 'frr' ? vendorName[c.vendor as Vendor] ?? c.vendor : ''
+  const mode = c.flowspec_enabled ? t('connectors.flowspec') : ''
+  const tags = [vendor, mode].filter(Boolean)
+  return tags.length ? `${base} · ${tags.join(' · ')}` : base
+}
 const connectorOptions = computed(() => [{ value: '', label: t('responses.selectConnector') },
-  ...(props.connectors[props.form.action_type] ?? []).map(c => ({ value: String(c.id),
-    label: c.name + (c.enabled === false ? t('responses.disabledConnector') : '') }))])
+  ...(props.connectors[props.form.action_type] ?? []).map(c => ({ value: String(c.id), label: connectorLabel(c) }))])
 function toggle(key: 'xdrop_fields' | 'target_node_ids', value: any, selected: boolean) {
   const values: any[] = props.form[key]
   ;(props.form[key] as any[]) = selected ? [...values, value] : values.filter(v => v !== value)

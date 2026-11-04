@@ -20,8 +20,8 @@ const exclusions: { path: string; reason: string }[] = []
 const read = (path: string): string => readFileSync(resolve(path), 'utf8')
 
 describe('demo gates', () => {
-  it('G3 covers exactly 50 backend GET routes, including timeline', () => {
-    expect(getRoutes).toHaveLength(50)
+  it('G3 covers exactly 54 backend GET routes, including timeline', () => {
+    expect(getRoutes).toHaveLength(54)
     expect(exclusions).toEqual([])
     for (const route of getRoutes) {
       const path = samplePath(route.path), reply = server(path)
@@ -29,7 +29,7 @@ describe('demo gates', () => {
       expect(reply.body, path).toBeTruthy()
       expect(Object.keys(reply.body).length, path).toBeGreaterThan(0)
     }
-    console.log('G3 router.go GET=50 covered=50 exclusions=0')
+    console.log('G3 router.go GET=54 covered=54 exclusions=0')
   })
   it('G3 query filters and authorized page ranges return distinct meaningful samples', () => {
     for (const range of ['15m', '1h', '6h', '24h']) {

@@ -915,6 +915,22 @@ func (r *feAnnouncement) Undismiss(_ context.Context, id int) error {
 	return nil
 }
 
+func (r *feAnnouncement) ListActive(context.Context) ([]store.BGPAnnouncement, error) {
+	out := make([]store.BGPAnnouncement, 0, len(r.m.announcements))
+	for _, a := range r.m.announcements {
+		switch a.Status {
+		case "announcing", "active", "delayed", "withdrawing", "failed":
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (r *feAnnouncement) ListAttacks(context.Context, int) ([]store.BGPAnnouncementAttack, error) {
+	return nil, nil
+}
+
 // Compile-time interface checks supplement the embedded-interface failure trap.
 var _ store.Store = (*feMemory)(nil)
 

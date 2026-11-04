@@ -97,6 +97,10 @@ func buildFlowspecView(a store.BGPAnnouncement, conn *store.BGPConnector) flowsp
 		name = conn.Name
 		if v, err := flowspec.ParseVendor(conn.Vendor); err == nil {
 			vendor = v
+		} else {
+			// Surface the stored value instead of relabelling a broken row as
+			// frr: the console would otherwise claim FRR while nothing runs.
+			vendor = flowspec.Vendor(conn.Vendor)
 		}
 	}
 	rule := ruleFromAnnouncement(a)

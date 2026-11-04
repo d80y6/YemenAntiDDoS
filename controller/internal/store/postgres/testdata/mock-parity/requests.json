@@ -119,6 +119,11 @@
       ]
     },
     {
+      "file": "views/mitigations/Flowspec.vue",
+      "count": 2,
+      "excluded": "FRR/vendor CLI rendering and the withdraw guard are covered by Go tests; the JS mock does not model /api/flowspec endpoints."
+    },
+    {
       "file": "views/mitigations/Mitigations.vue",
       "count": 1,
       "steps": [

@@ -90,7 +90,7 @@ async function save() {
           <span>{{ t('connectors.flowspec') }} <XTip :text="t('connectors.flowspecTip')" wide /></span>
           <XSwitch :id="flowspecId" v-model="form.flowspec_enabled" :label="t('connectors.flowspec')"
             :disabled="disabled" /></label>
-        <label class="field"><span>{{ t('connectors.vtysh') }}</span>
+        <label v-if="form.vendor === 'frr'" class="field"><span>{{ t('connectors.vtysh') }}</span>
           <input v-model="form.vtysh_path" class="mono" autocomplete="off" :disabled="disabled"
             placeholder="/usr/bin/vtysh"></label>
         <label class="field"><span>{{ t('connectors.description') }}</span>

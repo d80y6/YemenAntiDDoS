@@ -1225,7 +1225,7 @@
     "result": {
       "status": 409,
       "body": {
-        "error": "already exists"
+        "error": "bgp connector already exists"
       }
     }
   },
