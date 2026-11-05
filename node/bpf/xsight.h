@@ -329,6 +329,16 @@ struct {
     __type(value, struct dst_ip_stats);
 } ip_stats_b SEC(".maps");
 
+// Per-CPU scratch used to materialize a fresh per-IP stats entry. The 224-byte
+// struct dst_ip_stats cannot live on the verifier's shared 512-byte call stack,
+// so the zeroed entry is built in per-CPU map memory and inserted atomically.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct dst_ip_stats);
+} ip_stats_scratch SEC(".maps");
+
 // v2.11 Phase 2: Per-source-IP stats (outbound tracking, reuses dst_ip_stats struct)
 // max_entries intentionally smaller — outbound cardinality typically lower than inbound
 struct {

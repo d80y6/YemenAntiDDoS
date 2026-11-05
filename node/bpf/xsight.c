@@ -182,18 +182,27 @@ do {                                                                          \
         update_ip_stats(_ist, pkt_len, l4_proto, tcp_flags, is_frag,          \
                         is_bad_fragment, is_invalid);                         \
     } else {                                                                  \
-        struct dst_ip_stats _new = {};                                        \
-        update_ip_stats(&_new, pkt_len, l4_proto, tcp_flags, is_frag,         \
-                        is_bad_fragment, is_invalid);                         \
-        int _ret;                                                             \
-        if (active_slot == 0)                                                 \
-            _ret = bpf_map_update_elem(&ip_map_a, ip_key, &_new,              \
-                                       BPF_NOEXIST);                          \
-        else                                                                  \
-            _ret = bpf_map_update_elem(&ip_map_b, ip_key, &_new,              \
-                                       BPF_NOEXIST);                          \
-        if (_ret != 0 && _ps)                                                 \
-            __sync_fetch_and_add(&_ps->overflow_count, 1);                    \
+        /* The 224-byte dst_ip_stats value is too large for the verifier's    \
+         * shared 512-byte call stack; build it in per-CPU scratch instead    \
+         * and insert the fully-initialized entry atomically (same value as   \
+         * the former stack local). */                                        \
+        __u32 _scratch_key = 0;                                               \
+        struct dst_ip_stats *_scr =                                           \
+            bpf_map_lookup_elem(&ip_stats_scratch, &_scratch_key);            \
+        if (_scr) {                                                           \
+            __builtin_memset(_scr, 0, sizeof(*_scr));                         \
+            update_ip_stats(_scr, pkt_len, l4_proto, tcp_flags, is_frag,      \
+                            is_bad_fragment, is_invalid);                     \
+            int _ret;                                                         \
+            if (active_slot == 0)                                             \
+                _ret = bpf_map_update_elem(&ip_map_a, ip_key, _scr,           \
+                                           BPF_NOEXIST);                      \
+            else                                                              \
+                _ret = bpf_map_update_elem(&ip_map_b, ip_key, _scr,           \
+                                           BPF_NOEXIST);                      \
+            if (_ret != 0 && _ps)                                             \
+                __sync_fetch_and_add(&_ps->overflow_count, 1);                \
+        }                                                                     \
     }                                                                         \
 } while (0)
 
@@ -1354,16 +1363,6 @@ static __always_inline int apply_filter(struct xdp_md *ctx, const struct filter_
     }
 }
 
-// xdp_addr16 copies an IPv4/IPv6 address into a 16-byte key buffer.
-static __always_inline void xdp_addr16(__u8 *out, const __u8 *addr, bool is_v4)
-{
-    __builtin_memset(out, 0, 16);
-    if (is_v4)
-        __builtin_memcpy(out, addr, 4);
-    else
-        __builtin_memcpy(out, addr, 16);
-}
-
 // ---------------------------------------------------------------------------
 // INLINE PROGRAM ENTRY — bidirectional inline scrubbing.
 // Verdict default is XDP_PASS: clean traffic flows unmodified; only policy
@@ -1422,10 +1421,12 @@ int xdp_inline(struct xdp_md *ctx)
     extract_src_key(l3_hdr, data_end, &src_key, eth_type);
 
     bool is_v4 = (eth_type == ETH_P_IP);
-    __u8 dst16[16];
-    __u8 src16[16];
-    xdp_addr16(dst16, dst_key.addr, is_v4);
-    xdp_addr16(src16, src_key.addr, is_v4);
+    // dst_key.addr/src_key.addr already hold the zero-padded address: the keys
+    // are zero-initialized and parse_ip/extract_src_key only overwrite IPv4's
+    // first 4 bytes, so alias them as the 16-byte addr16 buffers rather than
+    // spending 32 bytes of stack on copies.
+    const __u8 *dst16 = dst_key.addr;
+    const __u8 *src16 = src_key.addr;
 
     // Watch-trie membership determines "protected destination" semantics.
     struct lpm_key dst_trie_key = {};
