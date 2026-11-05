@@ -14,7 +14,7 @@ import (
 
 // Config is the top-level Node configuration.
 type Config struct {
-	Mode         string      `yaml:"mode"` // "xdp" (default) | "flow" — v3.0
+	Mode         string      `yaml:"mode"` // "xdp" (default) | "xdp_inline" | "flow" — v4.0
 	NodeID       string      `yaml:"node_id"`
 	Interfaces   []Interface `yaml:"interfaces"`
 	BPF          BPFConfig   `yaml:"bpf"`
@@ -24,6 +24,38 @@ type Config struct {
 	Auth         AuthConfig  `yaml:"auth"`
 	ParseWorkers int         `yaml:"parse_workers"` // parallel parse workers, default = NumCPU/2, min 1, max 16
 	Pprof        bool        `yaml:"pprof"`         // enable pprof debug server on 127.0.0.1:6061 (default false)
+
+	// v4.0: inline scrubbing engine (xdp_inline mode)
+	Inline InlineConfig `yaml:"inline"`
+	// v4.0: hardware acceleration / OS tuning
+	Perf  PerfConfig  `yaml:"perf"`
+	AFXDP AFXDPConfig `yaml:"af_xdp"`
+}
+
+// InlineConfig controls the XDP inline scrubbing engine.
+type InlineConfig struct {
+	Enabled        bool   `yaml:"enabled"`          // master switch (xdp_inline mode implies true)
+	BurstPPS       uint64 `yaml:"burst_pps"`        // per-dst burst threshold → 2s emergency drop (0 = kernel default)
+	SynCookie      bool   `yaml:"syn_cookie"`       // kernel stateless SYN-cookie engine
+	DNSProtect     bool   `yaml:"dns_protect"`      // UDP/DNS reflection defense
+	SampleRate     uint32 `yaml:"sample_rate"`      // 1-in-N L7 sampling of protected traffic (0 = disabled)
+	CleanPipe      string `yaml:"cleanpipe_egress"` // egress ifname for clean-pipe redirect ("" = same-iface TX only)
+	CleanPipeEncap string `yaml:"cleanpipe_encap"`  // "" | "gre" | "geneve"
+}
+
+// PerfConfig holds CPU/OS tuning for line-rate operation.
+type PerfConfig struct {
+	CPUPins []int  `yaml:"cpu_pins"` // cores pinned by the node's hot goroutines
+	XDPMode string `yaml:"xdp_mode"` // "driver" (default) | "generic" | "offload"
+}
+
+// AFXDPConfig controls AF_XDP zero-copy L7 inspection sockets.
+type AFXDPConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Queue     uint32 `yaml:"queue"`      // NIC RX queue steered into the XSK map
+	Frames    uint32 `yaml:"frames"`     // UMEM frame count (power of two, default 4096)
+	FrameSize uint32 `yaml:"frame_size"` // default 4096
+	ZeroCopy  bool   `yaml:"zero_copy"`  // request XDP_ZEROCOPY binding
 }
 
 // TLSConfig configures mutual TLS for the Node's gRPC client.
@@ -114,8 +146,8 @@ func (c *Config) validate() error {
 	if c.Mode == "" {
 		c.Mode = "xdp"
 	}
-	if c.Mode != "xdp" && c.Mode != "flow" {
-		return fmt.Errorf("mode must be 'xdp' or 'flow', got %q", c.Mode)
+	if c.Mode != "xdp" && c.Mode != "xdp_inline" && c.Mode != "flow" {
+		return fmt.Errorf("mode must be 'xdp', 'xdp_inline' or 'flow', got %q", c.Mode)
 	}
 
 	// Mode-specific validation
@@ -228,6 +260,27 @@ func (c *Config) validate() error {
 // IsFlowMode returns true if this node is configured for flow collection mode.
 func (c *Config) IsFlowMode() bool {
 	return c.Mode == "flow"
+}
+
+// IsInlineMode returns true when the XDP inline scrubbing engine should
+// attach instead of the mirror-capture program.
+func (c *Config) IsInlineMode() bool {
+	return c.Mode == "xdp_inline" || (c.Mode == "xdp" && c.Inline.Enabled)
+}
+
+// InlineEnabled reports the effective inline-engine switch.
+func (c *Config) InlineEnabled() bool {
+	return c.IsInlineMode()
+}
+
+// XDPModeOrDefault returns the configured attach mode ("driver" default).
+func (c *Config) XDPModeOrDefault() string {
+	switch c.Perf.XDPMode {
+	case "generic", "offload":
+		return c.Perf.XDPMode
+	default:
+		return "driver"
+	}
 }
 
 // warnManagementConflict checks if any configured mirror interface has an IP

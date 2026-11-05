@@ -42,6 +42,9 @@ func getL7Summary(deps Dependencies) gin.HandlerFunc {
 			"targets":          snap.Targets,
 			"sources":          snap.Sources,
 			"nodes":            snap.Nodes,
+			"ja3":              snap.JA3,
+			"ja4":              snap.JA4,
+			"user_agents":      snap.UserAgents,
 			"recent":           snap.Recent,
 			"dropped":          snap.Dropped,
 		})

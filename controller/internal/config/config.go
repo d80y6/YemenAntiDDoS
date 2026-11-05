@@ -90,7 +90,16 @@ type AuthConfig struct {
 }
 
 type ActionConfig struct {
-	Mode                  string `yaml:"mode"` // observe | auto
+	Mode string `yaml:"mode"` // observe | auto
+
+	// v4.0 inline scrubbing action plane (xdp_inline Nodes).
+	// InlineEnabled turns on the narrow-then-rebreadth inline mitigator.
+	InlineEnabled bool `yaml:"inline_enabled"`
+	// InlineBroadRatePPS is the phase-1 broad rate cap pushed on detection.
+	InlineBroadRatePPS uint64 `yaml:"inline_broad_rate_pps"`
+	// InlineNarrowDelayMS delays phase 2 (dominant-port narrowing); the
+	// target is 500-1000ms after the broad rule lands.
+	InlineNarrowDelayMS   int    `yaml:"inline_narrow_delay_ms"`
 	XDropAPI              string `yaml:"xdrop_api"`
 	XDropAPIKey           string `yaml:"xdrop_api_key"`
 	XDropNarrowPct        int    `yaml:"xdrop_narrow_pct"`

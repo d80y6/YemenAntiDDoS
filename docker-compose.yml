@@ -1,0 +1,85 @@
+# YemenAntiDDoS — containerized deployment
+#
+# Quick start:
+#   1. cp controller/config.example.yaml controller/config.yaml
+#      - set database.dsn to  postgres://xsight:<PASSWORD>@db:5432/xsight?sslmode=disable
+#      - set auth.api_key / auth.initial_admin_password (CHANGE_ME is rejected)
+#      - set tls.enabled=true and mount ./pki for mutual TLS (docs/MTLS.md)
+#   2. cp node/config.example.yaml node/config.yaml   # for the node profile
+#      - set controller.address to the controller host (host networking: no DNS name)
+#      - set auth.node_api_key to the key registered in the Console
+#   3. export POSTGRES_PASSWORD=<same password as in database.dsn>
+#   4. docker compose up -d db controller
+#   5. Web UI: http://<host>:8080  (admin / your initial_admin_password)
+#   Node (XDP, requires host kernel BTF + mirror port):
+#      docker compose --profile node up -d node
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: xsight-db
+    environment:
+      POSTGRES_USER: xsight
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to the value used in controller/config.yaml database.dsn}
+      POSTGRES_DB: xsight
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xsight -d xsight"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # 5432 stays internal to the compose network; uncomment to expose it.
+    # ports:
+    #   - "5432:5432"
+    restart: unless-stopped
+
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: yemenantiddos/controller
+    container_name: xsight-controller
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./controller/config.yaml:/etc/xsight/config.yaml:ro
+      # mTLS material for the gRPC listener (docs/MTLS.md).
+      # Read-only here on purpose: the Controller only reads it. Generate the
+      # CA and leaves with the xsight-cert binary that ships in this image:
+      #   docker compose run --rm -v "$PWD/pki:/etc/xsight/pki" \
+      #     --entrypoint xsight-cert controller init-ca --out /etc/xsight/pki --cn "xSight Deployment CA"
+      # then  sudo chown -R 10001:10001 ./pki && chmod 700 pki && chmod 600 pki/*.key
+      - ./pki:/etc/xsight/pki:ro
+    ports:
+      - "8080:8080"      # Web UI + REST API + /metrics
+      - "50051:50051"    # Node gRPC — enable tls.enabled=true (mTLS) for production
+    restart: unless-stopped
+
+  # Optional XDP/flow Node. Uses host networking so the mirror/ERSPAN
+  # interface, BTF (/sys/kernel/btf) and flow listeners are visible.
+  # Not enabled by default: docker compose --profile node up -d node
+  node:
+    profiles: ["node"]
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.node
+    image: yemenantiddos/node
+    container_name: xsight-node
+    network_mode: host
+    privileged: true
+    pid: host
+    ulimits:
+      memlock: -1
+      nofile: 65535
+    extra_hosts:
+      - "xsight-controller:172.18.0.3"
+    volumes:
+      - ./node/config.yaml:/etc/xsight/config.yaml:ro
+      - ./pki:/etc/xsight/pki:ro
+      - /sys/fs/bpf:/sys/fs/bpf
+    restart: unless-stopped
+
+volumes:
+  db-data:

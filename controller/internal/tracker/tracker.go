@@ -137,14 +137,15 @@ type pendingEndWrite struct {
 
 // Tracker manages the lifecycle of all tracked attacks.
 type Tracker struct {
-	mu         sync.RWMutex
-	attacks    map[attackKey]*trackedAttack
-	cfg        Config
-	store      store.Store
-	rings      *ring.RingStore
-	dedup      *dedup.Dedup
-	onAction   ActionCallback
-	onRebreach func(attackDBID int) // called when attack transitions Expiring→Active
+	mu          sync.RWMutex
+	attacks     map[attackKey]*trackedAttack
+	cfg         Config
+	store       store.Store
+	rings       *ring.RingStore
+	dedup       *dedup.Dedup
+	onAction    ActionCallback
+	onRebreach  func(attackDBID int) // called when attack transitions Expiring→Active
+	onEndedHook func(attackDBID int) // called when an attack ends (inline rule withdrawal)
 
 	// Periodic update tracking
 	lastPeriodicUpdate time.Time
@@ -174,6 +175,12 @@ func New(cfg Config, s store.Store, rings *ring.RingStore, d *dedup.Dedup, onAct
 
 // SetRebreachCallback sets a callback invoked when an attack transitions Expiring→Active.
 // Used by the action engine to cancel pending delayed unblocks/withdrawals.
+// SetInlineMitigatorHook registers a callback fired when an attack ends, so
+// the inline mitigation plane can withdraw its kernel filter rules.
+func (t *Tracker) SetInlineMitigatorHook(fn func(attackDBID int)) {
+	t.onEndedHook = fn
+}
+
 func (t *Tracker) SetRebreachCallback(fn func(attackDBID int)) {
 	t.onRebreach = fn
 }
@@ -570,6 +577,10 @@ func (t *Tracker) endAttack(a *trackedAttack, now time.Time, clearDedup bool) {
 			}
 			t.notifyAction(AttackEvent{Type: "expired", Attack: fullAttack, DBID: a.DBID})
 		}
+	}
+
+	if t.onEndedHook != nil && a.DBID > 0 {
+		t.onEndedHook(a.DBID)
 	}
 }
 

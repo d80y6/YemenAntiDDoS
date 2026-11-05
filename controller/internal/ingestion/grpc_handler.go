@@ -30,6 +30,11 @@ type StatsCallback func(nodeID string, report *pb.StatsReport)
 // CriticalEventCallback is invoked for each CriticalEvent.
 type CriticalEventCallback func(nodeID string, event *pb.CriticalEvent)
 
+// ControlStreamOpenCallback is invoked after a Node's ControlStream is
+// registered. The inline mitigator uses it to reconcile active BPF filter
+// state onto reconnecting Nodes (session recovery after a Controller restart).
+type ControlStreamOpenCallback func(nodeID string)
+
 // GRPCHandler implements pb.XSightServiceServer.
 type GRPCHandler struct {
 	pb.UnimplementedXSightServiceServer
@@ -39,6 +44,7 @@ type GRPCHandler struct {
 	samplePool *SampleWorkerPool
 	onStats    StatsCallback
 	onCritical CriticalEventCallback
+	onCSOpen   ControlStreamOpenCallback
 
 	// Peer → nodeID mapping (set during Handshake, used by ControlStream)
 	peerNodes   map[string]string // peer address → nodeID
@@ -53,11 +59,12 @@ type GRPCHandler struct {
 }
 
 type GRPCHandlerConfig struct {
-	Store      store.Store
-	NodeState  *NodeState
-	SamplePool *SampleWorkerPool
-	OnStats    StatsCallback
-	OnCritical CriticalEventCallback
+	Store         store.Store
+	NodeState     *NodeState
+	SamplePool    *SampleWorkerPool
+	OnStats       StatsCallback
+	OnCritical    CriticalEventCallback
+	OnControlOpen ControlStreamOpenCallback
 }
 
 func NewGRPCHandler(cfg GRPCHandlerConfig) *GRPCHandler {
@@ -67,6 +74,7 @@ func NewGRPCHandler(cfg GRPCHandlerConfig) *GRPCHandler {
 		samplePool: cfg.SamplePool,
 		onStats:    cfg.OnStats,
 		onCritical: cfg.OnCritical,
+		onCSOpen:   cfg.OnControlOpen,
 		peerNodes:  make(map[string]string),
 		handshaked: make(map[string]struct{}),
 	}
@@ -358,6 +366,9 @@ func (h *GRPCHandler) StatsStream(stream grpc.ClientStreamingServer[pb.StatsRepo
 	hbQueue := make(chan *pb.StatsReport, 1)
 	done := make(chan error, 1)
 	handle := func(msg *pb.StatsReport) {
+		if post := msg.GetPosture(); post != nil {
+			h.nodeState.UpdatePosture(msg.NodeId, post)
+		}
 		if h.onStats != nil {
 			h.onStats(msg.NodeId, msg)
 		}
@@ -523,6 +534,10 @@ func (h *GRPCHandler) ControlStream(stream grpc.BidiStreamingServer[pb.ControlMe
 	if nodeID != "" {
 		h.nodeState.SetControlStream(nodeID, stream)
 		log.Printf("grpc: control stream opened for node=%s (peer=%s cert_verified=%t)", nodeID, addr, certVerified)
+		if h.onCSOpen != nil {
+			// Session recovery: re-push authoritative inline filter state.
+			go h.onCSOpen(nodeID)
+		}
 	} else {
 		log.Printf("grpc: control stream opened from unknown peer=%s (no prior handshake?)", addr)
 	}
@@ -575,6 +590,35 @@ func (h *GRPCHandler) ControlStream(stream grpc.BidiStreamingServer[pb.ControlMe
 			}
 		}
 	}
+}
+
+// SendInlineRulePush delivers an inline filter snapshot to a Node without
+// disturbing its watch prefixes: the WatchConfig carries only inline_rules, so
+// the Node applies the rule table and leaves prefix/threshold state untouched.
+func (h *GRPCHandler) SendInlineRulePush(nodeID string, rules *pb.InlineRuleSet) error {
+	stream := h.nodeState.GetControlStream(nodeID)
+	if stream == nil {
+		return fmt.Errorf("node %s not connected", nodeID)
+	}
+	return stream.Send(&pb.ControlMessage{
+		Payload: &pb.ControlMessage_ConfigPush{
+			ConfigPush: &pb.ConfigPush{
+				WatchConfig: &pb.WatchConfig{InlineRules: rules},
+			},
+		},
+	})
+}
+
+// PushInlineRules satisfies action.InlinePusher: it delivers an inline filter
+// snapshot to one Node over its ControlStream.
+func (h *GRPCHandler) PushInlineRules(nodeID string, rules *pb.InlineRuleSet) error {
+	return h.SendInlineRulePush(nodeID, rules)
+}
+
+// ConnectedInlineNodes returns the node ids with an open ControlStream.
+// It satisfies action.InlinePusher's topology query.
+func (h *GRPCHandler) ConnectedInlineNodes() []string {
+	return h.nodeState.ConnectedNodes()
 }
 
 // SendConfigPush sends a ConfigPush to a specific node via its ControlStream.

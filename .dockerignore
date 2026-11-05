@@ -1,0 +1,30 @@
+# VCS / CI
+.git
+.gitignore
+.github
+
+# Generated build artifacts (rebuilt inside the image: console via npm run
+# build, BPF via go generate, Go binaries via go build)
+controller/bin/
+controller/console/dist/
+controller/console/demo-dist/
+controller/console/node_modules/
+controller/console/.vite/
+node/bin/
+node/internal/bpf/*.o
+*.log
+
+# Docs / assets not needed inside the build context
+docs/
+*.png
+*.svg
+
+# Local deployment secrets and PKI. The Controller image ships xsight-cert so
+# material is generated at deploy time and mounted, never baked in. Scoped to
+# the actual deployment paths so they cannot shadow source files elsewhere
+# (e.g. fixtures or future testdata) the way `**/*.key` would.
+/pki/
+/controller/config.yaml
+/node/config.yaml
+/controller/config.local.yaml
+/node/config.local.yaml

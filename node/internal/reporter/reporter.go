@@ -29,7 +29,11 @@ type Config struct {
 	InterfaceName  string
 	AgentVersion   string
 	UpstreamRate   uint32
-	Mode           string // "xdp" (default) | "flow" — v3.0
+	Mode           string // "xdp" (default) | "xdp_inline" | "flow" — v4.0
+
+	// PostureFunc supplies the NodePosture included in every StatsReport
+	// (v4.0). nil omits the field for legacy deployments.
+	PostureFunc func() *pb.NodePosture
 
 	// TLS is the optional mutual-TLS configuration. When nil the dial uses
 	// insecure credentials (plaintext) for backward compatibility during
@@ -120,6 +124,11 @@ func (r *Reporter) SetBatcher(b *sampler.Batcher) {
 
 // SetHeartbeat sets the constructor used after a second without a successful send.
 // Must be called before Run().
+// SetPostureFunc installs the NodePosture supplier.
+func (r *Reporter) SetPostureFunc(fn func() *pb.NodePosture) {
+	r.cfg.PostureFunc = fn
+}
+
 func (r *Reporter) SetHeartbeat(fn func() *pb.StatsReport) {
 	r.heartbeat = fn
 }
@@ -417,6 +426,9 @@ func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error 
 			}
 			r.upstreamRate.Store(rate)
 			msg := reportToProto(report, r.cfg.NodeID, r.cfg.InterfaceName, rate, gapSeconds, r.batcher, r.BatchSendLatencyMs())
+			if r.cfg.PostureFunc != nil {
+				msg.Posture = r.cfg.PostureFunc()
+			}
 			if err := sendWithTimeout(ctx, stream, msg); err != nil {
 				return err
 			}

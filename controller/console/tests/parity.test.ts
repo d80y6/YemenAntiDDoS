@@ -313,6 +313,7 @@ it('G-sites write literals per file, exact exclusions and step ownership', () =>
   expect(manifest.sites.filter(s => s.excluded).map(s => s.file).sort()).toEqual([
     'views/Login.vue', 'views/attacks/AttackDetail.vue', 'views/attacks/ExpireConfirm.vue',
     'views/connectors/probe.ts', // 测试 / 路由端点真发 HTTP / exec，不进入差分执行器
+    'views/inline/Inline.vue', // 管理端 reconcile 由 Go 测试覆盖；JS mock 不模拟该端点
     'views/mitigations/Flowspec.vue', // CLI 渲染与撤回守卫由 Go 测试覆盖；JS mock 不模拟 Flowspec 端点
   ])
   for (const site of manifest.sites) {

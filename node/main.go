@@ -88,10 +88,32 @@ func main() {
 		log.Fatalf("Failed to apply BPF config: %v", err)
 	}
 
+	// v4.0: inline mode attaches the scrubbing program with the configured
+	// execution mode (offload → driver → generic fallback) and turns on the
+	// kernel engines (filters, SYN cookies, DNS defense, burst detection).
+	inlineActive := cfg.IsInlineMode()
+	cleanPipeEgress := ""
+	if inlineActive {
+		var err error
+		cleanPipeEgress, err = setupInlineEngine(cfg, mgr, primaryIface.Name)
+		if err != nil {
+			log.Fatalf("Failed to set up inline engine: %v", err)
+		}
+	}
+
 	for _, iface := range cfg.Interfaces {
-		log.Printf("attaching XDP to %s (mode=%s)", iface.Name, iface.Mode)
+		log.Printf("attaching XDP to %s (mode=%s, inline=%v)", iface.Name, iface.Mode, inlineActive)
 		if err := mgr.AttachXDP(iface.Name); err != nil {
 			log.Fatalf("Failed to attach XDP to %s: %v", iface.Name, err)
+		}
+	}
+	xdpMode := mgr.EffectiveXDPMode()
+
+	// CPU core pinning (perf.cpu_pins). Best-effort: a restricted container
+	// may refuse affinity changes, which must not stop the node.
+	if len(cfg.Perf.CPUPins) > 0 {
+		if err := applyCPUPins(cfg.Perf.CPUPins); err != nil {
+			log.Printf("perf: cpu pinning skipped: %v", err)
 		}
 	}
 
@@ -148,6 +170,15 @@ func main() {
 
 	// P6: applyConfig callback — called by reporter on handshake + ConfigPush
 	applyConfig := func(wc *pb.WatchConfig, deliveryVersion uint64) error {
+		// v4.0: inline filter tables ride the same ConfigPush. nil = unchanged.
+		if wc.GetInlineRules() != nil {
+			if err := applyInlineRules(mgr, wc.GetInlineRules()); err != nil {
+				return fmt.Errorf("apply inline rules: %w", err)
+			}
+		}
+		if wc.GetPosture() != nil {
+			applyPostureConfig(mgr, wc.GetPosture(), nil)
+		}
 		var entries []bpf.PrefixEntry
 		var snapPrefixes []config.SnapshotPrefix
 		for _, wp := range wc.GetPrefixes() {
@@ -215,13 +246,18 @@ func main() {
 		grpcTLS = tlsCfg
 		log.Println("tls: node gRPC client enabled (mTLS)")
 	}
+	reportMode := cfg.Mode
+	if reportMode == "" {
+		reportMode = "xdp"
+	}
 	rpt := reporter.New(reporter.Config{
 		ControllerAddr: cfg.Controller.Address,
 		NodeID:         cfg.NodeID,
 		APIKey:         cfg.Auth.NodeAPIKey,
 		InterfaceName:  primaryIface.Name,
-		AgentVersion:   "0.7.0",
+		AgentVersion:   "0.8.0",
 		UpstreamRate:   primaryIface.UpstreamSampleRate,
+		Mode:           reportMode,
 		TLS:            grpcTLS,
 	}, coll.Reports, applyConfig)
 	rpt.SetDeliveryVersion(initialDeliveryVersion)
@@ -281,6 +317,47 @@ func main() {
 		}()
 		log.Printf("l7: enabled window=%s http_rps=%d tls_hsps=%d slowloris_conns=%d",
 			window, cfg.L7.HTTPRPS, cfg.L7.TLSHSPS, cfg.L7.SlowlorisConns)
+	}
+
+	// v4.0: anti-bot challenge issuer (HTTP 307 + JS PoW tokens).
+	challengeIssuer := l7collector.NewChallengeIssuer(l7collector.ChallengeConfig{
+		Enabled: cfg.L7.Enabled,
+	})
+
+	// v4.0: AF_XDP zero-copy L7 inspection (optional; ringbuf sampling is
+	// the fallback path when the NIC/driver cannot bind an XSK).
+	var xskMgr *bpf.XSKManager
+	if inlineActive && cfg.AFXDP.Enabled {
+		var xerr error
+		xskMgr, xerr = startAFXDP(cfg, mgr, l7c, challengeIssuer, primaryIface.Name)
+		if xerr != nil {
+			log.Printf("af_xdp: unavailable (%v) — L7 uses ringbuf sampling", xerr)
+		} else {
+			defer xskMgr.Close()
+		}
+	}
+
+	// v4.0: kernel burst alerts → CriticalEventStream (sub-second path).
+	if inlineActive || cfg.Inline.Enabled {
+		streamBurstAlerts(collectorCtx, mgr, rpt, cfg.NodeID, primaryIface.Name)
+	}
+
+	// v4.0: posture reporting (XDP mode, AF_XDP health, cookie rates).
+	posture := &inlinePosture{
+		mgr:     mgr,
+		nodeID:  cfg.NodeID,
+		mode:    xdpMode,
+		egress:  cleanPipeEgress,
+		pins:    cfg.Perf.CPUPins,
+		xsk:     xskMgr,
+		enabled: inlineActive,
+	}
+	rpt.SetPostureFunc(posture.snapshot)
+
+	// Rotate the SYN-cookie secret hourly when the engine is active.
+	if inlineActive && cfg.Inline.SynCookie {
+		var cs cookieSecret
+		go rotateCookieSecret(collectorCtx, mgr, &cs)
 	}
 
 	log.Printf("sampler: starting with %d parse workers", pool.Workers())

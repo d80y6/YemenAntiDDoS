@@ -36,6 +36,7 @@ export default {
     "attacks": "الهجمات",
     "mitigations": "التخفيفات النشطة",
     "nodes": "العُقد",
+    "inline": "الفلترة المضمّنة",
     "prefixes": "بادئات المراقبة",
     "thresholds": "العتبات",
     "baseline": "الكشف الديناميكي",
@@ -1163,6 +1164,11 @@ export default {
       "tls": "حالة TLS شاذة",
       "slowloris": "Slowloris"
     },
+    "fingerprints": {
+      "title": "بصمات مكافحة البوتات",
+      "tip": "بصمات TLS من نوع JA3/JA4 ووكيلات المستخدم HTTP المرصودة في النافذة. تطابق البصمة عبر مصادر كثيرة يدل على أدوات بوتنت لا مستخدمين حقيقيين.",
+      "userAgents": "وكيلات المستخدم"
+    },
     "detail": {
       "missingSni": "SNI مفقود: {n}"
     },
@@ -1236,5 +1242,42 @@ export default {
     "error": "فشل تحميل الإعلانات",
     "retry": "إعادة المحاولة",
     "loading": "جارٍ التحميل…"
-  }
+  },
+  "inline": {
+    "activeCount": "{n} نشط",
+    "nodesInline": "{inline}/{total} عقدة مضمّنة",
+    "reconcile": "مزامنة القواعد",
+    "reconciled": "تمت مزامنة قواعد الفلترة",
+    "kpiActive": "التحييد النشط",
+    "kpiActiveHint": "تضييق ثم إعادة توسيع",
+    "kpiRules": "قواعد الفلترة",
+    "kpiRulesHint": "مثبّتة في BPF",
+    "kpiEmergency": "الإسقاط الطارئ",
+    "kpiEmergencyHint": "إسقاط جزئي دون الثانية",
+    "kpiAfxdp": "سلامة AF_XDP",
+    "kpiAfxdpHint": "نسخ صفري نشط",
+    "mitigationsTitle": "التحييد المضمّن",
+    "pushes": "{n} دفع للقواعد",
+    "pushErrors": "{n} أخطاء دفع",
+    "attack": "الهجوم",
+    "target": "الهدف",
+    "phase": "المرحلة",
+    "phaseTip": "واسع: حدّ معدّل على الهدف عند الكشف. ضيّق: المنافذ/الشبكات السائدة بعد ~750ms. الهجوم الذي ينجو من التضييق يُعاد توسيعه تلقائياً.",
+    "rules": "القواعد",
+    "nodes": "العُقد",
+    "started": "البداية",
+    "postureTitle": "وضع مستوى البيانات للعُقد",
+    "postureHint": "يُبلَّغ عنه مع كل دفعة إحصاء",
+    "node": "العقدة",
+    "filterRules": "القواعد",
+    "synCookie": "رد/تحقق/إسقاط الكوكيز",
+    "emergency": "طارئ",
+    "validated": "{n} مُتحقَّق",
+    "alerts": "{n} تنبيه اندفاع",
+    "umemDrops": "إسقاط UMEM {n}",
+    "cpuPins": "تثبيت المعالجات",
+    "updated": "آخر تحديث",
+    "inlineOn": "مضمّن",
+    "inlineOff": "مراقبة فقط",
+  },
 };

@@ -80,3 +80,11 @@ internal_docs/
 
 # Session memory (disk-only, like internal_docs)
 .memory/
+
+# AI tool session metadata (never commit)
+.mimosa/
+.v2c/
+
+# Host packages / host-specific config
+*.deb
+hsflowd.conf

@@ -8,9 +8,11 @@
 package l7collector
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,6 +102,11 @@ type bucket struct {
 	snis            map[string]uint64
 	sniMissing      uint64
 	slowSrcs        map[string]struct{}
+
+	// v4.0 anti-bot evidence: fingerprint + User-Agent distributions.
+	ja3s map[string]uint64
+	ja4s map[string]uint64
+	uas  map[string]uint64
 }
 
 type slowEntry struct {
@@ -147,6 +154,9 @@ func newBucket() *bucket {
 		paths:     make(map[string]uint64),
 		snis:      make(map[string]uint64),
 		slowSrcs:  make(map[string]struct{}),
+		ja3s:      make(map[string]uint64),
+		ja4s:      make(map[string]uint64),
+		uas:       make(map[string]uint64),
 	}
 }
 
@@ -203,13 +213,15 @@ func (c *Collector) Observe(srcIP, dstIP net.IP, srcPort, dstPort uint16, tcpFla
 
 	var req l7.HTTPRequest
 	var reqOK bool
+	var userAgent string
 	if isHTTP {
 		req, reqOK = l7.ParseHTTPRequest(payload)
+		userAgent = extractUserAgent(payload)
 	}
-	var hello l7.TLSClientHello
+	var hello l7.TLSHandshake
 	var helloOK bool
 	if isTLS {
-		hello, helloOK = l7.ParseTLSClientHello(payload)
+		hello, helloOK = l7.ParseTLSClientHelloFull(payload)
 	}
 	if !reqOK && !helloOK {
 		return
@@ -235,6 +247,7 @@ func (c *Collector) Observe(srcIP, dstIP net.IP, srcPort, dstPort uint16, tcpFla
 		c.httpCount.Add(1)
 		bump(b.methods, req.Method, 8)
 		bump(b.paths, req.Path, 8)
+		bump(b.uas, userAgent, 16)
 		if !req.HeaderComplete {
 			c.observeSlow(src, key, dstPort, payload, at, b)
 		}
@@ -242,12 +255,33 @@ func (c *Collector) Observe(srcIP, dstIP net.IP, srcPort, dstPort uint16, tcpFla
 	if helloOK {
 		b.tls++
 		c.tlsCount.Add(1)
+		if _, ja3 := hello.JA3(); ja3 != "" {
+			bump(b.ja3s, ja3, 16)
+		}
+		if ja4 := hello.JA4(); ja4 != "" {
+			bump(b.ja4s, ja4, 16)
+		}
 		if hello.SNI == "" {
 			b.sniMissing++
 		} else {
 			bump(b.snis, hello.SNI, 8)
 		}
 	}
+}
+
+// extractUserAgent pulls the User-Agent header value from an HTTP request
+// prefix. Returns "" when absent or the header is incomplete.
+func extractUserAgent(payload []byte) string {
+	head := payload
+	if i := bytes.Index(head, []byte("\r\n\r\n")); i >= 0 {
+		head = head[:i]
+	}
+	for _, line := range strings.Split(string(head), "\r\n") {
+		if len(line) > 12 && strings.EqualFold(line[:11], "user-agent:") {
+			return strings.TrimSpace(line[11:])
+		}
+	}
+	return ""
 }
 
 // observeSlow must be called with c.mu held.
@@ -339,14 +373,22 @@ func (c *Collector) Tick(now time.Time) []Event {
 		}
 		if b.tls > 0 {
 			hsps := uint64(float64(b.tls) / window)
+			m := ensure()
+			// v4.0: fingerprint distributions flow to the Controller in every
+			// TLS event so the Console can chart JA3/JA4 without a new stream.
+			addDetails(m, "tls_ja3:", b.ja3s)
+			addDetails(m, "tls_ja4:", b.ja4s)
 			if hsps >= c.cfg.TLSHSPS || b.sniMissing >= c.cfg.TLSHSPS {
-				m := ensure()
 				m["tls_handshakes"] = b.tls
 				m["tls_hsps"] = hsps
 				m["tls_unique_sources"] = uint64(len(b.uniqueSrc))
 				m["tls_sni_missing"] = b.sniMissing
 				addDetails(m, "tls_sni:", b.snis)
 			}
+		}
+		if len(b.uas) > 0 {
+			m := ensure()
+			addDetails(m, "http_ua:", b.uas)
 		}
 		if b.slow > 0 && b.slow >= c.cfg.SlowlorisConns {
 			m := ensure()

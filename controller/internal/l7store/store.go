@@ -71,8 +71,13 @@ type Snapshot struct {
 	Targets       []Target           `json:"targets"`
 	Sources       []Counter          `json:"sources"`
 	Nodes         []Counter          `json:"nodes"`
-	Recent        []Event            `json:"recent"`
-	Dropped       uint64             `json:"dropped"`
+	// v4.0 anti-bot fingerprints: TLS JA3/JA4 digests and HTTP User-Agents
+	// observed across the window, highest-count first.
+	JA3        []Counter `json:"ja3"`
+	JA4        []Counter `json:"ja4"`
+	UserAgents []Counter `json:"user_agents"`
+	Recent     []Event   `json:"recent"`
+	Dropped    uint64    `json:"dropped"`
 }
 
 // Counter is a generic label/value pair used for top-N lists.
@@ -101,6 +106,9 @@ type Store struct {
 	targets map[string]*Target
 	sources map[string]uint64
 	nodes   map[string]uint64
+	ja3     map[string]uint64
+	ja4     map[string]uint64
+	uas     map[string]uint64
 	series  []bucket
 	dropped uint64
 }
@@ -120,6 +128,9 @@ func New(maxEvents int) *Store {
 		targets:     make(map[string]*Target),
 		sources:     make(map[string]uint64),
 		nodes:       make(map[string]uint64),
+		ja3:         make(map[string]uint64),
+		ja4:         make(map[string]uint64),
+		uas:         make(map[string]uint64),
 	}
 }
 
@@ -248,6 +259,16 @@ func (s *Store) Observe(nodeID string, at time.Time, eventType, dstIP string, co
 	if nodeID != "" {
 		s.nodes[nodeID]++
 	}
+	for k, v := range counters {
+		switch {
+		case strings.HasPrefix(k, "tls_ja3:"):
+			s.ja3[strings.TrimPrefix(k, "tls_ja3:")] += v
+		case strings.HasPrefix(k, "tls_ja4:"):
+			s.ja4[strings.TrimPrefix(k, "tls_ja4:")] += v
+		case strings.HasPrefix(k, "http_ua:"):
+			s.uas[strings.TrimPrefix(k, "http_ua:")] += v
+		}
+	}
 	s.appendSeriesLocked(at, kind)
 }
 
@@ -372,6 +393,9 @@ func (s *Store) Snapshot(window time.Duration, now time.Time) Snapshot {
 
 	snap.Sources = topCounters(s.sources, 25)
 	snap.Nodes = topCounters(s.nodes, 25)
+	snap.JA3 = topCounters(s.ja3, 15)
+	snap.JA4 = topCounters(s.ja4, 15)
+	snap.UserAgents = topCounters(s.uas, 15)
 	return snap
 }
 

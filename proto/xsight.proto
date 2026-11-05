@@ -37,7 +37,7 @@ message NodeHandshake {
   repeated string interfaces = 3;
   string agent_version = 4;
   uint64 delivery_version_applied = 5;  // local snapshot version, 0 = none
-  string mode = 6;                      // "xdp" (default) | "flow" — v3.0
+  string mode = 6;                      // "xdp" (default) | "flow" | "xdp_inline" — v4.0
 }
 
 message HandshakeResponse {
@@ -72,6 +72,9 @@ message StatsReport {
   repeated PrefixStatsMsg src_prefix_stats = 31;
   bool   src_ip_stats_truncated = 32;
   uint32 total_active_src_ips = 33;
+
+  // v4.0: inline scrubbing data-plane health (nil for legacy nodes)
+  NodePosture posture = 40;
 }
 
 // FlowSample is a single aggregated flow (5-tuple) from one tick.
@@ -189,6 +192,20 @@ message CriticalEvent {
   bytes  dst_ip = 4;
   string event_type = 5;                 // e.g. "hard_threshold_exceeded"
   map<string, uint64> counters = 6;      // snapshot at trigger time
+
+  // v4.0 inline scrubbing extensions (fields 20+; additive, backward compatible).
+  // A Node emits these enriched events on the same stream when the local XDP
+  // fast path detects a burst, a SYN-flood signature, or an L7 anomaly and
+  // wants the Controller to escalate without waiting for the next 1s
+  // StatsStream tick. Nodes running older firmware simply leave them unset.
+  int64  timestamp_ns = 20;              // monotonic event time (unix nanos)
+  bytes  target_ip = 21;                 // attacked destination (4 or 16 bytes); falls back to dst_ip
+  string decoder = 22;                   // decoder family: tcp_syn, udp, dns_amplification, http_flood, ...
+  uint64 current_pps = 23;               // per-destination packets/sec at trigger time
+  uint64 current_bps = 24;               // per-destination bits/sec at trigger time
+  string attack_type = 25;               // e.g. "syn_flood" (see controller decoderToAttackType)
+  repeated FlowSample top_flows = 26;    // dominant flows at trigger time (narrow-then-rebreadth input)
+  bool   local_mitigated = 27;           // true when the Node already applied an emergency micro-drop
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +235,78 @@ message WatchConfig {
   HardThresholds hard_thresholds = 2;
   // v3.0: flow mode config (ignored by xdp nodes, protobuf backward compatible)
   repeated FlowListenerConfig flow_listeners = 3;
+  // v4.0: inline scrubbing packet filter tables (xdp_inline nodes).
+  // nil = unchanged (node keeps its current rule set); empty rules = clear all.
+  InlineRuleSet inline_rules = 4;
+  // v4.0: node posture / hardware acceleration config. nil = unchanged.
+  NodePostureConfig posture = 5;
+}
+
+// ---------------------------------------------------------------------------
+// v4.0 Inline scrubbing — dynamic packet filter tables pushed over ControlStream
+// ---------------------------------------------------------------------------
+
+// InlineRuleSet is a full snapshot of the packet filters a Node must enforce
+// in the XDP data plane. Delivery is idempotent: each push replaces the
+// previous set entirely (rules are matched by id during reconciliation).
+message InlineRuleSet {
+  uint64 version = 1;               // monotonically increasing push version
+  repeated InlineRule rules = 2;
+  string default_action = 3;        // "pass" (default) | "drop" — action for traffic that matches no rule
+  bool   syn_cookie_enabled = 4;    // kernel SYN-cookie engine master switch
+  repeated string cookie_targets = 5; // CIDR prefixes protected by SYN cookies
+}
+
+// InlineRule is one surgical packet filter entry.
+// Matching is longest-prefix on addresses, then exact on protocol/ports.
+// A zero protocol or port matches any; a zero src address matches any source.
+message InlineRule {
+  uint64 id = 1;
+  bytes  dst_ip = 2;               // 4 or 16 bytes; empty = any destination
+  uint32 dst_prefix_len = 3;       // 0 = host match on dst_ip, or wildcard when dst_ip empty
+  bytes  src_ip = 4;               // source subnet (clean-pipe / ACL rules)
+  uint32 src_prefix_len = 5;
+  uint32 protocol = 6;             // IANA number; 0 = any
+  uint32 dst_port = 7;             // 0 = any
+  uint32 src_port = 8;             // 0 = any
+  string action = 9;               // "pass" | "drop" | "tx" | "redirect" | "syn_cookie" | "rate_limit" | "challenge"
+  uint64 rate_limit_pps = 10;      // for action "rate_limit" (0 = unlimited)
+  uint32 priority = 11;            // lower wins on overlapping exact keys
+  int64  expires_unix = 12;        // 0 = until withdrawn
+  uint64 attack_id = 13;           // owning attack (narrow-then-rebreadth bookkeeping)
+  string reason = 14;              // audit label, e.g. "narrow:tcp/443"
+  uint32 egress_ifindex = 15;      // for action "redirect"/"tx": clean-pipe egress interface
+  string encap = 16;               // "" | "gre" | "geneve" — clean-pipe return tunnel encap
+  string encap_daddr = 17;         // tunnel remote address for GRE/Geneve encap
+}
+
+// NodePostureConfig carries hardware-acceleration settings to inline nodes.
+message NodePostureConfig {
+  string xdp_mode = 1;             // "driver" (default) | "generic" | "offload"
+  bool   af_xdp_enabled = 2;       // enable AF_XDP zero-copy L7 inspection sockets
+  uint32 af_xdp_queue = 3;         // NIC RX queue steered into the XSK map
+  bool   af_xdp_zero_copy = 4;     // request XDP_ZEROCOPY UMEM binding
+  uint32 af_xdp_frames = 5;        // UMEM frame count (power of two, default 4096)
+  repeated int64 cpu_pins = 6;     // pin parse/inspect goroutines to these cores (-1 = any)
+}
+
+// NodePosture is the Node's report of its data-plane health, included in every
+// StatsReport so the Console can render the Hardware Posture panel.
+message NodePosture {
+  string xdp_mode = 1;             // "driver" | "generic" | "offload" | "flow" | "inline"
+  bool   inline_enabled = 2;
+  uint64 filter_rules = 3;         // active active_filter_rules entries
+  uint64 validated_clients = 4;    // SYN-cookie validated client entries
+  uint64 syn_cookies_reply = 5;    // SYN-ACKs emitted by the kernel engine
+  uint64 syn_cookies_validated = 6;// client ACKs that validated
+  uint64 syn_cookies_dropped = 7;  // ACKs that failed cookie validation
+  uint64 emergency_drops = 8;      // micro-burst emergency drops
+  uint64 burst_alerts = 9;         // ringbuf alerts pushed to userspace
+  bool   af_xdp_active = 10;       // AF_XDP socket up
+  uint64 af_xdp_umem_drops = 11;   // frames dropped for lack of UMEM buffers
+  uint64 af_xdp_rx = 12;           // frames inspected via AF_XDP
+  repeated int64 cpu_pins = 13;    // cores pinned by the node
+  string cleanpipe_egress = 14;    // egress ifname used for clean-pipe redirect ("" = none)
 }
 
 // v3.0: Flow listener + source config pushed to Flow Nodes
