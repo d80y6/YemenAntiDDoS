@@ -2,7 +2,7 @@
 
 # Tools
 CLANG      ?= clang
-LLVM_STRIP ?= llvm-strip
+STRIP      ?= $(shell command -v llvm-strip 2>/dev/null)
 GO         ?= go
 
 # BPF settings
@@ -23,7 +23,7 @@ bpf: $(BPF_OBJ)
 
 $(BPF_OBJ): $(BPF_SRC) $(BPF_HDR)
 	$(CLANG) $(BPF_CFLAGS) -c $(BPF_SRC) -o $@
-	$(LLVM_STRIP) -g $@
+	@if [ -n "$(STRIP)" ]; then $(STRIP) -g $@; else echo "note: no llvm-strip; leaving debug info"; fi
 
 ## Generate — bpf2go (produces type-safe Go bindings)
 generate:
