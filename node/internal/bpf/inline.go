@@ -534,7 +534,7 @@ func isRingbufClosed(err error) bool {
 // readBurstAlert decodes one ringbuf record into a BurstAlert.
 func readBurstAlert(raw []byte) (BurstAlert, error) {
 	var a BurstAlert
-	if len(raw) < 48 {
+	if len(raw) < 40 {
 		return a, fmt.Errorf("short alert record %d", len(raw))
 	}
 	a.TimestampNS = binary.LittleEndian.Uint64(raw[0:8])
