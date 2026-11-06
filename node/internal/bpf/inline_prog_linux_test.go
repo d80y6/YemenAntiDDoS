@@ -244,6 +244,67 @@ func TestInlineProgram_CookieAckValidation(t *testing.T) {
 	}
 }
 
+// ipv4HeaderChecksumValid reports whether the IPv4 header checksum verifies.
+func ipv4HeaderChecksumValid(frame []byte, l3Off, hdrLen int) bool {
+	return dao14Checksum(frame[l3Off:l3Off+hdrLen], 0) == 0
+}
+
+// tcpChecksumValid recomputes the TCP checksum over the emitted segment and
+// its pseudo-header; a valid checksum makes the ones-complement sum zero.
+func tcpChecksumValid(frame []byte, l3Off, hdrLen int) bool {
+	ip := frame[l3Off : l3Off+hdrLen]
+	totLen := int(binary.BigEndian.Uint16(ip[2:4]))
+	segLen := totLen - hdrLen
+	if segLen < 20 || l3Off+hdrLen+segLen > len(frame) {
+		return false
+	}
+	tcp := frame[l3Off+hdrLen : l3Off+hdrLen+segLen]
+	var pseudo uint32
+	pseudo += uint32(binary.BigEndian.Uint16(ip[12:14])) + uint32(binary.BigEndian.Uint16(ip[14:16]))
+	pseudo += uint32(binary.BigEndian.Uint16(ip[16:18])) + uint32(binary.BigEndian.Uint16(ip[18:20]))
+	pseudo += 6 + uint32(segLen)
+	return dao14Checksum(tcp, pseudo) == 0
+}
+
+func TestInlineProgram_SynAckLengthChecksum(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetConfig(CfgSynCookieEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetCookieSecret(0x0123456789abcdef, 0xfedcba9876543210); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PopulateTrie([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 91, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80, Action: "syn_cookie",
+	})
+
+	syn := inlineTCPFrameSeq(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02, 0, 0)
+	ret, out := inlineRunOut(t, m, syn)
+	if ret != xdpTx {
+		t.Fatalf("SYN: xdp_inline = %d, want XDP_TX (%d)", ret, xdpTx)
+	}
+	ip := out[14:]
+	if got := binary.BigEndian.Uint16(ip[2:4]); got != 44 {
+		t.Fatalf("SYN-ACK tot_len = %d, want 44 (20-byte IP + 24-byte TCP)", got)
+	}
+	if !ipv4HeaderChecksumValid(out, 14, 20) {
+		t.Fatal("SYN-ACK IPv4 header checksum is invalid")
+	}
+	if !tcpChecksumValid(out, 14, 20) {
+		t.Fatal("SYN-ACK TCP checksum is invalid")
+	}
+}
+
 func TestInlineProgram_FilterConsiderBestMatch(t *testing.T) {
 	m := inlineProgramLoad(t)
 	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {

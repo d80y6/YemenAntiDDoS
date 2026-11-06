@@ -1076,7 +1076,7 @@ __noinline int syn_cookie_reply(struct xdp_md *ctx,
     __u32 new_daddr = iph->saddr;
     iph->saddr = new_saddr;
     iph->daddr = new_daddr;
-    iph->tot_len = bpf_htons(40);
+    iph->tot_len = bpf_htons(44);
     iph->ttl = 64;
     iph->check = ipv4_csum20(iph);
 
@@ -1111,8 +1111,8 @@ __noinline int syn_cookie_reply(struct xdp_md *ctx,
         sum += new_saddr & 0xFFFF;
         sum += (new_daddr >> 16) & 0xFFFF;
         sum += new_daddr & 0xFFFF;
-        sum += IPPROTO_TCP;
-        sum += 24;
+        sum += (IPPROTO_TCP << 8);
+        sum += bpf_htons(24);
         __u16 *w = (__u16 *)tcp;
 #pragma unroll
         for (int i = 0; i < 12; i++)
