@@ -260,6 +260,13 @@ struct dns_query_key {
     __u32 _pad;
 };
 
+// Per-client/qtype high-amplification response volume window.
+struct dns_volume_key {
+    __u8  client_addr[16];    // IPv4 in first 4 bytes
+    __u16 qtype;              // network byte order
+    __u16 _pad;
+};
+
 // Inline engine counters (inline_stats array indices)
 #define INLINE_STAT_COOKIE_REPLY     0
 #define INLINE_STAT_COOKIE_VALIDATED 1
@@ -465,6 +472,14 @@ struct {
     __type(key, struct dns_query_key);
     __type(value, __u64);   // expiry (ktime ns)
 } dns_outstanding SEC(".maps");
+
+// Per-client/qtype window of high-amplification (ANY / large TXT) responses.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 131072);
+    __type(key, struct dns_volume_key);
+    __type(value, struct burst_window);
+} dns_volume SEC(".maps");
 
 // Inline engine counters (userspace reads for posture + console)
 struct {

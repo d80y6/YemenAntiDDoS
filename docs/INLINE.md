@@ -138,6 +138,7 @@ Key BPF maps (`node/bpf/xsight.h`):
 | `rate_limit_windows` | per-source 100 ms counters for `rate_limit` rules (separate key space from burst detection) |
 | `alerts` | ringbuf: urgent burst events read by `CriticalEventStream` |
 | `dns_outstanding` | reflection heuristic for UDP/53 |
+| `dns_volume` | per-client/qtype 100 ms window for ANY / large-TXT amplification |
 | `inline_stats` | per-CPU counters surfaced as node posture |
 | `xsight_xsk` | AF_XDP socket map |
 

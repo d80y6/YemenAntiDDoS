@@ -655,6 +655,124 @@ func TestInlineProgram_RateLimitSeparateWindows(t *testing.T) {
 	}
 }
 
+// dnsUDPFrame builds an Ethernet/IPv4/UDP DNS frame with a root question and
+// the given qtype. payload is the total DNS message length (header + question
+// + padding), so TXT responses can cross the >256-byte amplification line.
+func dnsUDPFrame(t *testing.T, src, dst string, sport, dport uint16, id, qtype uint16, payload int) []byte {
+	t.Helper()
+	sip, dip := net.ParseIP(src).To4(), net.ParseIP(dst).To4()
+	if sip == nil || dip == nil {
+		t.Fatalf("dnsUDPFrame: src=%q dst=%q must be IPv4", src, dst)
+	}
+	if payload < 17 {
+		payload = 17
+	}
+	frame := make([]byte, 14+20+8+payload)
+	copy(frame[0:6], []byte{2, 0, 0, 0, 0, 1})
+	copy(frame[6:12], []byte{2, 0, 0, 0, 0, 2})
+	binary.BigEndian.PutUint16(frame[12:14], 0x0800)
+	ip := frame[14:34]
+	ip[0], ip[8], ip[9] = 0x45, 64, 17
+	binary.BigEndian.PutUint16(ip[2:4], uint16(20+8+payload))
+	copy(ip[12:16], sip)
+	copy(ip[16:20], dip)
+	binary.BigEndian.PutUint16(ip[10:12], dao14Checksum(ip, 0))
+	udp := frame[34:42]
+	binary.BigEndian.PutUint16(udp[0:2], sport)
+	binary.BigEndian.PutUint16(udp[2:4], dport)
+	binary.BigEndian.PutUint16(udp[4:6], uint16(8+payload))
+	udp[6], udp[7] = 0, 0
+	var pseudo uint32
+	pseudo += uint32(binary.BigEndian.Uint16(ip[12:14])) + uint32(binary.BigEndian.Uint16(ip[14:16]))
+	pseudo += uint32(binary.BigEndian.Uint16(ip[16:18])) + uint32(binary.BigEndian.Uint16(ip[18:20]))
+	pseudo += 17 + uint32(8+payload)
+	binary.BigEndian.PutUint16(udp[6:8], dao14Checksum(udp, pseudo))
+	dns := frame[42:]
+	binary.BigEndian.PutUint16(dns[0:2], id)
+	binary.BigEndian.PutUint16(dns[4:6], 1) // qdcount
+	dns[12] = 0                            // root name
+	binary.BigEndian.PutUint16(dns[13:15], qtype)
+	binary.BigEndian.PutUint16(dns[15:17], 1) // IN
+	return frame
+}
+
+// dnsFixture watches the client prefix and records one outbound query.
+func dnsFixture(t *testing.T, m *Manager, client, server string, id, qtype uint16, payload int) {
+	t.Helper()
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetDNSProtect(true); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PopulateTrie([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+	query := dnsUDPFrame(t, client, server, 40000, 53, id, qtype, 32)
+	if got := inlineRun(t, m, query); got != xdpPass {
+		t.Fatalf("outbound DNS query: xdp_inline = %d, want XDP_PASS", got)
+	}
+}
+
+func TestInlineProgram_DNSSolicitedBelowThresholdPasses(t *testing.T) {
+	m := inlineProgramLoad(t)
+	const client, server = "192.0.2.1", "203.0.113.53"
+
+	t.Run("ANY", func(t *testing.T) {
+		dnsFixture(t, m, client, server, 7, 0x00FF, 32)
+		if got := inlineRun(t, m, dnsUDPFrame(t, server, client, 53, 40000, 7, 0x00FF, 32)); got != xdpPass {
+			t.Fatalf("solicited ANY response: xdp_inline = %d, want XDP_PASS", got)
+		}
+	})
+	t.Run("TXT", func(t *testing.T) {
+		dnsFixture(t, m, client, server, 8, 0x0010, 300)
+		if got := inlineRun(t, m, dnsUDPFrame(t, server, client, 53, 40000, 8, 0x0010, 300)); got != xdpPass {
+			t.Fatalf("solicited large TXT response: xdp_inline = %d, want XDP_PASS", got)
+		}
+	})
+	t.Run("unsolicited", func(t *testing.T) {
+		if got := inlineRun(t, m, dnsUDPFrame(t, server, client, 53, 40000, 99, 0x00FF, 32)); got != xdpDrop {
+			t.Fatalf("unsolicited ANY response: xdp_inline = %d, want XDP_DROP", got)
+		}
+	})
+}
+
+func TestInlineProgram_DNSVolumeDropsAmplification(t *testing.T) {
+	const client, server = "192.0.2.1", "203.0.113.53"
+	const volumeLimit = 20 // mirrors DNS_AMP_VOLUME_LIMIT in xsight.c
+
+	cases := []struct {
+		name    string
+		qtype   uint16
+		payload int
+	}{
+		{"ANY", 0x00FF, 32},
+		{"TXT", 0x0010, 300},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := inlineProgramLoad(t)
+			id := uint16(100)
+			dnsFixture(t, m, client, server, id, tc.qtype, tc.payload)
+			for i := 0; i < volumeLimit; i++ {
+				frame := dnsUDPFrame(t, server, client, 53, 40000, id, tc.qtype, tc.payload)
+				if got := inlineRun(t, m, frame); got != xdpPass {
+					t.Fatalf("solicited response %d/%d: xdp_inline = %d, want XDP_PASS",
+						i+1, volumeLimit, got)
+				}
+			}
+			frame := dnsUDPFrame(t, server, client, 53, 40000, id, tc.qtype, tc.payload)
+			if got := inlineRun(t, m, frame); got != xdpDrop {
+				t.Fatalf("over-volume solicited response: xdp_inline = %d, want XDP_DROP", got)
+			}
+		})
+	}
+}
+
 func TestInlineProgram_FilterConsiderBestMatch(t *testing.T) {
 	m := inlineProgramLoad(t)
 	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {

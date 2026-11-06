@@ -1345,6 +1345,40 @@ static __always_inline __u16 dns_parse_qtype(__u8 *dns, __u8 *dns_end)
 
 #define DNS_QTYPE_ANY 0x00FF
 #define DNS_QTYPE_TXT 0x0010
+// Max ANY/large-TXT responses per client/qtype per 100ms window before the
+// high-amplification response is dropped. Keeps a modest solicited reply
+// burst while cutting sustained reflection amplification.
+#define DNS_AMP_VOLUME_LIMIT 20
+
+// dns_volume_exceeded counts a high-amplification response in the per-client,
+// per-qtype 100ms window and reports whether it crossed the volume limit.
+static __always_inline bool dns_volume_exceeded(const __u8 *client16, __u16 qtype, __u64 now)
+{
+    struct dns_volume_key k = {};
+    __builtin_memcpy(k.client_addr, client16, 16);
+    k.qtype = qtype;
+
+    struct burst_window *w = bpf_map_lookup_elem(&dns_volume, &k);
+    if (!w) {
+        struct burst_window init = {};
+        init.window_start_ns = now;
+        if (bpf_map_update_elem(&dns_volume, &k, &init, BPF_NOEXIST) != 0) {
+            w = bpf_map_lookup_elem(&dns_volume, &k);
+            if (!w)
+                return false;
+        } else {
+            w = bpf_map_lookup_elem(&dns_volume, &k);
+            if (!w)
+                return false;
+        }
+    }
+    if (now - w->window_start_ns >= BURST_WINDOW_NS) {
+        w->count = 0;
+        w->window_start_ns = now;
+    }
+    w->count++;
+    return w->count > DNS_AMP_VOLUME_LIMIT;
+}
 
 // dns_protect tracks outbound queries and drops unsolicited/amplified
 // responses toward protected clients. Returns an XDP verdict.
@@ -1391,19 +1425,19 @@ static __always_inline int dns_protect(const __u8 *src16, const __u8 *dst16,
         k.query_id = qid;
         k.qtype = qtype;
         __u64 *expiry = bpf_map_lookup_elem(&dns_outstanding, &k);
-        bool solicited = expiry && *expiry > bpf_ktime_get_ns();
+        __u64 now = bpf_ktime_get_ns();
+        bool solicited = expiry && *expiry > now;
         if (!solicited) {
             stat_add(INLINE_STAT_DNS_DROPS, 1);
             return XDP_DROP;
         }
-        // Amplification vectors: ANY responses and large TXT payloads are
-        // dropped even when solicited (anomaly threshold by size).
-        if (qtype == bpf_htons(DNS_QTYPE_ANY)) {
-            stat_add(INLINE_STAT_DNS_DROPS, 1);
-            return XDP_DROP;
-        }
+        // High-amplification responses (ANY, large TXT) are allowed while
+        // solicited and below the per-client/qtype volume threshold; sustained
+        // bursts above the threshold are dropped as reflection amplification.
         __u16 dgram_len = bpf_ntohs(u->len);
-        if (qtype == bpf_htons(DNS_QTYPE_TXT) && dgram_len > 256) {
+        bool high_amp = (qtype == bpf_htons(DNS_QTYPE_ANY)) ||
+                        (qtype == bpf_htons(DNS_QTYPE_TXT) && dgram_len > 256);
+        if (high_amp && dns_volume_exceeded(dst16, qtype, now)) {
             stat_add(INLINE_STAT_DNS_DROPS, 1);
             return XDP_DROP;
         }
