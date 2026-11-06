@@ -272,7 +272,7 @@ func TestInlineProgram_SubnetDirection(t *testing.T) {
 	}
 	if err := m.ApplyInlineRules([]InlineRuleSpec{{
 		ID: 10, SrcIP: "198.51.100.0", SrcPrefixLen: 24, Action: "drop",
-	}}); err != nil {
+	}}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -319,7 +319,7 @@ func TestInlineProgram_HostPrefixPerPortRules(t *testing.T) {
 	if err := m.ApplyInlineRules([]InlineRuleSpec{
 		{ID: 1, DstIP: "192.0.2.1", DstPrefixLen: 32, Protocol: 6, DstPort: 80, Action: "drop", Priority: 10},
 		{ID: 2, DstIP: "192.0.2.1", DstPrefixLen: 32, Protocol: 6, DstPort: 53, Action: "drop", Priority: 10},
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,7 +367,7 @@ func TestInlineProgram_DstSubnetProtoPortScope(t *testing.T) {
 	if err := m.ApplyInlineRules([]InlineRuleSpec{{
 		ID: 40, DstIP: "192.0.2.0", DstPrefixLen: 24,
 		Protocol: 6, DstPort: 8080, Action: "drop", Priority: 10,
-	}}); err != nil {
+	}}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -473,6 +473,77 @@ func TestInlineProgram_RuleExpiryMonotonic(t *testing.T) {
 	subnetExpired := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 82, 0x02)
 	if got := inlineRun(t, m, subnetExpired); got != xdpPass {
 		t.Fatalf("expired subnet rule: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+}
+
+func TestInlineProgram_DefaultAction(t *testing.T) {
+	cases := []struct {
+		name     string
+		defaultA string
+		want     uint32
+	}{
+		{"drop", "drop", xdpDrop},
+		{"pass", "pass", xdpPass},
+		{"empty-is-pass", "", xdpPass},
+		{"unknown-is-pass", "reject", xdpPass},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := inlineProgramLoad(t)
+			if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.ApplyInlineRules(nil, tc.defaultA); err != nil {
+				t.Fatal(err)
+			}
+			frame := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 443, 0x02)
+			if got := inlineRun(t, m, frame); got != tc.want {
+				t.Fatalf("default_action=%q unmatched frame: xdp_inline = %d, want %d",
+					tc.defaultA, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInlineProgram_DefaultDropSpecificPass(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyInlineRules([]InlineRuleSpec{{
+		ID: 70, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80,
+		Action: "pass", Priority: 10,
+	}}, "drop"); err != nil {
+		t.Fatal(err)
+	}
+
+	passFrame := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02)
+	if got := inlineRun(t, m, passFrame); got != xdpPass {
+		t.Fatalf("specific PASS rule: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+	unmatched := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 443, 0x02)
+	if got := inlineRun(t, m, unmatched); got != xdpDrop {
+		t.Fatalf("unmatched under drop default: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+}
+
+func TestInlineProgram_DefaultDropRemovedOnWithdraw(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyInlineRules(nil, "drop"); err != nil {
+		t.Fatal(err)
+	}
+	frame := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 443, 0x02)
+	if got := inlineRun(t, m, frame); got != xdpDrop {
+		t.Fatalf("before withdraw: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+	if err := m.ApplyInlineRules(nil, "pass"); err != nil {
+		t.Fatal(err)
+	}
+	if got := inlineRun(t, m, frame); got != xdpPass {
+		t.Fatalf("after withdraw: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
 	}
 }
 

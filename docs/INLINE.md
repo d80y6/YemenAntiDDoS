@@ -71,9 +71,25 @@ af_xdp:
 ### Clean-pipe
 
 With `cleanpipe_egress` set, scrubbed traffic is sent to that interface with
-`XDP_TX` (or encapsulated with GRE/Geneve when `cleanpipe_encap` is set) instead
+`XDP_TX` (or encapsulated with GRE when `cleanpipe_encap` is set) instead
 of being forwarded on the ingress interface. This is the building block for a
 clean-pipe return path from a scrubbing center.
+
+A redirect rule with `egress_ifindex == 0` falls back to `cleanpipe_egress`.
+For GRE (`encap: "gre"`), the rule's `encap_daddr` is the outer IPv4
+destination; the outer source is the egress interface's IPv4 address (written
+at startup, 0 with a warning when the interface has no IPv4). The GRE payload
+protocol is transparent Ethernet bridging (`0x6558`) because the encapsulated
+frame still begins with its Ethernet header. Clean-pipe egress is treated as
+an L2 adjacency: `bpf_redirect()` transmits without neighbour resolution and
+the original destination MAC is reused, so the clean-pipe link must be
+point-to-point at L2. GENEVE is declared on the wire but not implemented; the
+node rejects `encap: "geneve"` at install time.
+
+The controller's `default_action` is enforced by installing a lowest-priority
+all-zero catch-all rule when it is `"drop"`; the rule is removed by the next
+snapshot with `"pass"` (including an empty withdraw push). Specific rules,
+including `pass`, override the catch-all.
 
 ---
 

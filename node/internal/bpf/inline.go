@@ -425,10 +425,14 @@ type InlineStats struct {
 
 // ApplyInlineRules atomically replaces the kernel filter tables.
 // Exact 5-tuple specs go to the hash map; subnet-scope specs go to the LPM
-// trie. Rules are applied to a shadow copy only when the swap fails entirely
-// (map updates are per-entry; a partial failure keeps previously applied
-// entries which the controller reconciles on the next push).
-func (m *Manager) ApplyInlineRules(specs []InlineRuleSpec) error {
+// trie. When defaultAction is "drop" a lowest-priority catch-all rule is
+// installed first (all-zero key = global wildcard) so unmatched traffic is
+// dropped; it is cleared again on the next snapshot that is not drop-default
+// (including an empty withdraw push). Rules are applied to a shadow copy only
+// when the swap fails entirely (map updates are per-entry; a partial failure
+// keeps previously applied entries which the controller reconciles on the next
+// push).
+func (m *Manager) ApplyInlineRules(specs []InlineRuleSpec, defaultAction string) error {
 	if m.Objs == nil {
 		return fmt.Errorf("bpf: not loaded")
 	}
@@ -443,6 +447,18 @@ func (m *Manager) ApplyInlineRules(specs []InlineRuleSpec) error {
 	}
 	if err := clearMap(m.Objs.ActiveFilterSubnetsSrc); err != nil {
 		return fmt.Errorf("clear active_filter_subnets_src: %w", err)
+	}
+
+	// Install the catch-all before the snapshot rules: a controller-supplied
+	// global rule shares the same all-zero key and must win over the default.
+	if defaultAction == "drop" {
+		var key FilterRuleKey
+		val := FilterRule{Action: FilterActionDrop, Priority: ^uint32(0)}
+		if err := m.Objs.ActiveFilterRules.Update(&key, &val, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("install default-drop rule: %w", err)
+		}
+	} else if defaultAction != "" && defaultAction != "pass" {
+		log.Printf("inline: ignoring unknown default_action %q (treating as pass)", defaultAction)
 	}
 
 	applied := 0

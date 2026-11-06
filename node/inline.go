@@ -260,6 +260,7 @@ func applyInlineRules(mgr *bpf.Manager, rs *pb.InlineRuleSet) error {
 			EgressIfindex: r.GetEgressIfindex(),
 		})
 	}
+	if err := mgr.ApplyInlineRules(specs, rs.GetDefaultAction()); err != nil {
 		return err
 	}
 	if err := mgr.SetSynCookieEnabled(rs.GetSynCookieEnabled()); err != nil {
