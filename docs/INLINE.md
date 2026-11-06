@@ -135,6 +135,7 @@ Key BPF maps (`node/bpf/xsight.h`):
 | `active_filter_subnets` | CIDR (LPM trie) rules for source-subnet and /24 blocks |
 | `validated_clients` | LRU of clients that solved the cookie handshake, bypassing emergency drops for `VALIDATED_CLIENT_TTL_NS` |
 | `burst_windows` | per-destination 100 ms counters and emergency state |
+| `rate_limit_windows` | per-source 100 ms counters for `rate_limit` rules (separate key space from burst detection) |
 | `alerts` | ringbuf: urgent burst events read by `CriticalEventStream` |
 | `dns_outstanding` | reflection heuristic for UDP/53 |
 | `inline_stats` | per-CPU counters surfaced as node posture |

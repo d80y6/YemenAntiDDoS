@@ -551,6 +551,110 @@ func TestInlineProgram_ValidatedClientStillFiltered(t *testing.T) {
 	}
 }
 
+func TestInlineProgram_EmergencyExitResetsWindow(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetBurstThreshold(10); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PopulateTrie([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stale state from an emergency that has just expired: a huge count and a
+	// high sustained counter must not instantly re-arm the drop window.
+	now := MonotonicNowNS()
+	key := inlineAddrKey("192.0.2.1")
+	w := burstWindowValue{
+		Count:            1000,
+		Sustained:        5,
+		WindowStartNS:    now - uint64(200*time.Millisecond),
+		EmergencyUntilNS: now - 1,
+	}
+	if err := m.Objs.BurstWindows.Update(&key, &w, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+
+	frame := dao8Frame(t, "192.0.2.1", false, false)
+	if got := inlineRun(t, m, frame); got != xdpPass {
+		t.Fatalf("post-emergency packet: xdp_inline = %d, want XDP_PASS (not re-armed)", got)
+	}
+	var got burstWindowValue
+	if err := m.Objs.BurstWindows.Lookup(&key, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.EmergencyUntilNS != 0 {
+		t.Fatalf("emergency re-armed on stale state: until=%d", got.EmergencyUntilNS)
+	}
+	if got.Sustained != 0 {
+		t.Fatalf("sustained = %d after emergency exit, want 0", got.Sustained)
+	}
+	if got.Count > 1 {
+		t.Fatalf("count = %d after reset, want <= 1 (stale count retained)", got.Count)
+	}
+}
+
+func TestInlineProgram_RateLimitSeparateWindows(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetBurstThreshold(0); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PopulateTrie([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 96, DstIP: "192.0.2.1", Protocol: 17, DstPort: 54321,
+		Action: "rate_limit", RateLimitPPS: 10,
+	})
+
+	// src and dst are the same address, so a shared window map would let the
+	// rate limiter consume the burst counter (and drop the first packet).
+	frame := dao14Frame(t, "192.0.2.1", "192.0.2.1", 60)
+	if got := inlineRun(t, m, frame); got != xdpPass {
+		t.Fatalf("first packet: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+	key := inlineAddrKey("192.0.2.1")
+	var rate, burst burstWindowValue
+	if err := m.Objs.RateLimitWindows.Lookup(&key, &rate); err != nil {
+		t.Fatalf("rate-limit window missing: %v", err)
+	}
+	if err := m.Objs.BurstWindows.Lookup(&key, &burst); err != nil {
+		t.Fatalf("burst window missing: %v", err)
+	}
+	if rate.Count != 1 || burst.Count != 1 {
+		t.Fatalf("after first packet: rate=%d burst=%d, want 1/1", rate.Count, burst.Count)
+	}
+
+	if got := inlineRun(t, m, frame); got != xdpDrop {
+		t.Fatalf("second packet: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+	if err := m.Objs.RateLimitWindows.Lookup(&key, &rate); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Objs.BurstWindows.Lookup(&key, &burst); err != nil {
+		t.Fatal(err)
+	}
+	if rate.Count != 1 {
+		t.Fatalf("rate window count = %d, want 1 (counter must not advance on drop)", rate.Count)
+	}
+	if burst.Count != 2 {
+		t.Fatalf("burst window count = %d, want 2 (independent of rate limiter)", burst.Count)
+	}
+}
+
 func TestInlineProgram_FilterConsiderBestMatch(t *testing.T) {
 	m := inlineProgramLoad(t)
 	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {

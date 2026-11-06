@@ -1247,12 +1247,32 @@ static __always_inline struct burst_window *burst_window_get(const __u8 *addr16,
     return bpf_map_lookup_elem(&burst_windows, addr16);
 }
 
+static __always_inline struct burst_window *rate_window_get(const __u8 *addr16, __u64 now)
+{
+    struct burst_window *w = bpf_map_lookup_elem(&rate_limit_windows, addr16);
+    if (w)
+        return w;
+    struct burst_window init = {};
+    init.window_start_ns = now;
+    if (bpf_map_update_elem(&rate_limit_windows, addr16, &init, BPF_NOEXIST) != 0)
+        return bpf_map_lookup_elem(&rate_limit_windows, addr16);
+    return bpf_map_lookup_elem(&rate_limit_windows, addr16);
+}
+
 static __always_inline void burst_track(const __u8 *dst16, bool is_v4, __u32 proto, __u8 tcp_flags)
 {
     __u64 now = bpf_ktime_get_ns();
     struct burst_window *w = burst_window_get(dst16, now);
     if (!w)
         return;
+    // Emergency exit: discard the stale window count/sustained state so the
+    // next packet cannot immediately re-arm another 2s drop window.
+    if (w->emergency_until_ns != 0 && now >= w->emergency_until_ns) {
+        w->count = 0;
+        w->sustained = 0;
+        w->window_start_ns = now;
+        w->emergency_until_ns = 0;
+    }
     if (now - w->window_start_ns >= BURST_WINDOW_NS) {
         __u32 pps = w->count * 10;
         w->count = 0;
@@ -1262,6 +1282,11 @@ static __always_inline void burst_track(const __u8 *dst16, bool is_v4, __u32 pro
             w->sustained++;
             if (w->sustained >= BURST_SUSTAINED_TRIGGER &&
                 now > w->emergency_until_ns) {
+                // Emergency entry: start a clean window in addition to arming
+                // the drop state, so the high pre-entry count cannot carry over.
+                w->count = 0;
+                w->sustained = 0;
+                w->window_start_ns = now;
                 w->emergency_until_ns = now + BURST_EMERGENCY_NS;
                 (void)emit_burst_alert((const struct addr16 *)dst16, is_v4, pps, proto, tcp_flags);
             }
@@ -1395,7 +1420,7 @@ static __always_inline bool rate_limited(const struct filter_rule *r, const __u8
     if (r->action != FILTER_ACTION_RATE_LIMIT || r->rate_limit_pps == 0)
         return false;
     __u64 now = bpf_ktime_get_ns();
-    struct burst_window *w = burst_window_get(src16, now);
+    struct burst_window *w = rate_window_get(src16, now);
     if (!w)
         return false;
     if (now - w->window_start_ns >= BURST_WINDOW_NS) {

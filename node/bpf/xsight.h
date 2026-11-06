@@ -439,6 +439,17 @@ struct {
     __type(value, struct burst_window);
 } burst_windows SEC(".maps");
 
+// Per-source rate-limit windows. Kept separate from burst_windows: the burst
+// map is keyed on the destination and stores emergency state, while the rate
+// limiter is keyed on the source and only counts. Sharing one map makes the
+// same address collide under two incompatible semantics.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u8[16]);
+    __type(value, struct burst_window);
+} rate_limit_windows SEC(".maps");
+
 // Urgent alerts → userspace → CriticalEventStream. NOTE: ringbuf is not
 // supported by SmartNIC offload; deployments in offload mode must keep
 // CFG_ALERTS_ENABLE=0 and accept userspace-only detection there.
