@@ -690,7 +690,7 @@ func dnsUDPFrame(t *testing.T, src, dst string, sport, dport uint16, id, qtype u
 	dns := frame[42:]
 	binary.BigEndian.PutUint16(dns[0:2], id)
 	binary.BigEndian.PutUint16(dns[4:6], 1) // qdcount
-	dns[12] = 0                            // root name
+	dns[12] = 0                             // root name
 	binary.BigEndian.PutUint16(dns[13:15], qtype)
 	binary.BigEndian.PutUint16(dns[15:17], 1) // IN
 	return frame

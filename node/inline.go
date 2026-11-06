@@ -129,8 +129,11 @@ func setupInlineEngine(cfg *config.Config, mgr *bpf.Manager, ifaceName string) (
 		return "", fmt.Errorf("dns protect enable: %w", err)
 	}
 	// Burst alerts are a runtime ringbuf gate: array-map slots default to 0, so
-	// the data plane stays silent unless userspace writes an explicit 1.
-	if err := mgr.SetAlertsEnabled(true); err != nil {
+	// the data plane stays silent unless userspace writes an explicit 1. Keep
+	// them off when offload is requested (ringbuf is not offloadable); main
+	// re-enables them after attach if the node falls back to driver/generic.
+	alertsOn := cfg.XDPModeOrDefault() != "offload"
+	if err := mgr.SetAlertsEnabled(alertsOn); err != nil {
 		return "", fmt.Errorf("enable burst alerts: %w", err)
 	}
 	if cfg.Inline.BurstPPS > 0 {

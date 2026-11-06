@@ -109,6 +109,14 @@ func main() {
 	}
 	xdpMode := mgr.EffectiveXDPMode()
 
+	// If an offload attach fell back to driver/generic, the ringbuf alert path
+	// is now available again; setup left it off for the offload attempt.
+	if inlineActive && xdpMode != "offload" {
+		if err := mgr.SetAlertsEnabled(true); err != nil {
+			log.Printf("warning: enable burst alerts after attach: %v", err)
+		}
+	}
+
 	// CPU core pinning (perf.cpu_pins). Best-effort: a restricted container
 	// may refuse affinity changes, which must not stop the node.
 	if len(cfg.Perf.CPUPins) > 0 {
@@ -355,7 +363,7 @@ func main() {
 	rpt.SetPostureFunc(posture.snapshot)
 
 	// Rotate the SYN-cookie secret hourly whenever inline is active: a later
-// controller push may enable cookies even if startup config had them off.
+	// controller push may enable cookies even if startup config had them off.
 	if inlineActive {
 		var cs cookieSecret
 		go rotateCookieSecret(collectorCtx, mgr, &cs)
