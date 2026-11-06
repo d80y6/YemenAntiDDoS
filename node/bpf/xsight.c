@@ -804,9 +804,9 @@ static __always_inline void filter_consider(struct filter_hit *out,
                                             const struct filter_rule *r,
                                             bool cookie_action, __u64 now_sec)
 {
-    if (!out->hit || !rule_live(r, now_sec))
+    if (!rule_live(r, now_sec))
         return;
-    if (r->priority < out->rule.priority ||
+    if (!out->hit || r->priority < out->rule.priority ||
         (r->priority == out->rule.priority && !out->is_cookie && cookie_action)) {
         out->rule = *r;
         out->is_cookie = cookie_action;
