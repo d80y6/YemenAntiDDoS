@@ -78,6 +78,10 @@ type FilterRule struct {
 	Priority      uint32
 	RuleID        uint64
 	ExpiresUnix   uint64
+	Proto         uint8
+	_             [3]byte
+	DstPort       uint16
+	SrcPort       uint16
 }
 
 // BurstAlert mirrors struct burst_alert (xsight.h) — the ringbuf record.
@@ -228,6 +232,9 @@ func EncodeInlineRule(spec InlineRuleSpec) (FilterRuleKey, FilterRule, error) {
 	key.DstPort = wirePortKey(spec.DstPort)
 	key.SrcPort = wirePortKey(spec.SrcPort)
 
+	val.Proto = key.Proto
+	val.DstPort = key.DstPort
+	val.SrcPort = key.SrcPort
 	val.Action = action
 	val.Encap = encap
 	val.EgressIfindex = spec.EgressIfindex
@@ -281,6 +288,9 @@ func EncodeInlineSubnet(spec InlineRuleSpec) (LPMKey, FilterRule, error) {
 		key.Prefixlen = uint32(prefixLen)
 	}
 
+	val.Proto = uint8(spec.Protocol)
+	val.DstPort = wirePortKey(spec.DstPort)
+	val.SrcPort = wirePortKey(spec.SrcPort)
 	val.Action = action
 	val.Encap = encap
 	val.EgressIfindex = spec.EgressIfindex
@@ -324,8 +334,11 @@ func (m *Manager) ApplyInlineRules(specs []InlineRuleSpec) error {
 	if err := clearExactMap(m.Objs.ActiveFilterRules); err != nil {
 		return fmt.Errorf("clear active_filter_rules: %w", err)
 	}
-	if err := clearMap(m.Objs.ActiveFilterSubnets); err != nil {
-		return fmt.Errorf("clear active_filter_subnets: %w", err)
+	if err := clearMap(m.Objs.ActiveFilterSubnetsDst); err != nil {
+		return fmt.Errorf("clear active_filter_subnets_dst: %w", err)
+	}
+	if err := clearMap(m.Objs.ActiveFilterSubnetsSrc); err != nil {
+		return fmt.Errorf("clear active_filter_subnets_src: %w", err)
 	}
 
 	applied := 0
@@ -340,7 +353,11 @@ func (m *Manager) ApplyInlineRules(specs []InlineRuleSpec) error {
 				log.Printf("inline: skip subnet rule %d: %v", spec.ID, err)
 				continue
 			}
-			if err := m.Objs.ActiveFilterSubnets.Update(&key, &val, ebpf.UpdateAny); err != nil {
+			subnets := m.Objs.ActiveFilterSubnetsDst
+			if spec.DstIP == "" && spec.SrcIP != "" {
+				subnets = m.Objs.ActiveFilterSubnetsSrc
+			}
+			if err := subnets.Update(&key, &val, ebpf.UpdateAny); err != nil {
 				log.Printf("inline: subnet rule %d update: %v", spec.ID, err)
 				continue
 			}

@@ -263,6 +263,28 @@ func TestInlineProgram_ExactWildcards(t *testing.T) {
 	}
 }
 
+func TestInlineProgram_SubnetDirection(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyInlineRules([]InlineRuleSpec{{
+		ID: 10, SrcIP: "198.51.100.0", SrcPrefixLen: 24, Action: "drop",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	from := dao14Frame(t, "192.0.2.1", "198.51.100.5", 60)
+	if got := inlineRun(t, m, from); got != xdpDrop {
+		t.Fatalf("traffic from src subnet: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+
+	to := dao14Frame(t, "198.51.100.5", "192.0.2.1", 60)
+	if got := inlineRun(t, m, to); got != xdpPass {
+		t.Fatalf("traffic to src subnet: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+}
+
 func TestInlineProgram_PassBaselines(t *testing.T) {
 	m := inlineProgramLoad(t)
 	for _, tt := range []struct {

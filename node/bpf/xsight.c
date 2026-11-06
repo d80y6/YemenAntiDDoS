@@ -800,6 +800,20 @@ static __always_inline bool rule_live(const struct filter_rule *r, __u64 now_sec
     return true;
 }
 
+// Subnet trie values only carry an address prefix; proto/ports narrow the
+// rule scope (0 = wildcard). Ports are network byte order in both places.
+static __always_inline bool filter_rule_matches(const struct filter_rule *r,
+                                                __u8 proto, __u16 dport, __u16 sport)
+{
+    if (r->proto != 0 && r->proto != proto)
+        return false;
+    if (r->dst_port != 0 && r->dst_port != dport)
+        return false;
+    if (r->src_port != 0 && r->src_port != sport)
+        return false;
+    return true;
+}
+
 static __always_inline void filter_consider(struct filter_hit *out,
                                             const struct filter_rule *r,
                                             bool cookie_action, __u64 now_sec)
@@ -919,17 +933,25 @@ __noinline int filter_exact_lookup(struct filter_hit *out,
     return 0;
 }
 
-// LPM subnet lookup: match the address (v4 → /32 prefix on 4 bytes, v6 → /128).
-// Kept static/always_inline (not a global noinline fn) so the map-value pointer
-// may be the return value — global functions must return a scalar to the
-// verifier. The body is a 20-byte lpm_key plus one lookup, so inlining costs
-// one frame slot in the caller.
-static __always_inline struct filter_rule *filter_subnet_lookup(const __u8 *addr16, bool is_v4)
+// LPM subnet lookups: match the address (v4 → /32 prefix on 4 bytes, v6 →
+// /128). Kept static/always_inline (not global noinline fns) so the map-value
+// pointer may be the return value — global functions must return a scalar to
+// the verifier. Each body is a 20-byte lpm_key plus one lookup, so inlining
+// costs one frame slot in the caller.
+static __always_inline struct filter_rule *filter_subnet_lookup_dst(const __u8 *addr16, bool is_v4)
 {
     struct lpm_key k = {};
     __builtin_memcpy(k.addr, addr16, 16);
     k.prefixlen = is_v4 ? 32 : 128;
-    return bpf_map_lookup_elem(&active_filter_subnets, &k);
+    return bpf_map_lookup_elem(&active_filter_subnets_dst, &k);
+}
+
+static __always_inline struct filter_rule *filter_subnet_lookup_src(const __u8 *addr16, bool is_v4)
+{
+    struct lpm_key k = {};
+    __builtin_memcpy(k.addr, addr16, 16);
+    k.prefixlen = is_v4 ? 32 : 128;
+    return bpf_map_lookup_elem(&active_filter_subnets_src, &k);
 }
 
 // ---------------------------------------------------------------------------
@@ -1510,16 +1532,11 @@ int xdp_inline(struct xdp_md *ctx)
             (void)filter_exact_lookup(&hit, (const struct addr16 *)dst16,
                                         (const struct addr16 *)src16,
                                         l4_proto, ((__u32)dport << 16) | sport);
-            // Outbound direction: source-subnet ACLs keyed on src16.
-            if (!hit.hit && src_watched)
-                (void)filter_exact_lookup(&hit, (const struct addr16 *)src16,
-                                        (const struct addr16 *)src16,
-                                        l4_proto, ((__u32)dport << 16) | sport);
-            struct filter_rule *sub = filter_subnet_lookup(dst16, is_v4);
-            if (sub)
+            struct filter_rule *sub = filter_subnet_lookup_dst(dst16, is_v4);
+            if (sub && filter_rule_matches(sub, l4_proto, dport, sport))
                 filter_consider(&hit, sub, sub->action == FILTER_ACTION_SYN_COOKIE, now_sec);
-            struct filter_rule *ssub = filter_subnet_lookup(src16, is_v4);
-            if (ssub)
+            struct filter_rule *ssub = filter_subnet_lookup_src(src16, is_v4);
+            if (ssub && filter_rule_matches(ssub, l4_proto, dport, sport))
                 filter_consider(&hit, ssub, ssub->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
             if (hit.hit) {

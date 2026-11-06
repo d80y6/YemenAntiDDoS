@@ -222,6 +222,11 @@ struct filter_rule {
     __u32 priority;         // lower wins when an exact key and a subnet rule overlap
     __u64 rule_id;          // controller-assigned id (reconciliation)
     __u64 expires_unix;     // 0 = until withdrawn; expired rules are ignored in-kernel
+    // Subnet trie rules carry the L4 scope in the value (the key is address-only).
+    __u8  proto;            // 0 = any protocol
+    __u8  _pad2[3];
+    __u16 dst_port;         // network byte order, 0 = any
+    __u16 src_port;         // network byte order, 0 = any
 };
 
 // Per-destination burst sliding window (100ms buckets, 2s emergency drop).
@@ -392,15 +397,25 @@ struct {
     __type(value, struct filter_rule);
 } active_filter_rules SEC(".maps");
 
-// Subnet-scope filter rules (LPM trie). Source-subnet ACLs and broad
-// destination protections; exact hash rules win on equal priority.
+// Destination-scope subnet filter rules (LPM trie). Broad destination
+// protections; exact hash rules win on equal priority.
 struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __uint(max_entries, 65536);
     __uint(map_flags, BPF_F_NO_PREALLOC);
     __type(key, struct lpm_key);
     __type(value, struct filter_rule);
-} active_filter_subnets SEC(".maps");
+} active_filter_subnets_dst SEC(".maps");
+
+// Source-scope subnet filter rules (LPM trie). Egress ACLs keyed on src_ip;
+// kept separate so a source prefix can never match inbound traffic.
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, 65536);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, struct lpm_key);
+    __type(value, struct filter_rule);
+} active_filter_subnets_src SEC(".maps");
 
 // SYN-cookie validated clients — short-lived LRU. On a successful cookie ACK
 // the client IP is admitted here and bypasses the emergency drop state.
