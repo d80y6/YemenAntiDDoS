@@ -131,10 +131,10 @@ func ISN(secretLo, secretHi uint64, sip, dip [16]byte, sport, dport uint16) uint
 	return uint32(Compute(secretLo, secretHi, sip, dip, sport, dport))
 }
 
-// ValidAck reports whether a client's final ACK validates the cookie:
-// ack_seq must equal cookie+1 with the SYN-ACK ISN derived from the same
-// tuple. Mirrors validate_cookie_ack in xsight.c.
-func ValidAck(secretLo, secretHi uint64, sip, dip [16]byte, sport, dport uint16, clientISN, ackNum uint32) bool {
-	isn := ISN(secretLo, secretHi, sip, dip, sport, dport)
-	return clientISN == isn && ackNum == clientISN+1
+// ValidAck reports whether a client's final ACK validates the cookie: ack_seq
+// must equal cookie+1. The client's own sequence number is unrelated to the
+// cookie and is deliberately not an input. Mirrors validate_cookie_ack in
+// xsight.c.
+func ValidAck(cookie, ackNum uint32) bool {
+	return ackNum == cookie+1
 }

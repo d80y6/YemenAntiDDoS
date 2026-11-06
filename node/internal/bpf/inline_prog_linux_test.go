@@ -148,6 +148,102 @@ func inlineTCPFrame(t *testing.T, src, dst string, sport, dport uint16, flags ui
 	return frame
 }
 
+// burstWindowValue mirrors struct burst_window for direct map fixtures.
+type burstWindowValue struct {
+	Count            uint32
+	Sustained        uint32
+	WindowStartNS    uint64
+	EmergencyUntilNS uint64
+}
+
+// inlineAddrKey packs an IPv4 literal into the 16-byte map key layout.
+func inlineAddrKey(ip string) [16]byte {
+	var k [16]byte
+	copy(k[:4], net.ParseIP(ip).To4())
+	return k
+}
+
+// inlineTCPFrameSeq is inlineTCPFrame with explicit sequence/ack fields.
+func inlineTCPFrameSeq(t *testing.T, src, dst string, sport, dport uint16, flags uint8, seq, ack uint32) []byte {
+	t.Helper()
+	frame := inlineTCPFrame(t, src, dst, sport, dport, flags)
+	tcp := frame[34:]
+	binary.BigEndian.PutUint32(tcp[4:8], seq)
+	binary.BigEndian.PutUint32(tcp[8:12], ack)
+	return frame
+}
+
+func TestInlineProgram_CookieAckValidation(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetConfig(CfgSynCookieEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetCookieSecret(0x0123456789abcdef, 0xfedcba9876543210); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PopulateTrie([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 90, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80, Action: "syn_cookie",
+	})
+
+	src, dst := "198.51.100.254", "192.0.2.1"
+	syn := inlineTCPFrameSeq(t, src, dst, 12345, 80, 0x02, 0x11111111, 0)
+	ret, out := inlineRunOut(t, m, syn)
+	if ret != xdpTx {
+		t.Fatalf("SYN: xdp_inline = %d, want XDP_TX (%d)", ret, xdpTx)
+	}
+	isn := binary.BigEndian.Uint32(out[38:42])
+
+	// Drive the destination into emergency so the final-ACK validation branch
+	// runs without waiting for a real two-window burst.
+	now := MonotonicNowNS()
+	key := inlineAddrKey(dst)
+	w := burstWindowValue{WindowStartNS: now, EmergencyUntilNS: now + uint64(time.Second)}
+	if err := m.Objs.BurstWindows.Update(&key, &w, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+
+	// Real clients send an arbitrary seq; only ack_seq == cookie+1 validates.
+	good := inlineTCPFrameSeq(t, src, dst, 12345, 80, 0x10, 0xa5a5a5a5, isn+1)
+	if got := inlineRun(t, m, good); got != xdpPass {
+		t.Fatalf("valid ACK: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+	srcKey := inlineAddrKey(src)
+	var expiry uint64
+	if err := m.Objs.ValidatedClients.Lookup(&srcKey, &expiry); err != nil {
+		t.Fatalf("valid ACK was not admitted into validated_clients: %v", err)
+	}
+	if expiry <= MonotonicNowNS() {
+		t.Fatalf("validated client expiry %d is not in the future", expiry)
+	}
+
+	// A different client with a wrong ack_seq must be rejected and not admitted.
+	other := "203.0.113.9"
+	syn2 := inlineTCPFrameSeq(t, other, dst, 12345, 80, 0x02, 0x22222222, 0)
+	ret, out = inlineRunOut(t, m, syn2)
+	if ret != xdpTx {
+		t.Fatalf("second SYN: xdp_inline = %d, want XDP_TX (%d)", ret, xdpTx)
+	}
+	otherISN := binary.BigEndian.Uint32(out[38:42])
+	bad := inlineTCPFrameSeq(t, other, dst, 12345, 80, 0x10, 0x33333333, otherISN)
+	if got := inlineRun(t, m, bad); got != xdpDrop {
+		t.Fatalf("wrong ACK: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+	otherKey := inlineAddrKey(other)
+	if err := m.Objs.ValidatedClients.Lookup(&otherKey, &expiry); err == nil {
+		t.Fatal("wrong ACK admitted the client into validated_clients")
+	}
+}
+
 func TestInlineProgram_FilterConsiderBestMatch(t *testing.T) {
 	m := inlineProgramLoad(t)
 	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {

@@ -153,10 +153,10 @@ func TestSynFloodCookieStatelessness(t *testing.T) {
 		sport := uint16(1024 + i%64000)
 		isn := cookie.ISN(lo, hi, sip, dip, sport, 443)
 		seen[isn]++
-		if !cookie.ValidAck(lo, hi, sip, dip, sport, 443, isn, isn+1) {
+		if !cookie.ValidAck(isn, isn+1) {
 			t.Fatalf("cookie for sport %d rejected by its own handshake", sport)
 		}
-		if cookie.ValidAck(lo, hi, sip, dip, sport, 443, isn+1, isn+2) {
+		if cookie.ValidAck(isn, isn+2) {
 			t.Fatal("forged ACK accepted")
 		}
 		// Deterministic — pure function of (secret, tuple), no hidden state.

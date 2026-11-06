@@ -85,17 +85,32 @@ func TestComputeSensitivity(t *testing.T) {
 func TestValidAck(t *testing.T) {
 	sip, dip := tuple()
 	isn := ISN(7, 8, sip, dip, 1234, 443)
-	if !ValidAck(7, 8, sip, dip, 1234, 443, isn, isn+1) {
+	if !ValidAck(isn, isn+1) {
 		t.Fatal("valid handshake ACK rejected")
 	}
-	if ValidAck(7, 8, sip, dip, 1234, 443, isn, isn) {
+	if ValidAck(isn, isn) {
 		t.Fatal("ACK without the +1 must be rejected")
 	}
-	if ValidAck(7, 8, sip, dip, 1234, 443, isn+1, isn+2) {
-		t.Fatal("wrong client ISN must be rejected")
+	if ValidAck(isn, isn+2) {
+		t.Fatal("ACK with the wrong cookie+1 must be rejected")
 	}
-	if ValidAck(9, 8, sip, dip, 1234, 443, isn, isn+1) {
-		t.Fatal("wrong secret must be rejected")
+	if ValidAck(isn+5, isn+1) {
+		t.Fatal("ACK validated against the wrong cookie must be rejected")
+	}
+}
+
+// TestValidAckIgnoresClientSeq documents the wire contract: a real client's
+// final ACK carries its own arbitrary sequence number, unrelated to the
+// cookie. Only ack_seq == cookie+1 is meaningful, so ValidAck takes no client
+// sequence argument at all.
+func TestValidAckIgnoresClientSeq(t *testing.T) {
+	sip, dip := tuple()
+	isn := ISN(11, 12, sip, dip, 5555, 53)
+	for _, clientSeq := range []uint32{0, 1, isn, isn + 1, 0xdeadbeef, ^uint32(0)} {
+		_ = clientSeq // client ISN is deliberately not an input to validation
+		if !ValidAck(isn, isn+1) {
+			t.Fatalf("ACK with client seq %#x rejected", clientSeq)
+		}
 	}
 }
 

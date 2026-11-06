@@ -1131,11 +1131,13 @@ __noinline int syn_cookie_reply(struct xdp_md *ctx,
 }
 
 // validate_cookie_ack checks the client's final ACK against the expected
-// cookie. On success the client is admitted into validated_clients.
+// cookie. A real client acknowledges the SYN-ACK with ack_seq == cookie+1; its
+// own sequence number is unrelated. On success the client is admitted into
+// validated_clients.
 // ports packs dport high, sport low (BPF global fns take max 5 args).
 __noinline int validate_cookie_ack(const struct addr16 *sip16,
                                    const struct addr16 *dip16,
-                                   __u32 ports, __u32 client_isn, __u32 ack_num)
+                                   __u32 ports, __u32 ack_num)
 {
     if (!sip16 || !dip16)
         return -1;
@@ -1143,7 +1145,7 @@ __noinline int validate_cookie_ack(const struct addr16 *sip16,
     __u16 dport = (__u16)(ports >> 16);
     __u64 now = bpf_ktime_get_ns();
     __u64 cookie = syn_cookie_compute(sip16, dip16, sport, dport);
-    if ((__u32)(cookie & 0xFFFFFFFF) != client_isn || ack_num != client_isn + 1) {
+    if (ack_num != (__u32)cookie + 1) {
         stat_add(INLINE_STAT_COOKIE_DROPPED, 1);
         return -1;
     }
@@ -1599,17 +1601,15 @@ int xdp_inline(struct xdp_md *ctx)
                 if ((tcp_flags & 0x10) && !(tcp_flags & 0x02)) {
                     // Final ACK — validate the cookie before admitting.
                     if (cfg_read(CFG_SYN_COOKIE_ENABLE, 1) && is_v4 && !is_frag) {
-                        __u32 client_isn = 0, ack_num = 0;
-                        if (l4 + 8 <= data_end) {
-                            __builtin_memcpy(&client_isn, l4, 4);
-                            __builtin_memcpy(&ack_num, ((char *)l4) + 4, 4);
-                            client_isn = bpf_ntohl(client_isn);
+                        __u32 ack_num = 0;
+                        if (l4 + 12 <= data_end) {
+                            __builtin_memcpy(&ack_num, ((char *)l4) + 8, 4);
                             ack_num = bpf_ntohl(ack_num);
                         }
                         if (validate_cookie_ack((const struct addr16 *)src16,
                                                 (const struct addr16 *)dst16,
                                                 ((__u32)dport << 16) | sport,
-                                                client_isn, ack_num) == 0)
+                                                ack_num) == 0)
                             return XDP_PASS;
                     }
                     stat_add(INLINE_STAT_EMERGENCY_DROPS, 1);

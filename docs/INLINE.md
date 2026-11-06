@@ -154,7 +154,7 @@ cookie = siphash-2-4(key = secret_lo|secret_hi,
                            LE64(dip[0:8]) | LE64(dip[8:16]) |
                            LE64(sport | dport<<32))
 ISN    = uint32(cookie)
-valid  = client_ack_seq == ISN+1 and client_isn == ISN
+valid  = client_ack == cookie+1
 ```
 
 The BPF program rewrites the SYN into a SYN-ACK and returns it with `XDP_TX`;
