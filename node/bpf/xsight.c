@@ -1356,6 +1356,8 @@ static __always_inline bool rate_limited(const struct filter_rule *r, const __u8
         w->window_start_ns = now;
     }
     __u64 per_window = r->rate_limit_pps / 10;
+    if (per_window == 0)
+        per_window = 1;
     if (w->count >= per_window)
         return true;
     w->count++;

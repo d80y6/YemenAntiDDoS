@@ -285,6 +285,26 @@ func TestInlineProgram_SubnetDirection(t *testing.T) {
 	}
 }
 
+func TestInlineProgram_RateLimitClamp(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 20, DstIP: "192.0.2.1", Protocol: 17, DstPort: 54321,
+		Action: "rate_limit", RateLimitPPS: 5,
+	})
+
+	// rate_limit_pps/10 truncates to zero; the kernel must clamp the window
+	// budget to one packet instead of dropping every packet.
+	if got := inlineRun(t, m, dao8Frame(t, "192.0.2.1", false, false)); got != xdpPass {
+		t.Fatalf("first packet: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+	if got := inlineRun(t, m, dao8Frame(t, "192.0.2.1", false, false)); got != xdpDrop {
+		t.Fatalf("second packet: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+}
+
 func TestInlineProgram_PassBaselines(t *testing.T) {
 	m := inlineProgramLoad(t)
 	for _, tt := range []struct {
