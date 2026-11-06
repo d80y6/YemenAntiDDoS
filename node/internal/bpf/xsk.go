@@ -22,6 +22,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -290,15 +291,17 @@ func (s *XSK) registerIntoXSKMap(queue uint32) error {
 }
 
 func setsockoptBytes(fd, level, opt int, v interface{}) error {
-	b := packNative(v)
-	return unix.SetsockoptString(fd, level, opt, string(b))
+	return unix.SetsockoptString(fd, level, opt, string(structBytes(v)))
 }
 
-// packNative serializes a struct in native memory layout.
-func packNative(v interface{}) []byte {
-	sz := unsafe.Sizeof(v)
+// structBytes serializes a value in native memory layout. The size and byte
+// image come from the concrete type, not the interface header: unsafe.Sizeof
+// on an interface would return a pointer pair and copy garbage to the kernel.
+func structBytes(v interface{}) []byte {
+	rv := reflect.ValueOf(v)
+	sz := int(rv.Type().Size())
 	buf := make([]byte, sz)
-	copy(buf, (*((*[1 << 20]byte)(unsafe.Pointer(&v))))[:sz])
+	reflect.NewAt(rv.Type(), unsafe.Pointer(&buf[0])).Elem().Set(rv)
 	return buf
 }
 
