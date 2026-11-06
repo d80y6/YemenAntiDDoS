@@ -49,7 +49,7 @@ func TestDao14jia1_G7b(t *testing.T) {
 		r, sent := dao14Flow(t, ch)
 		var calls atomic.Int32
 		r.SetHeartbeat(func() *pb.StatsReport { calls.Add(1); return &pb.StatsReport{} })
-		ctx, cancel := context.WithTimeout(context.Background(), 2600*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		producer := make(chan struct{})
 		go func() {

@@ -5,7 +5,6 @@ package reporter
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -353,19 +352,40 @@ func (r *Reporter) handshake(ctx context.Context) (*pb.HandshakeResponse, error)
 	return resp, nil
 }
 
-// sendWithTimeout wraps stream.SendMsg with a deadline to prevent blocking forever
-// when the server is experiencing lock contention or network issues.
-func sendWithTimeout(ctx context.Context, stream grpc.ClientStream, msg any) error {
-	done := make(chan error, 1)
-	go func() { done <- stream.SendMsg(msg) }()
-	select {
-	case err := <-done:
+// msgSender is the send face of a gRPC stream: the serializing streamSender in
+// production, or a test double in tests. SendMsg is not safe for concurrent
+// use on one stream, so callers must not race it.
+type msgSender interface {
+	SendMsg(msg any) error
+}
+
+// streamSender serializes SendMsg calls on a single gRPC stream.
+//
+// gRPC permits only one sender at a time per ClientStream. The old
+// sendWithTimeout wrapper ran SendMsg in a goroutine and returned while the
+// send was still in flight, letting a "timed out" send overlap the next one and
+// leaking the goroutine. Send is synchronous here; cancellation is driven by
+// the stream's context, which SendMsg observes.
+type streamSender struct {
+	mu     sync.Mutex
+	stream grpc.ClientStream
+}
+
+func newStreamSender(stream grpc.ClientStream) *streamSender {
+	return &streamSender{stream: stream}
+}
+
+func (s *streamSender) SendMsg(msg any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stream.SendMsg(msg)
+}
+
+func (s *streamSender) Send(ctx context.Context, msg any) error {
+	if err := ctx.Err(); err != nil {
 		return err
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("stream send timeout (5s)")
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+	return s.SendMsg(msg)
 }
 
 func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error {
@@ -373,6 +393,7 @@ func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error 
 	if err != nil {
 		return err
 	}
+	ss := newStreamSender(stream)
 
 	gapSeconds := initialGap
 
@@ -390,12 +411,12 @@ func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error 
 					stream.CloseAndRecv()
 					return nil
 				}
-				if err := sendFlow(ctx, stream, msg, &gapSeconds); err != nil {
+				if err := sendFlow(ctx, ss, msg, &gapSeconds); err != nil {
 					return err
 				}
 				idle.Reset(time.Second)
 			case <-idle.C:
-				closed, err := r.flowIdle(ctx, stream, &gapSeconds)
+				closed, err := r.flowIdle(ctx, ss, &gapSeconds)
 				if err != nil {
 					return err
 				}
@@ -429,7 +450,7 @@ func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error 
 			if r.cfg.PostureFunc != nil {
 				msg.Posture = r.cfg.PostureFunc()
 			}
-			if err := sendWithTimeout(ctx, stream, msg); err != nil {
+			if err := ss.Send(ctx, msg); err != nil {
 				return err
 			}
 			gapSeconds = 0
@@ -437,16 +458,19 @@ func (r *Reporter) runStatsStream(ctx context.Context, initialGap uint32) error 
 	}
 }
 
-func sendFlow(ctx context.Context, stream grpc.ClientStream, msg *pb.StatsReport, gap *uint32) error {
+func sendFlow(ctx context.Context, ss msgSender, msg *pb.StatsReport, gap *uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	msg.GapSeconds = *gap
-	if err := sendWithTimeout(ctx, stream, msg); err != nil {
+	if err := ss.SendMsg(msg); err != nil {
 		return err
 	}
 	*gap = 0
 	return nil
 }
 
-func (r *Reporter) flowIdle(ctx context.Context, stream grpc.ClientStream, gap *uint32) (closed bool, err error) {
+func (r *Reporter) flowIdle(ctx context.Context, ss msgSender, gap *uint32) (closed bool, err error) {
 	if ctx.Err() != nil {
 		return true, nil
 	}
@@ -455,13 +479,13 @@ func (r *Reporter) flowIdle(ctx context.Context, stream grpc.ClientStream, gap *
 		if !ok {
 			return true, nil
 		}
-		return false, sendFlow(ctx, stream, msg, gap)
+		return false, sendFlow(ctx, ss, msg, gap)
 	default:
 	}
 	if r.heartbeat == nil {
 		return false, nil
 	}
-	return false, sendFlow(ctx, stream, r.heartbeat(), gap)
+	return false, sendFlow(ctx, ss, r.heartbeat(), gap)
 }
 
 func (r *Reporter) runSampleStream(ctx context.Context) error {
@@ -469,6 +493,7 @@ func (r *Reporter) runSampleStream(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ss := newStreamSender(stream)
 
 	for {
 		select {
@@ -482,7 +507,7 @@ func (r *Reporter) runSampleStream(ctx context.Context) error {
 			}
 			msg := batchToProto(batch, r.cfg.NodeID, r.cfg.InterfaceName, r.upstreamRate.Load(), r.localRate.Load())
 			t0 := time.Now()
-			if err := sendWithTimeout(ctx, stream, msg); err != nil {
+			if err := ss.Send(ctx, msg); err != nil {
 				return err
 			}
 			r.batchSendLatencyUs.Store(time.Since(t0).Microseconds())
@@ -495,13 +520,14 @@ func (r *Reporter) runCriticalStream(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ss := newStreamSender(stream)
 	for {
 		select {
 		case <-ctx.Done():
 			_, _ = stream.CloseAndRecv()
 			return nil
 		case ev := <-r.critical:
-			if err := sendWithTimeout(ctx, stream, ev); err != nil {
+			if err := ss.Send(ctx, ev); err != nil {
 				return err
 			}
 		}
@@ -513,6 +539,7 @@ func (r *Reporter) runControlStream(ctx context.Context, initial *pb.ConfigAck) 
 	if err != nil {
 		return err
 	}
+	ss := newStreamSender(stream)
 
 	// Report the handshake result before processing subsequent config pushes.
 	if initial != nil {
@@ -521,7 +548,7 @@ func (r *Reporter) runControlStream(ctx context.Context, initial *pb.ConfigAck) 
 				ConfigAck: initial,
 			},
 		}
-		if err := sendWithTimeout(ctx, stream, ack); err != nil {
+		if err := ss.Send(ctx, ack); err != nil {
 			return err
 		}
 		log.Printf("reporter: sent handshake config ACK version=%d success=%t", initial.DeliveryVersionApplied, initial.Success)
@@ -563,7 +590,7 @@ func (r *Reporter) runControlStream(ctx context.Context, initial *pb.ConfigAck) 
 					},
 				},
 			}
-			if err := sendWithTimeout(ctx, stream, ack); err != nil {
+			if err := ss.Send(ctx, ack); err != nil {
 				return err
 			}
 		}
