@@ -625,24 +625,31 @@ type XSKManager struct {
 // StartXSK opens an AF_XDP socket on iface/queue, registers it in the XSKMAP
 // and starts the RX loop feeding `handler`. zeroCopy requests UMEM zero-copy
 // binding.
+//
+// The manager must be installed in the global registry before OpenXSK runs:
+// OpenXSK registers the socket FD into the XSKMAP, and registration resolves the
+// map through globalXSKManager.
 func StartXSK(m *Manager, iface string, queue uint32, frames, frameSize uint32,
 	zeroCopy bool, handler func(XSKFrame)) (*XSKManager, error) {
 	globalXSKMu.Lock()
 	defer globalXSKMu.Unlock()
 
-	s, err := OpenXSK(iface, queue, frames, frameSize, zeroCopy)
-	if err != nil {
-		return nil, err
-	}
-	s.SetHandler(handler)
-
 	mgr := &XSKManager{
 		m:       m,
 		iface:   iface,
-		sockets: map[uint32]*XSK{queue: s},
+		sockets: make(map[uint32]*XSK),
 		stop:    make(chan struct{}),
 	}
+	prev := globalXSKManager
 	globalXSKManager = mgr
+
+	s, err := openXSKFn(iface, queue, frames, frameSize, zeroCopy)
+	if err != nil {
+		globalXSKManager = prev
+		return nil, err
+	}
+	s.SetHandler(handler)
+	mgr.sockets[queue] = s
 
 	mgr.wg.Add(1)
 	go func() {
@@ -654,6 +661,9 @@ func StartXSK(m *Manager, iface string, queue uint32, frames, frameSize uint32,
 	return mgr, nil
 }
 
+// openXSKFn is a test seam for StartXSK's registration-ordering test.
+var openXSKFn = OpenXSK
+
 // Close stops all RX loops and releases sockets.
 func (x *XSKManager) Close() {
 	if x == nil {
@@ -664,6 +674,11 @@ func (x *XSKManager) Close() {
 	for _, s := range x.sockets {
 		s.Close()
 	}
+	globalXSKMu.Lock()
+	if globalXSKManager == x {
+		globalXSKManager = nil
+	}
+	globalXSKMu.Unlock()
 }
 
 // Sockets returns the managed sockets (for posture reporting).
