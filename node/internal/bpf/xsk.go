@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -53,7 +52,43 @@ const (
 	DefaultCompRings  = 2048
 	DefaultHeadroom   = 0
 	xskRingDescSize   = 16 // sizeof(struct xdp_desc)
+	xskUmemDescSize   = 8  // sizeof(__u64) in fill/completion rings
 )
+
+// Ring mmap offsets from if_xdp.h. The kernel does not report these in
+// XDP_MMAP_OFFSETS (only the byte offsets within each ring), so the rings must
+// be mapped at these fixed page-aligned PGOFF magic values.
+const (
+	xdpPgoffRXRing   uint64 = 0
+	xdpPgoffTXRing   uint64 = 0x80000000
+	xdpPgoffFillRing uint64 = 0x100000000
+	xdpPgoffCompRing uint64 = 0x180000000
+)
+
+// ringPlan describes one mmap of an AF_XDP ring.
+type ringPlan struct {
+	name     string
+	pgoff    uint64
+	nmemb    uint32
+	descSize uint32
+}
+
+// ringMapPlans returns the mmap geometry for a UMEM of n frames: rx/tx hold
+// xdp_desc entries, fill/completion hold 8-byte UMEM offsets.
+func ringMapPlans(n uint32) [4]ringPlan {
+	return [4]ringPlan{
+		{"rx", xdpPgoffRXRing, n, xskRingDescSize},
+		{"tx", xdpPgoffTXRing, n, xskRingDescSize},
+		{"fill", xdpPgoffFillRing, DefaultFillRings, xskUmemDescSize},
+		{"comp", xdpPgoffCompRing, DefaultCompRings, xskUmemDescSize},
+	}
+}
+
+// ringMapSize is the byte length to mmap: the descriptor offset reported by the
+// kernel plus nmemb descriptors of the given stride.
+func ringMapSize(ro xdpRingOffset, nmemb, descSize uint32) uintptr {
+	return uintptr(ro.Desc) + uintptr(nmemb)*uintptr(descSize)
+}
 
 // xdpRingOffset mirrors struct xdp_ring_offset.
 type xdpRingOffset struct {
@@ -97,11 +132,13 @@ type xdpDesc struct {
 	Options uint32
 }
 
-// xdpRing is one mapped packet ring (rx/tx/fill/comp).
+// xdpRing is one mapped packet ring (rx/tx/fill/comp). RX/TX rings expose
+// xdp_desc descriptors; fill/completion rings expose 8-byte UMEM offsets.
 type xdpRing struct {
 	producer *uint32
 	consumer *uint32
 	desc     []xdpDesc
+	addrs    []uint64
 	size     uint32
 	mask     uint32 // size-1 (power-of-two rings)
 }
@@ -127,6 +164,8 @@ type XSK struct {
 	headroom uint32
 
 	rx, tx, fill, comp xdpRing
+	rxMap, txMap       []byte
+	fillMap, compMap   []byte
 
 	rxCount  atomic.Uint64
 	rxDrop   atomic.Uint64
@@ -332,36 +371,43 @@ func (s *XSK) mapRings() error {
 	}
 	copy((*(*[1 << 10]byte)(unsafe.Pointer(&off)))[:], offBuf)
 
-	mapRing := func(ro xdpRingOffset, n uint32) (xdpRing, error) {
-		sz := uintptr(ro.Desc) + uintptr(n)*xskRingDescSize
-		b, err := unix.Mmap(s.fd, int64(ro.Desc)*int64(os.Getpagesize()), int(sz),
-			unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_POPULATE)
-		if err != nil {
-			return xdpRing{}, fmt.Errorf("mmap ring: %w", err)
-		}
-		r := xdpRing{
-			producer: (*uint32)(unsafe.Pointer(&b[ro.Producer])),
-			consumer: (*uint32)(unsafe.Pointer(&b[ro.Consumer])),
-			size:     n,
-			mask:     n - 1,
-		}
-		r.desc = unsafe.Slice((*xdpDesc)(unsafe.Pointer(&b[ro.Desc])), n)
-		return r, nil
-	}
-
-	if s.rx, err = mapRing(off.RX, s.numFrms); err != nil {
+	plans := ringMapPlans(s.numFrms)
+	if s.rx, s.rxMap, err = mapRing(s.fd, off.RX, plans[0]); err != nil {
 		return err
 	}
-	if s.tx, err = mapRing(off.TX, s.numFrms); err != nil {
+	if s.tx, s.txMap, err = mapRing(s.fd, off.TX, plans[1]); err != nil {
 		return err
 	}
-	if s.fill, err = mapRing(off.Fill, DefaultFillRings); err != nil {
+	if s.fill, s.fillMap, err = mapRing(s.fd, off.Fill, plans[2]); err != nil {
 		return err
 	}
-	if s.comp, err = mapRing(off.Comp, DefaultCompRings); err != nil {
+	if s.comp, s.compMap, err = mapRing(s.fd, off.Comp, plans[3]); err != nil {
 		return err
 	}
 	return nil
+}
+
+// mapRing maps one ring at its fixed PGOFF magic offset. ro carries the byte
+// offsets of the producer/consumer/descriptor area within that mapping.
+func mapRing(fd int, ro xdpRingOffset, p ringPlan) (xdpRing, []byte, error) {
+	sz := ringMapSize(ro, p.nmemb, p.descSize)
+	b, err := unix.Mmap(fd, int64(p.pgoff), int(sz),
+		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_POPULATE)
+	if err != nil {
+		return xdpRing{}, nil, fmt.Errorf("af_xdp: mmap %s ring: %w", p.name, err)
+	}
+	r := xdpRing{
+		producer: (*uint32)(unsafe.Pointer(&b[ro.Producer])),
+		consumer: (*uint32)(unsafe.Pointer(&b[ro.Consumer])),
+		size:     p.nmemb,
+		mask:     p.nmemb - 1,
+	}
+	if p.descSize == xskRingDescSize {
+		r.desc = unsafe.Slice((*xdpDesc)(unsafe.Pointer(&b[ro.Desc])), p.nmemb)
+	} else {
+		r.addrs = unsafe.Slice((*uint64)(unsafe.Pointer(&b[ro.Desc])), p.nmemb)
+	}
+	return r, b, nil
 }
 
 // refillAll returns every UMEM frame to the fill ring.
@@ -369,9 +415,7 @@ func (s *XSK) refillAll() {
 	nb := s.freeFrames()
 	idx := *s.fill.producer
 	for i := uint32(0); i < nb; i++ {
-		d := &s.fill.desc[(idx+i)&s.fill.mask]
-		d.Addr = uint64(i) * uint64(s.frameSz)
-		d.Len = 0
+		s.fill.addrs[(idx+i)&s.fill.mask] = uint64(i) * uint64(s.frameSz)
 	}
 	*s.fill.producer = idx + nb
 }
@@ -446,9 +490,7 @@ func (s *XSK) returnFrame(addr uint64) {
 		return
 	}
 	idx := *s.fill.producer
-	d := &s.fill.desc[idx&s.fill.mask]
-	d.Addr = addr
-	d.Len = 0
+	s.fill.addrs[idx&s.fill.mask] = addr
 	*s.fill.producer = idx + 1
 }
 
