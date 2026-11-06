@@ -305,6 +305,129 @@ func TestInlineProgram_RateLimitClamp(t *testing.T) {
 	}
 }
 
+func TestInlineProgram_HostPrefixPerPortRules(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	// The controller emits /32 host-prefix rules per port for one target. The
+	// LPM tries are keyed on address+prefix only, so writing these there makes
+	// the second rule overwrite the first. Host prefixes must land in the
+	// exact hash table instead.
+	if err := m.ApplyInlineRules([]InlineRuleSpec{
+		{ID: 1, DstIP: "192.0.2.1", DstPrefixLen: 32, Protocol: 6, DstPort: 80, Action: "drop", Priority: 10},
+		{ID: 2, DstIP: "192.0.2.1", DstPrefixLen: 32, Protocol: 6, DstPort: 53, Action: "drop", Priority: 10},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, port := range []uint16{80, 53} {
+		frame := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, port, 0x02)
+		if got := inlineRun(t, m, frame); got != xdpDrop {
+			t.Fatalf("dst port %d: xdp_inline = %d, want XDP_DROP (%d)", port, got, xdpDrop)
+		}
+	}
+
+	other := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 443, 0x02)
+	if got := inlineRun(t, m, other); got != xdpPass {
+		t.Fatalf("unmatched port: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+}
+
+func TestInlineProgram_ExactAnySport(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	// dst+src+proto+dport with sport wildcard must be looked up in the hash
+	// (the "any-sport" permutation).
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 30, DstIP: "192.0.2.1", SrcIP: "198.51.100.254",
+		Protocol: 6, DstPort: 80, Action: "drop",
+	})
+
+	match := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 40000, 80, 0x02)
+	if got := inlineRun(t, m, match); got != xdpDrop {
+		t.Fatalf("any-sport match: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+
+	otherSrc := inlineTCPFrame(t, "203.0.113.9", "192.0.2.1", 40000, 80, 0x02)
+	if got := inlineRun(t, m, otherSrc); got != xdpPass {
+		t.Fatalf("different src: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+}
+
+func TestInlineProgram_DstSubnetProtoPortScope(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyInlineRules([]InlineRuleSpec{{
+		ID: 40, DstIP: "192.0.2.0", DstPrefixLen: 24,
+		Protocol: 6, DstPort: 8080, Action: "drop", Priority: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	match := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 8080, 0x02)
+	if got := inlineRun(t, m, match); got != xdpDrop {
+		t.Fatalf("matching subnet/port: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+
+	wrongPort := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02)
+	if got := inlineRun(t, m, wrongPort); got != xdpPass {
+		t.Fatalf("subnet, other port: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+
+	outside := inlineTCPFrame(t, "198.51.100.254", "203.0.113.9", 12345, 8080, 0x02)
+	if got := inlineRun(t, m, outside); got != xdpPass {
+		t.Fatalf("outside subnet: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+}
+
+func TestInlineProgram_PriorityTieBreak(t *testing.T) {
+	cases := []struct {
+		name     string
+		global   InlineRuleSpec
+		specific InlineRuleSpec
+		want     uint32
+	}{
+		{
+			name:   "specific-pass-beats-global-drop",
+			global: InlineRuleSpec{ID: 51, Action: "drop", Priority: 100},
+			specific: InlineRuleSpec{
+				ID: 52, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80,
+				Action: "pass", Priority: 10,
+			},
+			want: xdpPass,
+		},
+		{
+			name:   "specific-drop-beats-global-pass",
+			global: InlineRuleSpec{ID: 53, Action: "pass", Priority: 100},
+			specific: InlineRuleSpec{
+				ID: 54, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80,
+				Action: "drop", Priority: 10,
+			},
+			want: xdpDrop,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := inlineProgramLoad(t)
+			if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+				t.Fatal(err)
+			}
+			inlineInstallExact(t, m, tc.global)
+			inlineInstallExact(t, m, tc.specific)
+
+			frame := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02)
+			if got := inlineRun(t, m, frame); got != tc.want {
+				t.Fatalf("xdp_inline = %d, want %d (lower priority number wins)", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInlineProgram_PassBaselines(t *testing.T) {
 	m := inlineProgramLoad(t)
 	for _, tt := range []struct {

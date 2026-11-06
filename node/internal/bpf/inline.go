@@ -166,15 +166,33 @@ const (
 	InlineRuleTargetSubnetSrc
 )
 
+// inlineHostPrefix reports whether prefixLen addresses a single host for the
+// given IP literal: /32 for IPv4 and /128 for IPv6. Prefix lengths are matched
+// to the parsed address family rather than assuming IPv4.
+func inlineHostPrefix(ipStr string, prefixLen int) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	if ip.To4() != nil {
+		return prefixLen == 32
+	}
+	return prefixLen == 128
+}
+
 // ClassifyInlineRule routes a rule to the exact hash table or one of the two
-// subnet tries. Any prefix length (>0) makes the rule LPM-scoped; a source
-// prefix wins over the destination so a mixed exact-dst + src-prefix rule is
-// written to the source trie (destination-only prefixes use the dst trie).
+// subnet tries. A host destination prefix (/32 IPv4, /128 IPv6) with no source
+// prefix is an exact-match rule: the LPM tries key on address+prefix only, so
+// per-port rules for the same host would otherwise overwrite one another.
+// A source prefix wins over the destination, so a mixed host-dst + source-prefix
+// rule is written to the source trie. NOTE: for that mixed case the destination
+// constraint is not representable in the address-keyed tries and is therefore
+// not enforced in the kernel table.
 func ClassifyInlineRule(spec InlineRuleSpec) InlineRuleTarget {
 	if spec.SrcPrefixLen > 0 {
 		return InlineRuleTargetSubnetSrc
 	}
-	if spec.DstPrefixLen > 0 {
+	if spec.DstPrefixLen > 0 && !inlineHostPrefix(spec.DstIP, spec.DstPrefixLen) {
 		return InlineRuleTargetSubnetDst
 	}
 	return InlineRuleTargetExact

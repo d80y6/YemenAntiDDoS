@@ -867,39 +867,42 @@ __noinline int filter_exact_lookup(struct filter_hit *out,
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 3) any source + destination port
+    // 3) any source port (dport retained). Without this permutation a rule
+    //    that pins dst_port but wildcards src_port never matches.
+    k.dst_port = dport;
     k.src_port = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 4) dst + proto + dport, any source + sport
+    // 4) any source + destination port
+    k.dst_port = 0;
+    r = bpf_map_lookup_elem(&active_filter_rules, &k);
+    if (r)
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+
+    // 5) dst + proto + dport, any source + sport
     __builtin_memset(k.src_addr, 0, 16);
     k.dst_port = dport;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 5) dst + proto, any source + ports
+    // 6) dst + proto, any source + ports
     k.dst_port = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 6) dst only, any proto/source/ports
+    // 7) dst only, any proto/source/ports
     k.proto = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 7) dst + src + proto, any ports
+    // 8) src + proto + dport, any destination + sport (egress ACL)
     __builtin_memcpy(k.src_addr, src16, 16);
     k.proto = proto;
-    r = bpf_map_lookup_elem(&active_filter_rules, &k);
-    if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
-
-    // 8) src + proto + dport, any destination + sport (egress ACL)
     __builtin_memset(k.dst_addr, 0, 16);
     k.dst_port = dport;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);

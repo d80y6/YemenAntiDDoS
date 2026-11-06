@@ -253,6 +253,37 @@ func TestClassifyInlineRuleRoutesMixedPrefixes(t *testing.T) {
 			want: bpf.InlineRuleTargetSubnetDst,
 		},
 		{
+			// A /32 host prefix is not a subnet: it must use the exact hash
+			// table so per-port rules for the same host do not overwrite each
+			// other in the address-keyed LPM trie.
+			name: "dst-host-v4",
+			spec: bpf.InlineRuleSpec{DstIP: "198.51.100.7", DstPrefixLen: 32},
+			want: bpf.InlineRuleTargetExact,
+		},
+		{
+			name: "dst-host-v6",
+			spec: bpf.InlineRuleSpec{DstIP: "2001:db8::7", DstPrefixLen: 128},
+			want: bpf.InlineRuleTargetExact,
+		},
+		{
+			name: "dst-host-v4-src-exact",
+			spec: bpf.InlineRuleSpec{
+				DstIP: "198.51.100.7", DstPrefixLen: 32, SrcIP: "203.0.113.9",
+			},
+			want: bpf.InlineRuleTargetExact,
+		},
+		{
+			// Mixed host-dst + source prefix: the source prefix still wins
+			// (source LPM); the destination host constraint is not representable
+			// in the address-keyed tries.
+			name: "mixed-host-dst-src-prefix",
+			spec: bpf.InlineRuleSpec{
+				DstIP: "203.0.113.7", DstPrefixLen: 32,
+				SrcIP: "198.51.100.0", SrcPrefixLen: 24,
+			},
+			want: bpf.InlineRuleTargetSubnetSrc,
+		},
+		{
 			name: "src-subnet",
 			spec: bpf.InlineRuleSpec{SrcIP: "198.51.100.0", SrcPrefixLen: 24},
 			want: bpf.InlineRuleTargetSubnetSrc,
