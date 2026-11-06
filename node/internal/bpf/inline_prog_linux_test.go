@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
 
@@ -407,6 +408,65 @@ func TestInlineProgram_SynAckVLAN(t *testing.T) {
 	if string(out[0:6]) != string([]byte{2, 0, 0, 0, 0, 2}) ||
 		string(out[6:12]) != string([]byte{2, 0, 0, 0, 0, 1}) {
 		t.Fatalf("SYN-ACK MACs not swapped: dst=%x src=%x", out[0:6], out[6:12])
+	}
+}
+
+func TestInlineProgram_BurstAlert(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetConfig(CfgAlertsEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetBurstThreshold(1); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PopulateTrie([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+
+	frame := dao8Frame(t, "192.0.2.1", false, false)
+	// Two consecutive breached 100ms windows trigger the emergency alert on
+	// the third packet (window counters are evaluated on window rollover).
+	if got := inlineRun(t, m, frame); got != xdpPass {
+		t.Fatalf("warmup packet: xdp_inline = %d, want XDP_PASS", got)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if got := inlineRun(t, m, frame); got != xdpPass {
+		t.Fatalf("first breached window: xdp_inline = %d, want XDP_PASS", got)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if got := inlineRun(t, m, frame); got != xdpPass {
+		t.Fatalf("second breached window: xdp_inline = %d, want XDP_PASS", got)
+	}
+
+	rd, err := ringbuf.NewReader(m.Objs.Alerts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	rd.SetDeadline(time.Now().Add(2 * time.Second))
+	rec, err := rd.Read()
+	if err != nil {
+		t.Fatalf("no burst alert emitted: %v", err)
+	}
+	a, err := readBurstAlert(rec.RawSample)
+	if err != nil {
+		t.Fatalf("decode burst alert: %v", err)
+	}
+	if got := a.DstIP().String(); got != "192.0.2.1" {
+		t.Fatalf("alert dst = %s, want 192.0.2.1", got)
+	}
+	if a.IsV4 != 1 || a.Proto != 17 {
+		t.Fatalf("alert = %+v, want IPv4/UDP", a)
+	}
+	if a.WindowPPS == 0 {
+		t.Fatal("alert window_pps is zero")
 	}
 }
 

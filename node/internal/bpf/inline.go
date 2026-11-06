@@ -589,6 +589,26 @@ func (m *Manager) SetDNSProtect(on bool) error {
 	return m.SetConfig(CfgDNSProtect, v)
 }
 
+// SetAlertsEnabled controls burst-alert ringbuf emission. Array-map slots
+// default to zero (the cfg_read default is never used), so userspace must
+// write an explicit 1 when the ringbuf path is available.
+func (m *Manager) SetAlertsEnabled(on bool) error {
+	var v uint64
+	if on {
+		v = 1
+	}
+	return m.SetConfig(CfgAlertsEnable, v)
+}
+
+// ConfigValue reads one xsight_config slot (used by startup/posture tests).
+func (m *Manager) ConfigValue(index uint32) (uint64, error) {
+	var v uint64
+	if err := m.Objs.XsightConfig.Lookup(&index, &v); err != nil {
+		return 0, fmt.Errorf("read config[%d]: %w", index, err)
+	}
+	return v, nil
+}
+
 // SetInlineSampleRate sets the 1-in-N L7 sampling rate for inline mode.
 func (m *Manager) SetInlineSampleRate(rate uint32) error {
 	return m.SetConfig(CfgInlineSample, uint64(rate))

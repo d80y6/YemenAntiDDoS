@@ -112,6 +112,11 @@ func setupInlineEngine(cfg *config.Config, mgr *bpf.Manager, ifaceName string) (
 	if err := mgr.SetDNSProtect(cfg.Inline.DNSProtect); err != nil {
 		return "", fmt.Errorf("dns protect enable: %w", err)
 	}
+	// Burst alerts are a runtime ringbuf gate: array-map slots default to 0, so
+	// the data plane stays silent unless userspace writes an explicit 1.
+	if err := mgr.SetAlertsEnabled(true); err != nil {
+		return "", fmt.Errorf("enable burst alerts: %w", err)
+	}
 	if cfg.Inline.BurstPPS > 0 {
 		if err := mgr.SetBurstThreshold(cfg.Inline.BurstPPS); err != nil {
 			return "", fmt.Errorf("burst threshold: %w", err)

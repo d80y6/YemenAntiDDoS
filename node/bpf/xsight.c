@@ -1220,8 +1220,8 @@ __noinline int emit_burst_alert(const struct addr16 *dst16, bool is_v4,
 {
     if (!dst16)
         return 0;
-    if (!cfg_read(CFG_ALERTS_ENABLE, 1))
-        return 0;
+    if (!cfg_read(CFG_ALERTS_ENABLE, 0))
+        return 0; // zero slot = explicitly disabled (array maps default to 0)
     struct burst_alert *a = bpf_ringbuf_reserve(&alerts, sizeof(*a), 0);
     if (!a)
         return 0;
