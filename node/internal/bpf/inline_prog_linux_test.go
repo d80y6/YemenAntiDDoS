@@ -159,6 +159,38 @@ func TestInlineProgram_FilterConsiderBestMatch(t *testing.T) {
 	}
 }
 
+func TestInlineProgram_ActiveSlotOne(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetConfig(CfgSynCookieEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Starting from slot A, HotSwap populates B and activates it, then clears A.
+	if err := m.HotSwap([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+	slot, err := m.ReadActiveSlot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot != 1 {
+		t.Fatalf("active_slot = %d, want 1 after HotSwap", slot)
+	}
+
+	// A SYN to the watched destination must enter the SYN-cookie path
+	// (XDP_TX). Hardcoding slot A makes dst_watched false and yields PASS.
+	frame := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02)
+	if got := inlineRun(t, m, frame); got != xdpTx {
+		t.Fatalf("watched dst in slot B: xdp_inline = %d, want XDP_TX (%d)", got, xdpTx)
+	}
+}
+
 func TestInlineProgram_PassBaselines(t *testing.T) {
 	m := inlineProgramLoad(t)
 	for _, tt := range []struct {

@@ -1431,8 +1431,11 @@ int xdp_inline(struct xdp_md *ctx)
     // Watch-trie membership determines "protected destination" semantics.
     struct lpm_key dst_trie_key = {};
     struct lpm_key src_trie_key = {};
-    __s64 dst_prefixlen = lookup_prefix(&dst_key, &dst_trie_key, 0);
-    __s64 src_prefixlen = lookup_prefix(&src_key, &src_trie_key, 0);
+    __u32 slot_key = 0;
+    __u32 *slot = bpf_map_lookup_elem(&active_slot, &slot_key);
+    __u32 active = slot ? *slot : 0;
+    __s64 dst_prefixlen = lookup_prefix(&dst_key, &dst_trie_key, active);
+    __s64 src_prefixlen = lookup_prefix(&src_key, &src_trie_key, active);
     asm volatile("" : "+r"(dst_prefixlen), "+r"(src_prefixlen));
     bool dst_watched = (__u64)dst_prefixlen <= 128;
     bool src_watched = (__u64)src_prefixlen <= 128;
@@ -1461,7 +1464,7 @@ int xdp_inline(struct xdp_md *ctx)
         if (client_validated(src16)) {
             if (dst_watched) {
                 PROCESS_DIRECTION(prefix_stats_map, ip_stats_a, ip_stats_b,
-                                  0, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
+                                  active, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
                                   pkt_len, l4_proto, tcp_flags, is_frag,
                                   is_bad_fragment, is_invalid);
             }
@@ -1499,7 +1502,7 @@ int xdp_inline(struct xdp_md *ctx)
                     }
                     if (verdict == XDP_PASS && dst_watched) {
                         PROCESS_DIRECTION(prefix_stats_map, ip_stats_a, ip_stats_b,
-                                          0, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
+                                          active, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
                                           pkt_len, l4_proto, tcp_flags, is_frag,
                                           is_bad_fragment, is_invalid);
                     }
@@ -1590,7 +1593,7 @@ int xdp_inline(struct xdp_md *ctx)
                                    is_bad_fragment, is_invalid);
         }
         PROCESS_DIRECTION(prefix_stats_map, ip_stats_a, ip_stats_b,
-                          0, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
+                          active, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
                           pkt_len, l4_proto, tcp_flags, is_frag,
                           is_bad_fragment, is_invalid);
 
@@ -1603,7 +1606,7 @@ int xdp_inline(struct xdp_md *ctx)
             __sync_fetch_and_add(&gs->src_matched_bytes, pkt_len);
         }
         PROCESS_DIRECTION(src_prefix_stats_map, src_stats_a, src_stats_b,
-                          0, &src_key, &src_trie_key, (__u32)src_prefixlen,
+                          active, &src_key, &src_trie_key, (__u32)src_prefixlen,
                           pkt_len, l4_proto, tcp_flags, is_frag,
                           is_bad_fragment, is_invalid);
     }
