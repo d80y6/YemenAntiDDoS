@@ -354,8 +354,9 @@ func main() {
 	}
 	rpt.SetPostureFunc(posture.snapshot)
 
-	// Rotate the SYN-cookie secret hourly when the engine is active.
-	if inlineActive && cfg.Inline.SynCookie {
+	// Rotate the SYN-cookie secret hourly whenever inline is active: a later
+// controller push may enable cookies even if startup config had them off.
+	if inlineActive {
 		var cs cookieSecret
 		go rotateCookieSecret(collectorCtx, mgr, &cs)
 	}

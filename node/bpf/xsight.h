@@ -20,8 +20,7 @@
 // v4.0 inline scrubbing config (xsight_config grows 8 → 16 entries)
 #define CFG_INLINE_ENABLE    4  // inline filter engine master switch (xdp_inline program)
 #define CFG_SYN_COOKIE_ENABLE 5 // kernel SYN-cookie engine master switch
-#define CFG_COOKIE_SECRET_LO 6  // siphash secret, low 64 bits (rotated by Agent)
-#define CFG_COOKIE_SECRET_HI 7  // siphash secret, high 64 bits
+// 6-7 reserved: the SYN-cookie secret moved to the atomic cookie_secret map.
 #define CFG_EGRESS_IFINDEX   8  // clean-pipe egress interface for XDP_REDIRECT
 #define CFG_BURST_PPS        9  // per-dst burst threshold (PPS) → 2s emergency drop
 #define CFG_ALERTS_ENABLE    10 // burst alert ringbuf emissions (0 = offload-safe builds)
@@ -290,6 +289,13 @@ struct cookie_input {
     __u64 secret_hi;
 };
 
+// Atomic siphash key for SYN cookies. Rotation writes both halves in one
+// array-map update so the data plane can never observe a mixed key.
+struct cookie_secret {
+    __u64 lo;
+    __u64 hi;
+};
+
 // ---------------------------------------------------------------------------
 // BPF Maps — SEC(".maps") style for bpf2go compatibility
 // Reference: brainstorm-node.md "BPF Maps inventory"
@@ -395,6 +401,14 @@ struct {
     __type(key, __u32);
     __type(value, __u64);
 } xsight_config SEC(".maps");
+
+// Atomic SYN-cookie siphash key (single array entry; lo+hi updated together).
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct cookie_secret);
+} cookie_secret SEC(".maps");
 
 // ---------------------------------------------------------------------------
 // v4.0 Inline scrubbing maps

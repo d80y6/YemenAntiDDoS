@@ -773,6 +773,37 @@ func TestInlineProgram_DNSVolumeDropsAmplification(t *testing.T) {
 	}
 }
 
+func TestCookieSecretAtomicUpdate(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetCookieSecret(0x0123456789abcdef, 0xfedcba9876543210); err != nil {
+		t.Fatal(err)
+	}
+	lo, hi, err := m.CookieSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lo != 0x0123456789abcdef || hi != 0xfedcba9876543210 {
+		t.Fatalf("cookie secret = %#x/%#x, want both halves from one update", lo, hi)
+	}
+	info, err := m.Objs.CookieSecret.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Type != ebpf.Array || info.MaxEntries != 1 || info.ValueSize != 16 {
+		t.Fatalf("cookie_secret map = %+v, want 1-entry array with 16-byte value", info)
+	}
+	if err := m.SetSynCookieEnabled(true); err != nil {
+		t.Fatalf("enable cookies after installing secret: %v", err)
+	}
+}
+
+func TestSynCookieRefusesUnsetSecret(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetSynCookieEnabled(true); err == nil {
+		t.Fatal("enabled SYN cookies with an all-zero secret")
+	}
+}
+
 func TestInlineProgram_FilterConsiderBestMatch(t *testing.T) {
 	m := inlineProgramLoad(t)
 	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {

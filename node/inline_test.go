@@ -43,3 +43,27 @@ func TestSetupInlineEngineEnablesAlerts(t *testing.T) {
 		t.Fatalf("CFG_ALERTS_ENABLE = %d, want 1 after inline setup", v)
 	}
 }
+
+func TestSetupInlineEngineInstallsCookieSecret(t *testing.T) {
+	mgr := testInlineManager(t)
+	cfg := &config.Config{}
+	cfg.Inline.Enabled = true
+	cfg.Inline.SynCookie = true
+	if _, err := setupInlineEngine(cfg, mgr, "lo"); err != nil {
+		t.Fatalf("setupInlineEngine: %v", err)
+	}
+	lo, hi, err := mgr.CookieSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lo == 0 && hi == 0 {
+		t.Fatal("inline setup enabled cookies with an unset secret")
+	}
+	v, err := mgr.ConfigValue(bpf.CfgSynCookieEnable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != 1 {
+		t.Fatalf("CFG_SYN_COOKIE_ENABLE = %d, want 1", v)
+	}
+}

@@ -37,17 +37,24 @@ func (c *cookieSecret) set(lo, hi uint64) {
 
 func (c *cookieSecret) get() (uint64, uint64) { return c.lo.Load(), c.hi.Load() }
 
+// randomCookieSecret returns a fresh 128-bit siphash key.
+func randomCookieSecret() (uint64, uint64, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, 0, err
+	}
+	return binary.LittleEndian.Uint64(b[0:8]), binary.LittleEndian.Uint64(b[8:16]), nil
+}
+
 // rotateCookieSecret installs a fresh random secret every hour so a leaked
 // seed cannot be replayed indefinitely.
 func rotateCookieSecret(ctx context.Context, mgr *bpf.Manager, cs *cookieSecret) {
 	gen := func() {
-		var b [16]byte
-		if _, err := rand.Read(b[:]); err != nil {
+		lo, hi, err := randomCookieSecret()
+		if err != nil {
 			log.Printf("inline: cookie secret rand: %v", err)
 			return
 		}
-		lo := binary.LittleEndian.Uint64(b[0:8])
-		hi := binary.LittleEndian.Uint64(b[8:16])
 		cs.set(lo, hi)
 		if err := mgr.SetCookieSecret(lo, hi); err != nil {
 			log.Printf("inline: push cookie secret: %v", err)
@@ -105,6 +112,15 @@ func setupInlineEngine(cfg *config.Config, mgr *bpf.Manager, ifaceName string) (
 
 	if err := mgr.SetInlineEnabled(true); err != nil {
 		return "", fmt.Errorf("enable inline engine: %w", err)
+	}
+	// Inline mode can receive a later controller push that enables cookies, so
+	// install a secret unconditionally before that switch can be turned on.
+	lo, hi, err := randomCookieSecret()
+	if err != nil {
+		return "", fmt.Errorf("generate cookie secret: %w", err)
+	}
+	if err := mgr.SetCookieSecret(lo, hi); err != nil {
+		return "", fmt.Errorf("install cookie secret: %w", err)
 	}
 	if err := mgr.SetSynCookieEnabled(cfg.Inline.SynCookie); err != nil {
 		return "", fmt.Errorf("syn cookie enable: %w", err)

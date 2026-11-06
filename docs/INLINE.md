@@ -161,10 +161,14 @@ valid  = client_ack == cookie+1
 
 The BPF program rewrites the SYN into a SYN-ACK and returns it with `XDP_TX`;
 the final ACK validates the cookie and records the client in
-`validated_clients`. `shared/cookie` implements the same formula in Go
-(including the 40-byte SipHash length block); the test suite pins both a known
-answer and the standard SipHash-2-4 vectors, so any drift between the C and Go
-sides fails CI.
+`validated_clients`. Cookies are emitted only for destinations covered by a
+rule whose action is `syn_cookie`. The siphash key lives in the single-entry
+`cookie_secret` array value (`lo`+`hi` written in one update), so hourly
+rotation is atomic; rotation runs whenever inline mode is active, and enabling
+cookies while the key is still all-zero is refused. `shared/cookie` implements
+the same formula in Go (including the 40-byte SipHash length block); the test
+suite pins both a known answer and the standard SipHash-2-4 vectors, so any
+drift between the C and Go sides fails CI.
 
 ---
 

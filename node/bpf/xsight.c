@@ -1028,8 +1028,12 @@ __noinline __u64 syn_cookie_compute(const struct addr16 *sip16,
     // Global fn: pointer args are mem_or_null on entry — guard before deref.
     if (!sip16 || !dip16)
         return 0;
-    __u64 secret_lo = cfg_read(CFG_COOKIE_SECRET_LO, 0);
-    __u64 secret_hi = cfg_read(CFG_COOKIE_SECRET_HI, 0);
+    __u32 secret_key = 0;
+    struct cookie_secret *secret = bpf_map_lookup_elem(&cookie_secret, &secret_key);
+    if (!secret)
+        return 0;
+    __u64 secret_lo = secret->lo;
+    __u64 secret_hi = secret->hi;
 
     __u8 msg[40];
     // sip16/dip16 are struct addr16*, so byte offsets come from ->b: plain

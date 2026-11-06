@@ -29,8 +29,6 @@ import (
 const (
 	CfgInlineEnable    uint32 = 4
 	CfgSynCookieEnable uint32 = 5
-	CfgCookieSecretLo  uint32 = 6
-	CfgCookieSecretHi  uint32 = 7
 	CfgEgressIfindex   uint32 = 8
 	CfgBurstPPS        uint32 = 9
 	CfgAlertsEnable    uint32 = 10
@@ -547,8 +545,26 @@ func (m *Manager) SetInlineEnabled(on bool) error {
 	return m.SetConfig(CfgInlineEnable, v)
 }
 
-// SetSynCookieEnabled toggles the SYN-cookie engine.
+// CookieSecretValue mirrors struct cookie_secret (xsight.h): both siphash key
+// halves stored in one array-map value so rotation is a single atomic update.
+type CookieSecretValue struct {
+	Lo uint64
+	Hi uint64
+}
+
+// SetSynCookieEnabled toggles the SYN-cookie engine. Enabling is refused while
+// the secret map still holds the all-zero key, which would make every cookie
+// predictable.
 func (m *Manager) SetSynCookieEnabled(on bool) error {
+	if on {
+		lo, hi, err := m.CookieSecret()
+		if err != nil {
+			return err
+		}
+		if lo == 0 && hi == 0 {
+			return errors.New("refusing to enable SYN cookies with unset cookie secret")
+		}
+	}
 	var v uint64
 	if on {
 		v = 1
@@ -556,12 +572,25 @@ func (m *Manager) SetSynCookieEnabled(on bool) error {
 	return m.SetConfig(CfgSynCookieEnable, v)
 }
 
-// SetCookieSecret installs the siphash secret (rotated hourly by the agent).
+// SetCookieSecret installs the siphash secret. Both halves are written in one
+// map update so the data plane never sees a mixed lo/hi pair during rotation.
 func (m *Manager) SetCookieSecret(lo, hi uint64) error {
-	if err := m.SetConfig(CfgCookieSecretLo, lo); err != nil {
-		return err
+	key := uint32(0)
+	val := CookieSecretValue{Lo: lo, Hi: hi}
+	if err := m.Objs.CookieSecret.Update(&key, &val, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("set cookie secret: %w", err)
 	}
-	return m.SetConfig(CfgCookieSecretHi, hi)
+	return nil
+}
+
+// CookieSecret reads the currently installed siphash key.
+func (m *Manager) CookieSecret() (uint64, uint64, error) {
+	key := uint32(0)
+	var val CookieSecretValue
+	if err := m.Objs.CookieSecret.Lookup(&key, &val); err != nil {
+		return 0, 0, fmt.Errorf("read cookie secret: %w", err)
+	}
+	return val.Lo, val.Hi, nil
 }
 
 // SetBurstThreshold configures the per-destination burst PPS trigger.
