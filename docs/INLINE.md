@@ -43,7 +43,7 @@ inline:
   dns_protect: true              # UDP/DNS reflection defense
   sample_rate: 0                 # 1-in-N L7 sampling of protected traffic (0 = off)
   cleanpipe_egress: ""           # egress ifname for clean-pipe redirect ("" = XDP_TX on the ingress iface)
-  cleanpipe_encap: ""            # "" | "gre" | "geneve"
+  cleanpipe_encap: ""            # "" | "gre" (GENEVE is rejected at install)
 
 perf:
   cpu_pins: [2, 3]               # pin XDP/AF_XDP hot goroutines
@@ -142,7 +142,9 @@ Key BPF maps (`node/bpf/xsight.h`):
 
 Actions map to `XDP_PASS`, `XDP_DROP`, `XDP_TX` (SYN-ACK / clean-pipe on the
 same interface) and `XDP_REDIRECT` (clean-pipe egress). Rules carry an expiry
-(`ExpiresUnix`) so a lost Controller connection does not leave permanent drops.
+(the controller's `expires_unix` is converted to a monotonic kernel deadline,
+`expires_ns`, at install) so a lost Controller connection does not leave
+permanent drops.
 
 ### SYN cookies
 
@@ -230,8 +232,9 @@ tests fail closed rather than skipping).
 
 - Offload mode cannot raise sub-second burst alerts (ringbuf/prandom helpers are
   not offloadable); use `driver` mode for the full feature set.
-- Clean-pipe GRE/Geneve requires the remote end to decapsulate; the Node only
-  encapsulates and redirects.
+- Clean-pipe GRE requires the remote end to decapsulate; the Node only
+  encapsulates and redirects. GENEVE is not implemented and is rejected at
+  install time (`use gre`).
 - A Node that restarts loses its BPF map contents; it recovers state when the
   ControlStream reconnects and the Controller reconciles.
 - Inline mode is not meaningful on a mirror port — traffic there is a copy, so

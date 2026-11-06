@@ -60,6 +60,18 @@ func inlineRun(t *testing.T, m *Manager, frame []byte) uint32 {
 	return ret
 }
 
+// inlineRunOut also returns the post-run frame (including bpf_xdp_adjust_head
+// rewrites) for header-construction assertions.
+func inlineRunOut(t *testing.T, m *Manager, frame []byte) (uint32, []byte) {
+	t.Helper()
+	out := make([]byte, len(frame)+64)
+	ret, err := m.Objs.XdpInline.Run(&ebpf.RunOptions{Data: frame, DataOut: out, Repeat: 1})
+	if err != nil {
+		t.Fatalf("BPF_PROG_RUN xdp_inline: %v", err)
+	}
+	return ret, out
+}
+
 // inlineARPFrame builds a minimal broadcast ARP request (14 + 28 bytes).
 func inlineARPFrame() []byte {
 	frame := make([]byte, 14+28)
@@ -427,6 +439,68 @@ func TestInlineProgram_PriorityTieBreak(t *testing.T) {
 				t.Fatalf("xdp_inline = %d, want %d (lower priority number wins)", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestInlineProgram_GREEncapHeader(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rule egress is 0, so the data plane must fall back to CFG_EGRESS_IFINDEX.
+	if err := m.SetConfig(CfgEgressIfindex, uint64(lo.Index)); err != nil {
+		t.Fatal(err)
+	}
+	saddr := binary.NativeEndian.Uint32(net.IP{192, 0, 2, 10}.To4())
+	if err := m.SetConfig(CfgEgressSaddr, uint64(saddr)); err != nil {
+		t.Fatal(err)
+	}
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 80, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80,
+		Action: "redirect", Encap: "gre", EncapDaddr: "203.0.113.9",
+	})
+
+	frame := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02)
+	ret, out := inlineRunOut(t, m, frame)
+	// BPF_PROG_RUN may not complete the actual redirect, but the header rewrite
+	// happens first regardless of whether bpf_redirect() succeeds.
+	if ret != xdpRedirect && ret != xdpDrop {
+		t.Fatalf("redirect rule verdict = %d, want XDP_REDIRECT or XDP_DROP", ret)
+	}
+
+	// The kernel may return XDP_REDIRECT or XDP_DROP depending on whether the
+	// test-run path can resolve the target; either way the header rewrite must
+	// have happened before bpf_redirect().
+	off := -1
+	for i := 0; i+38 <= len(out); i++ {
+		if out[i+12] == 0x08 && out[i+13] == 0x00 &&
+			out[i+14] == 0x45 && out[i+23] == 47 {
+			off = i
+			break
+		}
+	}
+	if off < 0 {
+		t.Fatalf("no outer IPv4/GRE header found in post-run frame: % x", out[:96])
+	}
+	iph := out[off+14:]
+	// Reading the header bytes big-endian yields the wire-format addresses.
+	if got := binary.BigEndian.Uint32(iph[12:16]); got != 0xc000020a {
+		t.Errorf("outer saddr = %#x, want 0xc000020a (192.0.2.10)", got)
+	}
+	if got := binary.BigEndian.Uint32(iph[16:20]); got != 0xcb007109 {
+		t.Errorf("outer daddr = %#x, want 0xcb007109 (203.0.113.9)", got)
+	}
+	gre := iph[20:]
+	if got := binary.BigEndian.Uint16(gre[2:4]); got != 0x6558 {
+		t.Errorf("GRE payload protocol = %#x, want 0x6558 (TEB)", got)
+	}
+	// The encapsulated frame still starts with its Ethernet header.
+	if out[off+38+12] != 0x08 || out[off+38+13] != 0x00 {
+		t.Errorf("inner Ethernet type = %02x%02x, want 0800", out[off+38+12], out[off+38+13])
 	}
 }
 

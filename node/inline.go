@@ -72,6 +72,32 @@ func rotateCookieSecret(ctx context.Context, mgr *bpf.Manager, cs *cookieSecret)
 	}
 }
 
+// inlineDefaultEncap is the configured clean-pipe encapsulation used for
+// redirect rules that do not specify their own. It is set once at startup,
+// before any ControlStream config push is applied.
+var inlineDefaultEncap string
+
+// firstIPv4 returns the interface's first IPv4 address, if any.
+func firstIPv4(ifi *net.Interface) net.IP {
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return nil
+	}
+	for _, a := range addrs {
+		switch v := a.(type) {
+		case *net.IPNet:
+			if ip4 := v.IP.To4(); ip4 != nil {
+				return ip4
+			}
+		case *net.IPAddr:
+			if ip4 := v.IP.To4(); ip4 != nil {
+				return ip4
+			}
+		}
+	}
+	return nil
+}
+
 // setupInlineEngine configures the kernel data plane and attaches the inline
 // program. Returns the resolved egress interface name for posture reporting.
 func setupInlineEngine(cfg *config.Config, mgr *bpf.Manager, ifaceName string) (string, error) {
@@ -107,8 +133,26 @@ func setupInlineEngine(cfg *config.Config, mgr *bpf.Manager, ifaceName string) (
 				return "", fmt.Errorf("egress ifindex: %w", err)
 			}
 			egress = cfg.Inline.CleanPipe
+
+			// GRE outer source address. Without a usable IPv4 address the
+			// data plane falls back to 0 (invalid for routing) and logs here
+			// so the operator can fix the clean-pipe link.
+			var saddr uint32
+			if ip4 := firstIPv4(ifi); ip4 != nil {
+				// Store the byte image the header needs (network order).
+				saddr = binary.NativeEndian.Uint32(ip4)
+			} else {
+				log.Printf("warning: inline: clean-pipe egress %q has no IPv4 address; GRE outer saddr will be 0",
+					cfg.Inline.CleanPipe)
+			}
+			if err := mgr.SetEgressSaddr(saddr); err != nil {
+				return "", fmt.Errorf("egress saddr: %w", err)
+			}
 		}
 	}
+
+	// Default encapsulation for redirect rules that do not name one.
+	inlineDefaultEncap = cfg.Inline.CleanPipeEncap
 
 	// Record the requested attach mode; main's attach loop performs the
 	// actual attach through AttachXDP → AttachXDPMode.
@@ -243,6 +287,10 @@ func applyInlineRules(mgr *bpf.Manager, rs *pb.InlineRuleSet) error {
 	nowWall := time.Now().Unix()
 	nowNS := bpf.MonotonicNowNS()
 	for _, r := range rs.GetRules() {
+		encap := r.GetEncap()
+		if encap == "" && r.GetAction() == "redirect" {
+			encap = inlineDefaultEncap
+		}
 		specs = append(specs, bpf.InlineRuleSpec{
 			ID:            r.GetId(),
 			DstIP:         ipString(r.GetDstIp()),
@@ -258,6 +306,8 @@ func applyInlineRules(mgr *bpf.Manager, rs *pb.InlineRuleSet) error {
 			ExpiresUnix:   r.GetExpiresUnix(),
 			ExpiresNS:     bpf.RuleExpiryNS(r.GetExpiresUnix(), nowWall, nowNS),
 			EgressIfindex: r.GetEgressIfindex(),
+			Encap:         encap,
+			EncapDaddr:    r.GetEncapDaddr(),
 		})
 	}
 	if err := mgr.ApplyInlineRules(specs, rs.GetDefaultAction()); err != nil {

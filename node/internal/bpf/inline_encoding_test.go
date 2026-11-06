@@ -93,6 +93,11 @@ func TestEncodeInlineRuleKernelKeyBytes(t *testing.T) {
 	if binary.LittleEndian.Uint64(vb[24:32]) != 1700000000000000000 {
 		t.Errorf("expiry = %d, want 1700000000000000000", binary.LittleEndian.Uint64(vb[24:32]))
 	}
+	// Encap_daddr is appended after src_port (offset 40) to preserve every
+	// existing field offset; it is stored as network-byte-order IPv4 bytes.
+	if binary.LittleEndian.Uint32(vb[40:44]) != 0 {
+		t.Errorf("encap_daddr = %#x, want 0 for a plain drop",
+			binary.LittleEndian.Uint32(vb[40:44]))
 	}
 }
 
@@ -170,6 +175,53 @@ func TestEncodeInlineRuleActions(t *testing.T) {
 	}
 	if _, err := bpf.ParseEncap("vxlan"); err == nil {
 		t.Error("unknown encap accepted")
+	}
+}
+
+func TestEncodeInlineRuleEncapAndDaddr(t *testing.T) {
+	_, val, err := bpf.EncodeInlineRule(bpf.InlineRuleSpec{
+		ID: 71, DstIP: "192.0.2.1", Action: "redirect",
+		Encap: "gre", EncapDaddr: "203.0.113.9", EgressIfindex: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val.Encap != bpf.EncapGRE {
+		t.Errorf("encap = %d, want GRE(%d)", val.Encap, bpf.EncapGRE)
+	}
+	// The field's byte image must be the network-order address (203.0.113.9).
+	if want := binary.NativeEndian.Uint32([]byte{203, 0, 113, 9}); val.EncapDaddr != want {
+		t.Errorf("encap_daddr = %#x, want %#x", val.EncapDaddr, want)
+	}
+	// Egress 0 is preserved: the data plane substitutes CFG_EGRESS_IFINDEX.
+	if val.EgressIfindex != 0 {
+		t.Errorf("egress_ifindex = %d, want 0", val.EgressIfindex)
+	}
+
+	// GENEVE is declared on the wire but not implemented; reject at install.
+	if _, _, err := bpf.EncodeInlineRule(bpf.InlineRuleSpec{
+		DstIP: "192.0.2.1", Action: "redirect", Encap: "geneve",
+	}); err == nil {
+		t.Error("geneve encap accepted; want install-time error")
+	}
+
+	// Subnet rules carry the same encap fields.
+	_, sval, err := bpf.EncodeInlineSubnet(bpf.InlineRuleSpec{
+		DstIP: "192.0.2.0", DstPrefixLen: 24, Action: "redirect",
+		Encap: "gre", EncapDaddr: "198.51.100.7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sval.EncapDaddr != binary.NativeEndian.Uint32([]byte{198, 51, 100, 7}) {
+		t.Errorf("subnet encap_daddr = %#x, want network-order 198.51.100.7", sval.EncapDaddr)
+	}
+
+	// A non-IPv4 tunnel destination cannot be encoded in the IPv4 field.
+	if _, _, err := bpf.EncodeInlineRule(bpf.InlineRuleSpec{
+		Action: "redirect", Encap: "gre", EncapDaddr: "2001:db8::1",
+	}); err == nil {
+		t.Error("IPv6 encap_daddr accepted, want error")
 	}
 }
 

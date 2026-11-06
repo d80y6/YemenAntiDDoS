@@ -80,7 +80,7 @@ inline:
   dns_protect: true              # UDP/DNS reflection defense (rate limits + outstanding-query checks)
   sample_rate: 0                 # 1-in-N L7 sampling of protected traffic (0 = disabled)
   cleanpipe_egress: ""           # egress ifname for clean-pipe redirect ("" = same-interface XDP_TX)
-  cleanpipe_encap: ""            # "" | "gre" | "geneve" (tunnel back to a scrubbing center)
+  cleanpipe_encap: ""            # "" | "gre"; geneve is not supported. GRE uses this iface's IPv4 as outer saddr
 
 # Hardware acceleration / OS tuning (optional).
 perf:

@@ -960,10 +960,12 @@ static __always_inline struct filter_rule *filter_subnet_lookup_src(const __u8 *
 // ---------------------------------------------------------------------------
 // GRE clean-pipe encapsulation: wraps the frame in IPv4+GRE (4-byte header,
 // no options) and redirects to the egress interface. The new outer frame
-// reuses the original Ethernet header (P2P clean-pipe return link).
+// reuses the original Ethernet header. Clean-pipe egress is treated as an L2
+// adjacency: the original DMAC is reused and bpf_redirect() transmits without
+// neighbour resolution (no bpf_redirect_neigh).
 // ---------------------------------------------------------------------------
 __noinline int gre_encap_redirect(struct xdp_md *ctx, __u32 egress_if,
-                                  __u32 remote_daddr)
+                                  __u32 remote_daddr, __u32 local_saddr)
 {
     const __u32 GRE_OVERHEAD = 14 + 20 + 4;
     if (bpf_xdp_adjust_head(ctx, -(int)GRE_OVERHEAD))
@@ -989,15 +991,15 @@ __noinline int gre_encap_redirect(struct xdp_md *ctx, __u32 egress_if,
     iph->tot_len = bpf_htons((__u16)(data_end - (data + 14)));
     iph->ttl = 64;
     iph->protocol = IPPROTO_GRE;
-    iph->saddr = 0;          // set by userspace-provided source? default: egress autoselect not possible in XDP
+    iph->saddr = local_saddr; // CFG_EGRESS_SADDR (0 when the egress has no IPv4)
     iph->daddr = remote_daddr;
     iph->check = ipv4_csum20(iph);
 
     __u16 *gre = data + 34;
     if ((void *)gre + 1 > data_end)
         return -1;
-    gre[0] = 0;                        // flags + version = 0
-    gre[1] = bpf_htons(ETH_P_IP);      // payload protocol
+    gre[0] = 0;                            // flags + version = 0
+    gre[1] = bpf_htons(GRE_PROTO_TEB);     // payload is an Ethernet frame
 
     if (bpf_redirect(egress_if, 0) != 0) {
         stat_add(INLINE_STAT_REDIRECT_ERR, 1);
@@ -1384,21 +1386,30 @@ static __always_inline int apply_filter(struct xdp_md *ctx, const struct filter_
     case FILTER_ACTION_TX:
         *verdict = XDP_TX;
         return 1;
-    case FILTER_ACTION_REDIRECT:
+    case FILTER_ACTION_REDIRECT: {
+        // A rule with no egress ifindex falls back to the clean-pipe egress
+        // configured by the node (CFG_EGRESS_IFINDEX).
+        __u32 egress = r->egress_ifindex;
+        if (egress == 0)
+            egress = (__u32)cfg_read(CFG_EGRESS_IFINDEX, 0);
+
         if (r->encap == ENCAP_GRE) {
-            __u32 remote = 0;
-            // Remote tunnel address rides in rule_id upper 32 bits? No — the
-            // controller encodes it via egress_ifindex + xsight_config when
-            // needed; without it plain-redirect.
-            (void)remote;
-            if (gre_encap_redirect(ctx, r->egress_ifindex, 0) == 0) {
+            __u32 saddr = (__u32)cfg_read(CFG_EGRESS_SADDR, 0);
+            if (gre_encap_redirect(ctx, egress, r->encap_daddr, saddr) == 0) {
                 *verdict = XDP_REDIRECT;
                 return 1;
             }
             *verdict = XDP_DROP;
             return 1;
         }
-        if (bpf_redirect(r->egress_ifindex, 0) == 0) {
+        // GENEVE is rejected at install time; drop defensively if a stale
+        // rule ever reaches the data plane with an unsupported encap.
+        if (r->encap != ENCAP_NONE) {
+            stat_add(INLINE_STAT_REDIRECT_ERR, 1);
+            *verdict = XDP_DROP;
+            return 1;
+        }
+        if (bpf_redirect(egress, 0) == 0) {
             stat_add(INLINE_STAT_REDIRECT_OK, 1);
             *verdict = XDP_REDIRECT;
         } else {
@@ -1406,6 +1417,7 @@ static __always_inline int apply_filter(struct xdp_md *ctx, const struct filter_
             *verdict = XDP_DROP;
         }
         return 1;
+    }
     case FILTER_ACTION_CHALLENGE:
         // Steer into the AF_XDP socket for L7 inspection / JS-PoW challenge.
         // Fall through to normal handling when no socket is bound to the queue.

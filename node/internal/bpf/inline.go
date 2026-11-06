@@ -36,6 +36,7 @@ const (
 	CfgAlertsEnable    uint32 = 10
 	CfgDNSProtect      uint32 = 11
 	CfgInlineSample    uint32 = 12
+	CfgEgressSaddr     uint32 = 13
 )
 
 // Filter actions (FILTER_ACTION_* in xsight.h).
@@ -310,7 +311,11 @@ func EncodeInlineRule(spec InlineRuleSpec) (FilterRuleKey, FilterRule, error) {
 	if err != nil {
 		return key, val, err
 	}
-	encap, err := ParseEncap(spec.Encap)
+	encap, err := parseEncapForInstall(spec.Encap)
+	if err != nil {
+		return key, val, err
+	}
+	encapDaddr, err := ipv4NetworkOrder(spec.EncapDaddr)
 	if err != nil {
 		return key, val, err
 	}
@@ -350,6 +355,7 @@ func EncodeInlineRule(spec InlineRuleSpec) (FilterRuleKey, FilterRule, error) {
 	val.Priority = spec.Priority
 	val.RuleID = spec.ID
 	val.ExpiresNS = spec.ExpiresNS
+	val.EncapDaddr = encapDaddr
 	return key, val, nil
 }
 
@@ -362,7 +368,11 @@ func EncodeInlineSubnet(spec InlineRuleSpec) (LPMKey, FilterRule, error) {
 	if err != nil {
 		return key, val, err
 	}
-	encap, err := ParseEncap(spec.Encap)
+	encap, err := parseEncapForInstall(spec.Encap)
+	if err != nil {
+		return key, val, err
+	}
+	encapDaddr, err := ipv4NetworkOrder(spec.EncapDaddr)
 	if err != nil {
 		return key, val, err
 	}
@@ -404,6 +414,7 @@ func EncodeInlineSubnet(spec InlineRuleSpec) (LPMKey, FilterRule, error) {
 	val.Priority = spec.Priority
 	val.RuleID = spec.ID
 	val.ExpiresNS = spec.ExpiresNS
+	val.EncapDaddr = encapDaddr
 	return key, val, nil
 }
 
@@ -561,6 +572,12 @@ func (m *Manager) SetBurstThreshold(pps uint64) error {
 // SetEgressIfindex configures the clean-pipe egress interface.
 func (m *Manager) SetEgressIfindex(idx uint32) error {
 	return m.SetConfig(CfgEgressIfindex, uint64(idx))
+}
+
+// SetEgressSaddr configures the GRE outer source address. The low 32 bits
+// carry the IPv4 address in network byte order.
+func (m *Manager) SetEgressSaddr(saddr uint32) error {
+	return m.SetConfig(CfgEgressSaddr, uint64(saddr))
 }
 
 // SetDNSProtect toggles UDP/DNS reflection defense.
