@@ -768,15 +768,22 @@ static __always_inline void stat_add(__u32 idx, __u64 n)
         __sync_fetch_and_add(v, n);
 }
 
-// iph_csum computes the IPv4 header checksum over exactly 20 bytes (IHL=5).
-static __always_inline __u16 ipv4_csum20(struct iphdr *iph)
+// ipv4_csum computes the IPv4 header checksum over hdr_bytes (20..60). The
+// pointer bound is checked per word so the verifier can see every access.
+static __always_inline __u16 ipv4_csum(struct iphdr *iph, void *data_end, __u32 hdr_bytes)
 {
     __u32 sum = 0;
     __u16 *w = (__u16 *)iph;
+    if (hdr_bytes < 20)
+        hdr_bytes = 20;
+    if (hdr_bytes > 60)
+        hdr_bytes = 60;
     iph->check = 0;
 #pragma unroll
-    for (int i = 0; i < 10; i++)
-        sum += w[i];
+    for (int i = 0; i < 30; i++) {
+        if ((__u32)(i * 2) < hdr_bytes && (void *)(w + i + 1) <= data_end)
+            sum += w[i];
+    }
     sum = (sum & 0xFFFF) + (sum >> 16);
     sum = (sum & 0xFFFF) + (sum >> 16);
     return (__u16)~sum;
@@ -993,7 +1000,7 @@ __noinline int gre_encap_redirect(struct xdp_md *ctx, __u32 egress_if,
     iph->protocol = IPPROTO_GRE;
     iph->saddr = local_saddr; // CFG_EGRESS_SADDR (0 when the egress has no IPv4)
     iph->daddr = remote_daddr;
-    iph->check = ipv4_csum20(iph);
+    iph->check = ipv4_csum(iph, data_end, 20);
 
     __u16 *gre = data + 34;
     if ((void *)gre + 1 > data_end)
@@ -1036,53 +1043,65 @@ __noinline __u64 syn_cookie_compute(const struct addr16 *sip16,
     return xsight_siphash24(secret_lo, secret_hi, msg);
 }
 
-// syn_cookie_reply rewrites the inbound SYN into a SYN-ACK in place and
-// transmits it via XDP_TX. IPv4 only; the packet is truncated to 58 bytes
-// (eth 14 + ip 20 + tcp 24 with MSS option).
-// ports packs dport high, sport low (BPF global fns take max 5 args).
-__noinline int syn_cookie_reply(struct xdp_md *ctx,
-                                const struct addr16 *sip16,
-                                const struct addr16 *dip16,
-                                __u32 ports, __u32 client_seq)
+// syn_cookie_emit rewrites the validated SYN into a SYN-ACK in place and
+// transmits it via XDP_TX. IPv4 only; the packet is truncated to
+// l3_off + iph->ihl*4 + 24 (eth 14/18 + ip 20..60 + tcp 24 with MSS option).
+// cookie_and_seq packs client_seq in the high 32 bits and the cookie in the
+// low 32 bits so the function stays within the 5-argument BPF call limit.
+__noinline int syn_cookie_emit(struct xdp_md *ctx, __u32 ports, __u64 cookie_and_seq)
 {
-    if (!sip16 || !dip16)
-        return -1;
     __u16 sport = (__u16)(ports & 0xFFFF);
     __u16 dport = (__u16)(ports >> 16);
+    __u32 cookie = (__u32)cookie_and_seq;
+    __u32 client_seq = (__u32)(cookie_and_seq >> 32);
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end)
         return -1;
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
+
+    __u32 l3_off = 14;
+    __u16 eth_type = bpf_ntohs(eth->h_proto);
+    if (eth_type == ETH_P_8021Q) {
+        struct vlan_hdr *vhdr = (void *)(eth + 1);
+        if ((void *)(vhdr + 1) > data_end)
+            return -1;
+        eth_type = bpf_ntohs(vhdr->h_vlan_encapsulated_proto);
+        l3_off = 18;
+    }
+    if (eth_type != ETH_P_IP)
         return -1; // cookie path is IPv4-only (documented); IPv6 falls to filters
 
-    if (data + 58 > data_end)
-        return -1; // SYN must carry eth+ip+20 tcp at minimum
+    struct iphdr *iph = (void *)((char *)data + l3_off);
+    if ((void *)(iph + 1) > data_end)
+        return -1;
+    __u32 hdr_bytes = (__u32)iph->ihl * 4;
+    if (hdr_bytes < 20 || hdr_bytes > 60)
+        return -1;
+    if ((void *)((char *)iph + hdr_bytes) > data_end)
+        return -1;
 
-    __u64 cookie = syn_cookie_compute(sip16, dip16, sport, dport);
+    __u32 l4_off = l3_off + hdr_bytes;
+    struct tcphdr *tcp = (void *)((char *)data + l4_off);
+    if ((void *)((char *)tcp + 24) > data_end)
+        return -1; // SYN must carry the full 24-byte TCP header we emit
 
-    // L2: swap MACs (reflection is out the same interface).
+    // L2: swap MACs (reflection is out the same interface). The VLAN tag, if
+    // present, stays in place between the Ethernet and IPv4 headers.
     __u8 tmp_mac[6];
     __builtin_memcpy(tmp_mac, eth->h_dest, 6);
     __builtin_memcpy(eth->h_dest, eth->h_source, 6);
     __builtin_memcpy(eth->h_source, tmp_mac, 6);
 
-    struct iphdr *iph = data + 14;
-    if ((void *)(iph + 1) > data_end)
-        return -1;
     __u32 new_saddr = iph->daddr;
     __u32 new_daddr = iph->saddr;
     iph->saddr = new_saddr;
     iph->daddr = new_daddr;
-    iph->tot_len = bpf_htons(44);
+    iph->tot_len = bpf_htons((__u16)(hdr_bytes + 24));
     iph->ttl = 64;
-    iph->check = ipv4_csum20(iph);
+    iph->check = ipv4_csum(iph, data_end, hdr_bytes);
 
-    struct tcphdr *tcp = data + 34;
-    if ((void *)(tcp + 1) > data_end)
-        return -1;
     __u16 new_sport = dport;
     __u16 new_dport = sport;
     tcp->source = new_sport;
@@ -1095,7 +1114,7 @@ __noinline int syn_cookie_reply(struct xdp_md *ctx,
     tcp->check = 0;
     tcp->urg_ptr = 0;
 
-    // MSS option (kind=2, len=4, mss=1460) fills bytes 40..43 of the segment.
+    // MSS option (kind=2, len=4, mss=1460) fills the last 4 TCP header bytes.
     __u8 *opt = (__u8 *)tcp + 20;
     if ((void *)opt + 4 > data_end)
         return -1;
@@ -1104,7 +1123,9 @@ __noinline int syn_cookie_reply(struct xdp_md *ctx,
     opt[2] = 0x05; // 1460 >> 8
     opt[3] = 0xB4; // 1460 & 0xFF
 
-    // TCP checksum: pseudo-header + 24 header bytes (no payload).
+    // TCP checksum: pseudo-header + 24 header bytes (no payload). The header
+    // words are read as native __u16 (network-order bytes), so the protocol
+    // and length words use the same byte order as the segment sum.
     {
         __u32 sum = 0;
         sum += (new_saddr >> 16) & 0xFFFF;
@@ -1122,12 +1143,31 @@ __noinline int syn_cookie_reply(struct xdp_md *ctx,
         tcp->check = (__u16)~sum;
     }
 
-    // Truncate to exactly 58 bytes (eth 14 + ip 20 + tcp 24). Safe: 58 <= pkt_len.
-    if (bpf_xdp_adjust_tail(ctx, (int)(58 - (data_end - data))))
+    // Truncate to exactly l3_off + IP header + TCP header (58 without a VLAN
+    // tag or IP options; 62 with either).
+    __u32 want_len = l4_off + 24;
+    if (bpf_xdp_adjust_tail(ctx, (int)(want_len - (__u32)(data_end - data))))
         return -1;
 
     stat_add(INLINE_STAT_COOKIE_REPLY, 1);
     return 0;
+}
+
+// syn_cookie_reply computes the stateless cookie and delegates the in-place
+// SYN-ACK rewrite. Keeping the emit path in its own global subprogram bounds
+// the verifier's deepest call chain (xdp_inline → reply → emit/csum).
+__noinline int syn_cookie_reply(struct xdp_md *ctx,
+                                const struct addr16 *sip16,
+                                const struct addr16 *dip16,
+                                __u32 ports, __u32 client_seq)
+{
+    if (!sip16 || !dip16)
+        return -1;
+    __u16 sport = (__u16)(ports & 0xFFFF);
+    __u16 dport = (__u16)(ports >> 16);
+    __u64 cookie = syn_cookie_compute(sip16, dip16, sport, dport);
+    __u64 packed = ((__u64)client_seq << 32) | (__u32)cookie;
+    return syn_cookie_emit(ctx, ports, packed);
 }
 
 // validate_cookie_ack checks the client's final ACK against the expected
@@ -1514,10 +1554,20 @@ int xdp_inline(struct xdp_md *ctx)
     bool dst_watched = (__u64)dst_prefixlen <= 128;
     bool src_watched = (__u64)src_prefixlen <= 128;
 
-    // UDP ports for DNS defense (parsed before L4-frag guard).
+    // UDP/TCP ports for policy and DNS defense (parsed before L4-frag guard).
     __u16 sport = 0;
     __u16 dport = 0;
-    void *l4 = l3_hdr + (is_v4 ? 20 : 40);
+    void *l4;
+    if (is_v4) {
+        struct iphdr *iph4 = l3_hdr;
+        // parse_ip() above proved the fixed IPv4 header is in bounds.
+        __u8 ihl = iph4->ihl;
+        if (ihl < 5)
+            ihl = 5;
+        l4 = l3_hdr + (__u32)ihl * 4;
+    } else {
+        l4 = l3_hdr + 40;
+    }
     if (l4_proto == IPPROTO_TCP && !is_frag) {
         if (l4 + 4 <= data_end) {
             __builtin_memcpy(&sport, l4, 2);

@@ -244,6 +244,52 @@ func TestInlineProgram_CookieAckValidation(t *testing.T) {
 	}
 }
 
+// inlineTCPSYNCustom builds a SYN with an optional 802.1Q tag and an explicit
+// IPv4 header length (IHL >= 5). The frame is exactly eth + ipHdr + 24 bytes so
+// the cookie reply can be checked without a tail resize.
+func inlineTCPSYNCustom(t *testing.T, src, dst string, sport, dport uint16, vlan bool, ihl int) []byte {
+	t.Helper()
+	if ihl < 5 || ihl > 15 {
+		t.Fatalf("inlineTCPSYNCustom: ihl=%d out of range", ihl)
+	}
+	sip, dip := net.ParseIP(src).To4(), net.ParseIP(dst).To4()
+	if sip == nil || dip == nil {
+		t.Fatalf("inlineTCPSYNCustom: src=%q dst=%q must be IPv4", src, dst)
+	}
+	ethLen := 14
+	if vlan {
+		ethLen = 18
+	}
+	ipHdrLen := ihl * 4
+	frame := make([]byte, ethLen+ipHdrLen+24)
+	copy(frame[0:6], []byte{2, 0, 0, 0, 0, 1})
+	copy(frame[6:12], []byte{2, 0, 0, 0, 0, 2})
+	if vlan {
+		binary.BigEndian.PutUint16(frame[12:14], 0x8100)
+		binary.BigEndian.PutUint16(frame[14:16], 0)      // TCI
+		binary.BigEndian.PutUint16(frame[16:18], 0x0800) // inner EtherType
+	} else {
+		binary.BigEndian.PutUint16(frame[12:14], 0x0800)
+	}
+	ip := frame[ethLen : ethLen+ipHdrLen]
+	ip[0] = 0x40 | byte(ihl)
+	ip[8], ip[9] = 64, 6
+	binary.BigEndian.PutUint16(ip[2:4], uint16(ipHdrLen+24))
+	copy(ip[12:16], sip)
+	copy(ip[16:20], dip)
+	for i := 20; i < ipHdrLen; i++ {
+		ip[i] = 1 // NOP options
+	}
+	binary.BigEndian.PutUint16(ip[10:12], dao14Checksum(ip, 0))
+	tcp := frame[ethLen+ipHdrLen:]
+	binary.BigEndian.PutUint16(tcp[0:2], sport)
+	binary.BigEndian.PutUint16(tcp[2:4], dport)
+	tcp[12] = 0x50 // data offset 5 words
+	tcp[13] = 0x02 // SYN
+	binary.BigEndian.PutUint16(tcp[14:16], 65535)
+	return frame
+}
+
 // ipv4HeaderChecksumValid reports whether the IPv4 header checksum verifies.
 func ipv4HeaderChecksumValid(frame []byte, l3Off, hdrLen int) bool {
 	return dao14Checksum(frame[l3Off:l3Off+hdrLen], 0) == 0
@@ -266,7 +312,10 @@ func tcpChecksumValid(frame []byte, l3Off, hdrLen int) bool {
 	return dao14Checksum(tcp, pseudo) == 0
 }
 
-func TestInlineProgram_SynAckLengthChecksum(t *testing.T) {
+// inlineSynCookieSetup enables the cookie engine for a watched IPv4 prefix and
+// installs the rule that requests cookies.
+func inlineSynCookieSetup(t *testing.T) *Manager {
+	t.Helper()
 	m := inlineProgramLoad(t)
 	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
 		t.Fatal(err)
@@ -287,8 +336,12 @@ func TestInlineProgram_SynAckLengthChecksum(t *testing.T) {
 	inlineInstallExact(t, m, InlineRuleSpec{
 		ID: 91, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80, Action: "syn_cookie",
 	})
+	return m
+}
 
-	syn := inlineTCPFrameSeq(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02, 0, 0)
+func TestInlineProgram_SynAckLengthChecksum(t *testing.T) {
+	m := inlineSynCookieSetup(t)
+	syn := inlineTCPSYNCustom(t, "198.51.100.254", "192.0.2.1", 12345, 80, false, 5)
 	ret, out := inlineRunOut(t, m, syn)
 	if ret != xdpTx {
 		t.Fatalf("SYN: xdp_inline = %d, want XDP_TX (%d)", ret, xdpTx)
@@ -302,6 +355,58 @@ func TestInlineProgram_SynAckLengthChecksum(t *testing.T) {
 	}
 	if !tcpChecksumValid(out, 14, 20) {
 		t.Fatal("SYN-ACK TCP checksum is invalid")
+	}
+}
+
+func TestInlineProgram_SynAckIHL6(t *testing.T) {
+	m := inlineSynCookieSetup(t)
+	syn := inlineTCPSYNCustom(t, "198.51.100.254", "192.0.2.1", 12345, 80, false, 6)
+	ret, out := inlineRunOut(t, m, syn)
+	if ret != xdpTx {
+		t.Fatalf("IHL=6 SYN: xdp_inline = %d, want XDP_TX (%d)", ret, xdpTx)
+	}
+	if ihl := int(out[14] & 0x0f); ihl != 6 {
+		t.Fatalf("SYN-ACK IHL = %d, want 6 (options preserved)", ihl)
+	}
+	ip := out[14:]
+	if got := binary.BigEndian.Uint16(ip[2:4]); got != 48 {
+		t.Fatalf("SYN-ACK tot_len = %d, want 48 (24-byte IP + 24-byte TCP)", got)
+	}
+	if !ipv4HeaderChecksumValid(out, 14, 24) {
+		t.Fatal("SYN-ACK IPv4 header checksum is invalid with options")
+	}
+	if !tcpChecksumValid(out, 14, 24) {
+		t.Fatal("SYN-ACK TCP checksum is invalid with options")
+	}
+}
+
+func TestInlineProgram_SynAckVLAN(t *testing.T) {
+	m := inlineSynCookieSetup(t)
+	syn := inlineTCPSYNCustom(t, "198.51.100.254", "192.0.2.1", 12345, 80, true, 5)
+	ret, out := inlineRunOut(t, m, syn)
+	if ret != xdpTx {
+		t.Fatalf("VLAN SYN: xdp_inline = %d, want XDP_TX (%d)", ret, xdpTx)
+	}
+	if got := binary.BigEndian.Uint16(out[12:14]); got != 0x8100 {
+		t.Fatalf("SYN-ACK EtherType = %#04x, want 0x8100 (tag preserved)", got)
+	}
+	if got := binary.BigEndian.Uint16(out[16:18]); got != 0x0800 {
+		t.Fatalf("VLAN inner EtherType = %#04x, want 0x0800", got)
+	}
+	ip := out[18:]
+	if got := binary.BigEndian.Uint16(ip[2:4]); got != 44 {
+		t.Fatalf("VLAN SYN-ACK tot_len = %d, want 44", got)
+	}
+	if !ipv4HeaderChecksumValid(out, 18, 20) {
+		t.Fatal("VLAN SYN-ACK IPv4 header checksum is invalid")
+	}
+	if !tcpChecksumValid(out, 18, 20) {
+		t.Fatal("VLAN SYN-ACK TCP checksum is invalid")
+	}
+	// The reply reverses the original MAC pair.
+	if string(out[0:6]) != string([]byte{2, 0, 0, 0, 0, 2}) ||
+		string(out[6:12]) != string([]byte{2, 0, 0, 0, 0, 1}) {
+		t.Fatalf("SYN-ACK MACs not swapped: dst=%x src=%x", out[0:6], out[6:12])
 	}
 }
 
