@@ -175,6 +175,8 @@ type XSK struct {
 
 	mu      sync.Mutex
 	handler func(XSKFrame)
+
+	closeOnce sync.Once
 }
 
 // XSKFrame is one parsed L7 frame handed to the inspector.
@@ -410,9 +412,14 @@ func mapRing(fd int, ro xdpRingOffset, p ringPlan) (xdpRing, []byte, error) {
 	return r, b, nil
 }
 
-// refillAll returns every UMEM frame to the fill ring.
+// refillAll returns every UMEM frame to the fill ring. It never hands out more
+// addresses than the UMEM actually owns, even though the fill ring can be larger
+// than numFrms.
 func (s *XSK) refillAll() {
 	nb := s.freeFrames()
+	if nb > s.numFrms {
+		nb = s.numFrms
+	}
 	idx := *s.fill.producer
 	for i := uint32(0); i < nb; i++ {
 		s.fill.addrs[(idx+i)&s.fill.mask] = uint64(i) * uint64(s.frameSz)
@@ -494,7 +501,8 @@ func (s *XSK) returnFrame(addr uint64) {
 	*s.fill.producer = idx + 1
 }
 
-// reapComp collects transmitted UMEM frames from the completion ring.
+// reapComp collects transmitted UMEM frames from the completion ring and
+// returns them to the fill ring so the kernel can reuse them for RX.
 func (s *XSK) reapComp() {
 	for {
 		cons := *s.comp.consumer
@@ -502,7 +510,9 @@ func (s *XSK) reapComp() {
 		if cons == prod {
 			break
 		}
+		addr := s.comp.addrs[cons&s.comp.mask]
 		*s.comp.consumer = cons + 1
+		s.returnFrame(addr)
 	}
 }
 
@@ -519,7 +529,29 @@ func (s *XSK) SendRawFrame(umemOffset uint64, length uint32) bool {
 	d.Len = length
 	*s.tx.producer = idx + 1
 	s.txCount.Add(1)
+	s.kickTX()
 	return true
+}
+
+// kickTX notifies the kernel that descriptors were added to the TX ring. AF_XDP
+// has no separate ioctl for this: a zero-length sendto() on the socket is the
+// documented doorbell.
+func (s *XSK) kickTX() {
+	for {
+		err := unix.Sendto(s.fd, nil, unix.MSG_DONTWAIT, nil)
+		if err == nil {
+			return
+		}
+		if err == unix.EINTR {
+			continue
+		}
+		if err != unix.EAGAIN && err != unix.EWOULDBLOCK &&
+			err != unix.ENOBUFS && err != unix.ENETDOWN {
+			log.Printf("af_xdp: TX kick: %v", err)
+			s.txDrop.Add(1)
+		}
+		return
+	}
 }
 
 func (s *XSK) freeTx() uint32 {
@@ -532,16 +564,24 @@ func (s *XSK) Umem() []byte { return s.umem }
 // FrameSize returns the UMEM chunk size.
 func (s *XSK) FrameSize() uint32 { return s.frameSz }
 
-// Close releases the socket and all mappings.
+// Close releases the socket and all mappings. Safe to call more than once.
 func (s *XSK) Close() {
-	if s.fd >= 0 {
-		unix.Close(s.fd)
-		s.fd = -1
-	}
-	if s.umem != nil {
-		_ = unix.Munmap(s.umem)
-		s.umem = nil
-	}
+	s.closeOnce.Do(func() {
+		if s.fd >= 0 {
+			unix.Close(s.fd)
+			s.fd = -1
+		}
+		for _, m := range []*[]byte{&s.rxMap, &s.txMap, &s.fillMap, &s.compMap} {
+			if len(*m) > 0 {
+				_ = unix.Munmap(*m)
+				*m = nil
+			}
+		}
+		if s.umem != nil {
+			_ = unix.Munmap(s.umem)
+			s.umem = nil
+		}
+	})
 }
 
 // parseXSKFrame extracts L2/L3/L4 + TCP payload from a raw frame.
