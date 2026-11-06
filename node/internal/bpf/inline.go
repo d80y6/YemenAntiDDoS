@@ -664,17 +664,21 @@ func (m *Manager) InlineCounters() InlineStats {
 	out.RedirectErr = read(7)
 	out.XSKSteered = read(8)
 	out.FilterPass = read(9)
-	out.ValidatedClients = mapCount(m.Objs.ValidatedClients)
-	out.ActiveFilterRules = mapCount(m.Objs.ActiveFilterRules)
+	out.ValidatedClients = mapCount[[16]byte, uint64](m.Objs.ValidatedClients)
+	out.ActiveFilterRules = mapCount[FilterRuleKey, FilterRule](m.Objs.ActiveFilterRules)
 	return out
 }
 
-func mapCount(m *ebpf.Map) uint64 {
+// mapCount counts entries with typed key/value buffers. cilium/ebpf cannot
+// unmarshal into *interface{} placeholders — the old *interface{} iteration
+// errored on every entry and always reported zero.
+func mapCount[K any, V any](m *ebpf.Map) uint64 {
 	if m == nil {
 		return 0
 	}
 	n := uint64(0)
-	var k, v interface{}
+	var k K
+	var v V
 	iter := m.Iterate()
 	for iter.Next(&k, &v) {
 		n++

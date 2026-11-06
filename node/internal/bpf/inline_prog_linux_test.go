@@ -1298,3 +1298,36 @@ func TestInlineProgram_PassBaselines(t *testing.T) {
 		})
 	}
 }
+
+func TestInlineProgram_TypedMapCount(t *testing.T) {
+	m := inlineProgramLoad(t)
+
+	counts := m.InlineCounters()
+	if counts.ActiveFilterRules != 0 || counts.ValidatedClients != 0 {
+		t.Fatalf("fresh maps: rules=%d clients=%d, want 0/0",
+			counts.ActiveFilterRules, counts.ValidatedClients)
+	}
+
+	for i := 1; i <= 3; i++ {
+		inlineInstallExact(t, m, InlineRuleSpec{
+			ID: uint64(i), DstIP: "192.0.2.1", Protocol: 6,
+			DstPort: uint32(80 + i), Action: "drop", Priority: 10,
+		})
+	}
+	for _, ip := range []string{"198.51.100.7", "198.51.100.8"} {
+		var vk [16]byte
+		copy(vk[:], net.ParseIP(ip).To4())
+		if err := m.Objs.ValidatedClients.Update(&vk, uint64(1), ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	counts = m.InlineCounters()
+	if counts.ActiveFilterRules != 3 {
+		t.Fatalf("ActiveFilterRules = %d, want 3 (typed iteration must count every entry)",
+			counts.ActiveFilterRules)
+	}
+	if counts.ValidatedClients != 2 {
+		t.Fatalf("ValidatedClients = %d, want 2", counts.ValidatedClients)
+	}
+}
