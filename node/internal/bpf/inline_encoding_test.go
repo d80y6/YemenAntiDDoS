@@ -32,7 +32,7 @@ func TestEncodeInlineRuleKernelKeyBytes(t *testing.T) {
 		SrcPort:      40000,
 		Action:       "drop",
 		Priority:     20,
-		ExpiresUnix:  1700000000,
+		ExpiresNS:    1700000000000000000,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestEncodeInlineRuleKernelKeyBytes(t *testing.T) {
 	}
 
 	// Value layout: action, encap, pad, egress_ifindex, rate_limit_pps,
-	// priority, rule_id, expires_unix — mirrors struct filter_rule.
+	// priority, rule_id, expires_ns — mirrors struct filter_rule.
 	vb := valBytes(&val)
 	if vb[0] != bpf.FilterActionDrop {
 		t.Errorf("action byte = %d, want DROP(%d)", vb[0], bpf.FilterActionDrop)
@@ -90,8 +90,9 @@ func TestEncodeInlineRuleKernelKeyBytes(t *testing.T) {
 	if binary.LittleEndian.Uint64(vb[16:24]) != 42 {
 		t.Errorf("rule id = %d, want 42", binary.LittleEndian.Uint64(vb[16:24]))
 	}
-	if binary.LittleEndian.Uint64(vb[24:32]) != 1700000000 {
-		t.Errorf("expiry = %d, want 1700000000", binary.LittleEndian.Uint64(vb[24:32]))
+	if binary.LittleEndian.Uint64(vb[24:32]) != 1700000000000000000 {
+		t.Errorf("expiry = %d, want 1700000000000000000", binary.LittleEndian.Uint64(vb[24:32]))
+	}
 	}
 }
 
@@ -320,6 +321,23 @@ func TestClassifyInlineRuleRoutesMixedPrefixes(t *testing.T) {
 	}
 	if key.Prefixlen != 24 || key.Addr[0] != 198 || key.Addr[3] != 0 {
 		t.Errorf("mixed rule key = %+v, want source 198.51.100.0/24", key)
+	}
+}
+
+func TestRuleExpiryNS(t *testing.T) {
+	const base = uint64(1_000_000)
+	if got := bpf.RuleExpiryNS(0, 100, base); got != 0 {
+		t.Errorf("zero expiry = %d, want 0 (never)", got)
+	}
+	if got := bpf.RuleExpiryNS(150, 100, base); got != base+50_000_000_000 {
+		t.Errorf("50s TTL = %d, want %d", got, base+50_000_000_000)
+	}
+	// An expiry at or before "now" is already elapsed: clamp to a tiny positive
+	// deadline instead of installing an immortal rule.
+	for _, exp := range []int64{100, 99, -1} {
+		if got := bpf.RuleExpiryNS(exp, 100, base); got != base+1 {
+			t.Errorf("expiry %d relative to now = %d, want %d", exp, got, base+1)
+		}
 	}
 }
 

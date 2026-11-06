@@ -27,6 +27,7 @@
 #define CFG_ALERTS_ENABLE    10 // burst alert ringbuf emissions (0 = offload-safe builds)
 #define CFG_DNS_PROTECT      11 // UDP/DNS reflection defense master switch
 #define CFG_INLINE_SAMPLE    12 // inline-mode L7 sampling 1-in-N (0 = disabled)
+#define CFG_EGRESS_SADDR     13 // GRE outer source IPv4 (low 32 bits, network byte order)
 #define CFG_MAX              16 // xsight_config array size
 
 // Inline filter actions (mirrors proto InlineRule.action strings)
@@ -65,6 +66,9 @@
 // GRE protocol IDs for ERSPAN
 #define GRE_PROTO_ERSPAN_II  0x88BE
 #define GRE_PROTO_ERSPAN_III 0x22EB
+// Transparent Ethernet Bridging: the GRE payload is a complete Ethernet frame
+// (the inline clean-pipe inner packet still starts with its Ethernet header).
+#define GRE_PROTO_TEB        0x6558
 
 // GRE header flags
 #define GRE_FLAG_SEQ         0x1000  // Sequence number present
@@ -221,12 +225,13 @@ struct filter_rule {
     __u32 rate_limit_pps;   // RATE_LIMIT cap (best-effort burst cap)
     __u32 priority;         // lower wins when an exact key and a subnet rule overlap
     __u64 rule_id;          // controller-assigned id (reconciliation)
-    __u64 expires_unix;     // 0 = until withdrawn; expired rules are ignored in-kernel
+    __u64 expires_ns;       // 0 = never; monotonic ktime deadline (ns)
     // Subnet trie rules carry the L4 scope in the value (the key is address-only).
     __u8  proto;            // 0 = any protocol
     __u8  _pad2[3];
     __u16 dst_port;         // network byte order, 0 = any
     __u16 src_port;         // network byte order, 0 = any
+    __u32 encap_daddr;      // GRE outer IPv4 dst, network byte order (append-only)
 };
 
 // Per-destination burst sliding window (100ms buckets, 2s emergency drop).

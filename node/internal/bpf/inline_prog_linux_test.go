@@ -7,16 +7,18 @@ import (
 	"net"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 )
 
 const (
-	xdpAborted = 0
-	xdpDrop    = 1
-	xdpPass    = 2
-	xdpTx      = 3
+	xdpAborted  = 0
+	xdpDrop     = 1
+	xdpPass     = 2
+	xdpTx       = 3
+	xdpRedirect = 4
 )
 
 // inlineProgramLoad loads the xdp_inline program fail-closed: missing root is a
@@ -425,6 +427,52 @@ func TestInlineProgram_PriorityTieBreak(t *testing.T) {
 				t.Fatalf("xdp_inline = %d, want %d (lower priority number wins)", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestInlineProgram_RuleExpiryMonotonic(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// A deadline one nanosecond in the future must stop matching after a short
+	// sleep. Before the clock-domain fix the kernel compared wall-clock seconds
+	// (or a raw epoch value) against seconds-since-boot, so this rule either
+	// never expired or expired immediately for the wrong reason.
+	now := MonotonicNowNS()
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 60, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80,
+		Action: "drop", ExpiresNS: now + 1,
+	})
+	time.Sleep(5 * time.Millisecond)
+
+	expired := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02)
+	if got := inlineRun(t, m, expired); got != xdpPass {
+		t.Fatalf("expired rule: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+
+	// A fresh rule with a long monotonic deadline still matches.
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 61, DstIP: "192.0.2.1", Protocol: 6, DstPort: 81,
+		Action: "drop", ExpiresNS: now + uint64(time.Hour),
+	})
+	fresh := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 81, 0x02)
+	if got := inlineRun(t, m, fresh); got != xdpDrop {
+		t.Fatalf("fresh rule: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+	}
+
+	// Subnet rules are evaluated on the xdp_inline clock path; cover that too.
+	if err := m.ApplyInlineRules([]InlineRuleSpec{{
+		ID: 62, DstIP: "192.0.2.0", DstPrefixLen: 24, Protocol: 6, DstPort: 82,
+		Action: "drop", ExpiresNS: now + 1,
+	}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	subnetExpired := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 82, 0x02)
+	if got := inlineRun(t, m, subnetExpired); got != xdpPass {
+		t.Fatalf("expired subnet rule: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
 	}
 }
 

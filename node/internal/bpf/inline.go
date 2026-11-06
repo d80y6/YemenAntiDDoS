@@ -22,6 +22,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
+	"golang.org/x/sys/unix"
 )
 
 // Inline config-map indices (CFG_* in xsight.h).
@@ -77,11 +78,13 @@ type FilterRule struct {
 	RateLimitPPS  uint32
 	Priority      uint32
 	RuleID        uint64
-	ExpiresUnix   uint64
+	ExpiresNS     uint64 // monotonic ktime deadline, 0 = never
 	Proto         uint8
 	_             [3]byte
 	DstPort       uint16
 	SrcPort       uint16
+	EncapDaddr    uint32 // GRE outer IPv4 destination, network byte order
+	_             [4]byte
 }
 
 // BurstAlert mirrors struct burst_alert (xsight.h) — the ringbuf record.
@@ -116,9 +119,11 @@ type InlineRuleSpec struct {
 	Action        string // "pass"|"drop"|"tx"|"redirect"|"rate_limit"|"syn_cookie"|"challenge"
 	RateLimitPPS  uint64
 	Priority      uint32
-	ExpiresUnix   int64 // 0 = until withdrawn
+	ExpiresUnix   int64  // controller wall-clock expiry, 0 = until withdrawn
+	ExpiresNS     uint64 // monotonic kernel deadline; install layer converts ExpiresUnix
 	EgressIfindex uint32
 	Encap         string // ""|"gre"|"geneve"
+	EncapDaddr    string // GRE outer IPv4 destination ("" = 0)
 }
 
 // ParseAction converts an InlineRule.action string to its BPF constant.
@@ -155,6 +160,68 @@ func ParseEncap(s string) (uint8, error) {
 	default:
 		return 0, fmt.Errorf("unknown encap %q", s)
 	}
+}
+
+// MonotonicNowNS returns CLOCK_MONOTONIC in nanoseconds. This is the same
+// clock domain as bpf_ktime_get_ns(), so deadlines computed from it can be
+// compared directly in the kernel.
+func MonotonicNowNS() uint64 {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		// CLOCK_MONOTONIC is always available on Linux. Returning 0 makes any
+		// deadline computed from it already elapsed rather than silently
+		// falling back to wall time.
+		return 0
+	}
+	return uint64(ts.Sec)*1_000_000_000 + uint64(ts.Nsec)
+}
+
+// RuleExpiryNS converts a controller wall-clock expiry (Unix seconds) into a
+// monotonic kernel deadline. expiresUnix == 0 means "until withdrawn". An
+// expiry at or before now is already elapsed, so it is clamped to a deadline
+// one nanosecond in the future instead of becoming an immortal rule.
+func RuleExpiryNS(expiresUnix, nowUnix int64, nowNS uint64) uint64 {
+	if expiresUnix == 0 {
+		return 0
+	}
+	ttl := expiresUnix - nowUnix
+	if ttl <= 0 {
+		return nowNS + 1
+	}
+	return nowNS + uint64(ttl)*1_000_000_000
+}
+
+// parseEncapForInstall validates an encapsulation kind for the data plane.
+// GENEVE is declared in the wire protocol but intentionally not implemented;
+// rejecting it here prevents a silent plain redirect.
+func parseEncapForInstall(s string) (uint8, error) {
+	encap, err := ParseEncap(s)
+	if err != nil {
+		return 0, err
+	}
+	if encap == EncapGeneve {
+		return 0, errors.New("geneve encapsulation not supported; use gre")
+	}
+	return encap, nil
+}
+
+// ipv4NetworkOrder encodes an IPv4 literal as a u32 whose in-memory bytes are
+// the network-byte-order address, matching iphdr.daddr. The kernel copies the
+// field straight into the header, so the byte image (not the host-order
+// number) is what matters. An empty string maps to zero.
+func ipv4NetworkOrder(ipStr string) (uint32, error) {
+	if ipStr == "" {
+		return 0, nil
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return 0, fmt.Errorf("bad encap_daddr %q", ipStr)
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return 0, fmt.Errorf("encap_daddr %q must be IPv4", ipStr)
+	}
+	return binary.NativeEndian.Uint32(ip4), nil
 }
 
 // InlineRuleTarget identifies the kernel filter table a spec belongs to.
@@ -282,9 +349,7 @@ func EncodeInlineRule(spec InlineRuleSpec) (FilterRuleKey, FilterRule, error) {
 	val.RateLimitPPS = uint32(spec.RateLimitPPS)
 	val.Priority = spec.Priority
 	val.RuleID = spec.ID
-	if spec.ExpiresUnix > 0 {
-		val.ExpiresUnix = uint64(spec.ExpiresUnix)
-	}
+	val.ExpiresNS = spec.ExpiresNS
 	return key, val, nil
 }
 
@@ -338,9 +403,7 @@ func EncodeInlineSubnet(spec InlineRuleSpec) (LPMKey, FilterRule, error) {
 	val.RateLimitPPS = uint32(spec.RateLimitPPS)
 	val.Priority = spec.Priority
 	val.RuleID = spec.ID
-	if spec.ExpiresUnix > 0 {
-		val.ExpiresUnix = uint64(spec.ExpiresUnix)
-	}
+	val.ExpiresNS = spec.ExpiresNS
 	return key, val, nil
 }
 

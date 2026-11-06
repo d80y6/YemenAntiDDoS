@@ -793,9 +793,9 @@ struct filter_hit {
     bool hit;
 };
 
-static __always_inline bool rule_live(const struct filter_rule *r, __u64 now_sec)
+static __always_inline bool rule_live(const struct filter_rule *r, __u64 now_ns)
 {
-    if (r->expires_unix != 0 && r->expires_unix < now_sec)
+    if (r->expires_ns != 0 && r->expires_ns < now_ns)
         return false;
     return true;
 }
@@ -816,9 +816,9 @@ static __always_inline bool filter_rule_matches(const struct filter_rule *r,
 
 static __always_inline void filter_consider(struct filter_hit *out,
                                             const struct filter_rule *r,
-                                            bool cookie_action, __u64 now_sec)
+                                            bool cookie_action, __u64 now_ns)
 {
-    if (!rule_live(r, now_sec))
+    if (!rule_live(r, now_ns))
         return;
     if (!out->hit || r->priority < out->rule.priority ||
         (r->priority == out->rule.priority && !out->is_cookie && cookie_action)) {
@@ -840,7 +840,7 @@ __noinline int filter_exact_lookup(struct filter_hit *out,
     // args typed mem_or_null, so each needs an explicit null guard on entry.
     if (!out || !dst16 || !src16)
         return 0;
-    __u64 now_sec = bpf_ktime_get_ns() / 1000000000ULL;
+    __u64 now_ns = bpf_ktime_get_ns();
     __u16 dport = (__u16)(ports >> 16);
     __u16 sport = (__u16)(ports & 0xFFFF);
     struct filter_rule_key k = {};
@@ -859,13 +859,13 @@ __noinline int filter_exact_lookup(struct filter_hit *out,
     // 1) full 5-tuple
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 2) any destination port (sport retained)
     k.dst_port = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 3) any source port (dport retained). Without this permutation a rule
     //    that pins dst_port but wildcards src_port never matches.
@@ -873,32 +873,32 @@ __noinline int filter_exact_lookup(struct filter_hit *out,
     k.src_port = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 4) any source + destination port
     k.dst_port = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 5) dst + proto + dport, any source + sport
     __builtin_memset(k.src_addr, 0, 16);
     k.dst_port = dport;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 6) dst + proto, any source + ports
     k.dst_port = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 7) dst only, any proto/source/ports
     k.proto = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 8) src + proto + dport, any destination + sport (egress ACL)
     __builtin_memcpy(k.src_addr, src16, 16);
@@ -907,32 +907,32 @@ __noinline int filter_exact_lookup(struct filter_hit *out,
     k.dst_port = dport;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 9) src + proto, any destination + ports
     k.dst_port = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 10) src only, any destination/proto/ports
     k.proto = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 11) proto only, any address/ports
     __builtin_memset(k.src_addr, 0, 16);
     k.proto = proto;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
     // 12) global default rule
     k.proto = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_ns);
     return 0;
 }
 
@@ -1517,8 +1517,6 @@ int xdp_inline(struct xdp_md *ctx)
     }
 
     // ---- Inline engine gate -------------------------------------------------
-    __u64 now_sec = bpf_ktime_get_ns() / 1000000000ULL;
-
     if (cfg_read(CFG_INLINE_ENABLE, 0)) {
         // ① Validated SYN-cookie clients always pass.
         if (client_validated(src16)) {
@@ -1533,16 +1531,17 @@ int xdp_inline(struct xdp_md *ctx)
 
         // ② Active filter rules — bidirectional (inbound dst + outbound src).
         if (!is_frag) {
+            __u64 now_ns = bpf_ktime_get_ns();
             struct filter_hit hit = {};
             (void)filter_exact_lookup(&hit, (const struct addr16 *)dst16,
                                         (const struct addr16 *)src16,
                                         l4_proto, ((__u32)dport << 16) | sport);
             struct filter_rule *sub = filter_subnet_lookup_dst(dst16, is_v4);
             if (sub && filter_rule_matches(sub, l4_proto, dport, sport))
-                filter_consider(&hit, sub, sub->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+                filter_consider(&hit, sub, sub->action == FILTER_ACTION_SYN_COOKIE, now_ns);
             struct filter_rule *ssub = filter_subnet_lookup_src(src16, is_v4);
             if (ssub && filter_rule_matches(ssub, l4_proto, dport, sport))
-                filter_consider(&hit, ssub, ssub->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+                filter_consider(&hit, ssub, ssub->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
             if (hit.hit) {
                 int verdict = 0;

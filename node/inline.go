@@ -240,6 +240,8 @@ func applyInlineRules(mgr *bpf.Manager, rs *pb.InlineRuleSet) error {
 		return nil
 	}
 	specs := make([]bpf.InlineRuleSpec, 0, len(rs.GetRules()))
+	nowWall := time.Now().Unix()
+	nowNS := bpf.MonotonicNowNS()
 	for _, r := range rs.GetRules() {
 		specs = append(specs, bpf.InlineRuleSpec{
 			ID:            r.GetId(),
@@ -254,11 +256,10 @@ func applyInlineRules(mgr *bpf.Manager, rs *pb.InlineRuleSet) error {
 			RateLimitPPS:  r.GetRateLimitPps(),
 			Priority:      r.GetPriority(),
 			ExpiresUnix:   r.GetExpiresUnix(),
+			ExpiresNS:     bpf.RuleExpiryNS(r.GetExpiresUnix(), nowWall, nowNS),
 			EgressIfindex: r.GetEgressIfindex(),
-			Encap:         r.GetEncap(),
 		})
 	}
-	if err := mgr.ApplyInlineRules(specs); err != nil {
 		return err
 	}
 	if err := mgr.SetSynCookieEnabled(rs.GetSynCookieEnabled()); err != nil {
