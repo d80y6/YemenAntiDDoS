@@ -1580,20 +1580,15 @@ int xdp_inline(struct xdp_md *ctx)
         }
     }
 
-    // ---- Inline engine gate -------------------------------------------------
-    if (cfg_read(CFG_INLINE_ENABLE, 0)) {
-        // ① Validated SYN-cookie clients always pass.
-        if (client_validated(src16)) {
-            if (dst_watched) {
-                PROCESS_DIRECTION(prefix_stats_map, ip_stats_a, ip_stats_b,
-                                  active, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
-                                  pkt_len, l4_proto, tcp_flags, is_frag,
-                                  is_bad_fragment, is_invalid);
-            }
-            return XDP_PASS;
-        }
+    // Burst accounting runs before any policy/cookie early return so a SYN
+    // flood is counted and alerted even when a cookie rule answers it.
+    if (dst_watched)
+        burst_track(dst16, is_v4, l4_proto, tcp_flags);
 
-        // ② Active filter rules — bidirectional (inbound dst + outbound src).
+    // ---- Inline engine gate -------------------------------------------------
+    bool cookie_requested = false;
+    if (cfg_read(CFG_INLINE_ENABLE, 0)) {
+        // ① Active filter rules — bidirectional (inbound dst + outbound src).
         if (!is_frag) {
             __u64 now_ns = bpf_ktime_get_ns();
             struct filter_hit hit = {};
@@ -1606,6 +1601,8 @@ int xdp_inline(struct xdp_md *ctx)
             struct filter_rule *ssub = filter_subnet_lookup_src(src16, is_v4);
             if (ssub && filter_rule_matches(ssub, l4_proto, dport, sport))
                 filter_consider(&hit, ssub, ssub->action == FILTER_ACTION_SYN_COOKIE, now_ns);
+
+            cookie_requested = hit.hit && hit.is_cookie;
 
             if (hit.hit) {
                 int verdict = 0;
@@ -1629,12 +1626,12 @@ int xdp_inline(struct xdp_md *ctx)
             }
         }
 
-        // ③ Emergency micro-drop state (2s) — validated clients passed above.
-        if (dst_watched && in_emergency(dst16)) {
+        // ② Emergency micro-drop state (2s) — validated clients bypass only this drop.
+        if (dst_watched && !client_validated(src16) && in_emergency(dst16)) {
             if (l4_proto == IPPROTO_TCP) {
                 if ((tcp_flags & 0x02) && !(tcp_flags & 0x10)) {
                     // SYN inside a SYN flood — answer with a stateless cookie.
-                    if (cfg_read(CFG_SYN_COOKIE_ENABLE, 1) && is_v4) {
+                    if (cookie_requested && cfg_read(CFG_SYN_COOKIE_ENABLE, 1) && is_v4) {
                         __u32 client_seq = 0;
                         if (l4 + 8 <= data_end) {
                             __builtin_memcpy(&client_seq, ((char *)l4) + 4, 4);
@@ -1670,8 +1667,9 @@ int xdp_inline(struct xdp_md *ctx)
             return XDP_DROP;
         }
 
-        // ④ Explicit SYN-cookie zone (rule-driven, no emergency needed).
-        if (l4_proto == IPPROTO_TCP && (tcp_flags & 0x02) && !(tcp_flags & 0x10) &&
+        // ③ Explicit SYN-cookie zone (rule-driven, no emergency needed).
+        if (cookie_requested && l4_proto == IPPROTO_TCP &&
+            (tcp_flags & 0x02) && !(tcp_flags & 0x10) &&
             cfg_read(CFG_SYN_COOKIE_ENABLE, 1) && is_v4 && !is_frag && dst_watched) {
             __u32 client_seq = 0;
             if (l4 + 8 <= data_end) {
@@ -1684,7 +1682,7 @@ int xdp_inline(struct xdp_md *ctx)
                 return XDP_TX;
         }
 
-        // ⑤ DNS reflection defense.
+        // ④ DNS reflection defense.
         if (cfg_read(CFG_DNS_PROTECT, 1) && l4_proto == IPPROTO_UDP && !is_frag) {
             int v = dns_protect(src16, dst16, src_watched, dst_watched, l4, data_end);
             if (v)
@@ -1712,9 +1710,6 @@ int xdp_inline(struct xdp_md *ctx)
                           active, &dst_key, &dst_trie_key, (__u32)dst_prefixlen,
                           pkt_len, l4_proto, tcp_flags, is_frag,
                           is_bad_fragment, is_invalid);
-
-        // Sub-second burst detection + emergency state machine.
-        burst_track(dst16, is_v4, l4_proto, tcp_flags);
     }
     if (src_watched) {
         if (gs) {

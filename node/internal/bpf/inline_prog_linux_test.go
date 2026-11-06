@@ -441,8 +441,8 @@ func TestInlineProgram_BurstAlert(t *testing.T) {
 		t.Fatalf("first breached window: xdp_inline = %d, want XDP_PASS", got)
 	}
 	time.Sleep(120 * time.Millisecond)
-	if got := inlineRun(t, m, frame); got != xdpPass {
-		t.Fatalf("second breached window: xdp_inline = %d, want XDP_PASS", got)
+	if got := inlineRun(t, m, frame); got != xdpDrop {
+		t.Fatalf("second breached window: xdp_inline = %d, want XDP_DROP (emergency armed)", got)
 	}
 
 	rd, err := ringbuf.NewReader(m.Objs.Alerts)
@@ -467,6 +467,87 @@ func TestInlineProgram_BurstAlert(t *testing.T) {
 	}
 	if a.WindowPPS == 0 {
 		t.Fatal("alert window_pps is zero")
+	}
+}
+
+func TestInlineProgram_CookieRequiresRule(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetConfig(CfgSynCookieEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PopulateTrie([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No rule requests cookies: a SYN to a watched destination must pass
+	// through instead of being rewritten into a SYN-ACK.
+	syn := inlineTCPFrameSeq(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02, 0, 0)
+	if got := inlineRun(t, m, syn); got != xdpPass {
+		t.Fatalf("SYN without a cookie rule: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+	}
+	// Burst accounting must run before any cookie/filter early return.
+	var w burstWindowValue
+	key := inlineAddrKey("192.0.2.1")
+	if err := m.Objs.BurstWindows.Lookup(&key, &w); err != nil {
+		t.Fatalf("burst window not created for watched SYN: %v", err)
+	}
+	if w.Count == 0 {
+		t.Fatal("watched SYN did not increment the burst window")
+	}
+}
+
+func TestInlineProgram_CookieAccountingBeforeReply(t *testing.T) {
+	m := inlineSynCookieSetup(t)
+	syn := inlineTCPFrameSeq(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02, 0, 0)
+	if got := inlineRun(t, m, syn); got != xdpTx {
+		t.Fatalf("cookie-rule SYN: xdp_inline = %d, want XDP_TX (%d)", got, xdpTx)
+	}
+	var w burstWindowValue
+	key := inlineAddrKey("192.0.2.1")
+	if err := m.Objs.BurstWindows.Lookup(&key, &w); err != nil {
+		t.Fatalf("cookie reply bypassed burst accounting: %v", err)
+	}
+	if w.Count == 0 {
+		t.Fatal("cookie-replied SYN did not increment the burst window")
+	}
+}
+
+func TestInlineProgram_ValidatedClientStillFiltered(t *testing.T) {
+	m := inlineProgramLoad(t)
+	if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParsePrefix("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PopulateTrie([]PrefixEntry{p}); err != nil {
+		t.Fatal(err)
+	}
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 95, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80,
+		Action: "drop", Priority: 10,
+	})
+
+	src := "198.51.100.254"
+	key := inlineAddrKey(src)
+	expiry := MonotonicNowNS() + uint64(time.Minute)
+	if err := m.Objs.ValidatedClients.Update(&key, &expiry, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+
+	// Validation only bypasses the emergency micro-drop; explicit filter rules
+	// still apply to the client's traffic.
+	syn := inlineTCPFrameSeq(t, src, "192.0.2.1", 12345, 80, 0x02, 0, 0)
+	if got := inlineRun(t, m, syn); got != xdpDrop {
+		t.Fatalf("validated client bypassed a drop rule: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
 	}
 }
 
@@ -518,6 +599,10 @@ func TestInlineProgram_ActiveSlotOne(t *testing.T) {
 	if slot != 1 {
 		t.Fatalf("active_slot = %d, want 1 after HotSwap", slot)
 	}
+	// Cookies are rule-driven; install the rule that requests them.
+	inlineInstallExact(t, m, InlineRuleSpec{
+		ID: 92, DstIP: "192.0.2.1", Protocol: 6, DstPort: 80, Action: "syn_cookie",
+	})
 
 	// A SYN to the watched destination must enter the SYN-cookie path
 	// (XDP_TX). Hardcoding slot A makes dst_watched false and yields PASS.
