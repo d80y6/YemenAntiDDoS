@@ -191,6 +191,78 @@ func TestInlineProgram_ActiveSlotOne(t *testing.T) {
 	}
 }
 
+// inlineInstallExact writes one exact (hash) filter rule into the kernel map.
+func inlineInstallExact(t *testing.T, m *Manager, spec InlineRuleSpec) {
+	t.Helper()
+	key, val, err := EncodeInlineRule(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Objs.ActiveFilterRules.Update(&key, &val, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInlineProgram_ExactWildcards(t *testing.T) {
+	tcpMatch := inlineTCPFrame(t, "198.51.100.254", "192.0.2.1", 12345, 80, 0x02)
+	tcpOtherSrc := inlineTCPFrame(t, "203.0.113.9", "192.0.2.1", 12345, 80, 0x02)
+	udpMatch := dao8Frame(t, "192.0.2.1", false, false)
+
+	cases := []struct {
+		name string
+		spec InlineRuleSpec
+		hit  []byte
+		miss []byte
+	}{
+		{
+			name: "src-only",
+			spec: InlineRuleSpec{ID: 1, SrcIP: "198.51.100.254", Action: "drop"},
+			hit:  tcpMatch, miss: tcpOtherSrc,
+		},
+		{
+			name: "proto-only",
+			spec: InlineRuleSpec{ID: 2, Protocol: 17, Action: "drop"},
+			hit:  udpMatch, miss: tcpMatch,
+		},
+		{
+			name: "dst-src-proto",
+			spec: InlineRuleSpec{
+				ID: 3, DstIP: "192.0.2.1", SrcIP: "198.51.100.254",
+				Protocol: 6, Action: "drop",
+			},
+			hit: tcpMatch, miss: tcpOtherSrc,
+		},
+		{
+			name: "global",
+			spec: InlineRuleSpec{ID: 4, Action: "drop"},
+			hit:  udpMatch,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := inlineProgramLoad(t)
+			if err := m.SetConfig(CfgInlineEnable, 1); err != nil {
+				t.Fatal(err)
+			}
+			inlineInstallExact(t, m, tc.spec)
+			if got := inlineRun(t, m, tc.hit); got != xdpDrop {
+				t.Fatalf("matching frame: xdp_inline = %d, want XDP_DROP (%d)", got, xdpDrop)
+			}
+			if tc.miss != nil {
+				if got := inlineRun(t, m, tc.miss); got != xdpPass {
+					t.Fatalf("non-matching frame: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+				}
+				return
+			}
+			// A global IP rule does not touch non-IP frames (ARP passes first).
+			if got := inlineRun(t, m, inlineARPFrame()); got != xdpPass {
+				t.Fatalf("ARP frame: xdp_inline = %d, want XDP_PASS (%d)", got, xdpPass)
+			}
+		})
+	}
+}
+
 func TestInlineProgram_PassBaselines(t *testing.T) {
 	m := inlineProgramLoad(t)
 	for _, tt := range []struct {

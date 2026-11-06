@@ -838,25 +838,28 @@ __noinline int filter_exact_lookup(struct filter_hit *out,
 
     struct filter_rule *r;
 
+    // Prefix lens are unused by the hash table; the controller zeroes them too.
+    k.dst_prefix_len = 0;
+    k.src_prefix_len = 0;
+
     // 1) full 5-tuple
-    k.dst_prefix_len = 0; k.src_prefix_len = 0; // prefix lens unused by hash; kept 0
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 2) any source port
-    k.src_port = 0;
-    r = bpf_map_lookup_elem(&active_filter_rules, &k);
-    if (r)
-        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
-
-    // 3) any ports
+    // 2) any destination port (sport retained)
     k.dst_port = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 4) dst + proto + dport, any source
+    // 3) any source + destination port
+    k.src_port = 0;
+    r = bpf_map_lookup_elem(&active_filter_rules, &k);
+    if (r)
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+
+    // 4) dst + proto + dport, any source + sport
     __builtin_memset(k.src_addr, 0, 16);
     k.dst_port = dport;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
@@ -869,17 +872,47 @@ __noinline int filter_exact_lookup(struct filter_hit *out,
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 6) dst only, any proto/source
+    // 6) dst only, any proto/source/ports
     k.proto = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
 
-    // 7) src subnet only (egress ACL), any destination
-    __builtin_memset(k.dst_addr, 0, 16);
+    // 7) dst + src + proto, any ports
     __builtin_memcpy(k.src_addr, src16, 16);
     k.proto = proto;
+    r = bpf_map_lookup_elem(&active_filter_rules, &k);
+    if (r)
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+
+    // 8) src + proto + dport, any destination + sport (egress ACL)
+    __builtin_memset(k.dst_addr, 0, 16);
     k.dst_port = dport;
+    r = bpf_map_lookup_elem(&active_filter_rules, &k);
+    if (r)
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+
+    // 9) src + proto, any destination + ports
+    k.dst_port = 0;
+    r = bpf_map_lookup_elem(&active_filter_rules, &k);
+    if (r)
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+
+    // 10) src only, any destination/proto/ports
+    k.proto = 0;
+    r = bpf_map_lookup_elem(&active_filter_rules, &k);
+    if (r)
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+
+    // 11) proto only, any address/ports
+    __builtin_memset(k.src_addr, 0, 16);
+    k.proto = proto;
+    r = bpf_map_lookup_elem(&active_filter_rules, &k);
+    if (r)
+        filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
+
+    // 12) global default rule
+    k.proto = 0;
     r = bpf_map_lookup_elem(&active_filter_rules, &k);
     if (r)
         filter_consider(out, r, r->action == FILTER_ACTION_SYN_COOKIE, now_sec);
