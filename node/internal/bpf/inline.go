@@ -157,6 +157,29 @@ func ParseEncap(s string) (uint8, error) {
 	}
 }
 
+// InlineRuleTarget identifies the kernel filter table a spec belongs to.
+type InlineRuleTarget int
+
+const (
+	InlineRuleTargetExact InlineRuleTarget = iota
+	InlineRuleTargetSubnetDst
+	InlineRuleTargetSubnetSrc
+)
+
+// ClassifyInlineRule routes a rule to the exact hash table or one of the two
+// subnet tries. Any prefix length (>0) makes the rule LPM-scoped; a source
+// prefix wins over the destination so a mixed exact-dst + src-prefix rule is
+// written to the source trie (destination-only prefixes use the dst trie).
+func ClassifyInlineRule(spec InlineRuleSpec) InlineRuleTarget {
+	if spec.SrcPrefixLen > 0 {
+		return InlineRuleTargetSubnetSrc
+	}
+	if spec.DstPrefixLen > 0 {
+		return InlineRuleTargetSubnetDst
+	}
+	return InlineRuleTargetExact
+}
+
 // addr16ForRule encodes an IP into the raw 16-byte rule layout.
 // IPv4 keeps host length in the prefix len (no v4-mapped trie offset — the
 // inline tables are separate from the watch tries).
@@ -261,10 +284,10 @@ func EncodeInlineSubnet(spec InlineRuleSpec) (LPMKey, FilterRule, error) {
 		return key, val, err
 	}
 
-	// Subnet rules use the source side when the destination is wildcarded
-	// (egress ACL) and the destination side otherwise (inbound protection).
+	// Source-prefixed rules (including mixed exact-dst + src-prefix) use the
+	// source trie; all other subnet rules use the destination trie.
 	addrStr, prefixLen := spec.DstIP, spec.DstPrefixLen
-	if addrStr == "" {
+	if ClassifyInlineRule(spec) == InlineRuleTargetSubnetSrc {
 		addrStr, prefixLen = spec.SrcIP, spec.SrcPrefixLen
 	}
 	if addrStr == "" {
@@ -343,18 +366,15 @@ func (m *Manager) ApplyInlineRules(specs []InlineRuleSpec) error {
 
 	applied := 0
 	for _, spec := range specs {
-		isSubnet := (spec.DstIP != "" && spec.DstPrefixLen > 0 && spec.DstPrefixLen < 32 && isIPv4Str(spec.DstIP)) ||
-			(spec.DstIP != "" && spec.DstPrefixLen > 0 && spec.DstPrefixLen < 128 && !isIPv4Str(spec.DstIP)) ||
-			(spec.DstIP == "" && spec.SrcIP != "" && spec.SrcPrefixLen > 0 &&
-				((isIPv4Str(spec.SrcIP) && spec.SrcPrefixLen < 32) || (!isIPv4Str(spec.SrcIP) && spec.SrcPrefixLen < 128)))
-		if isSubnet {
+		switch ClassifyInlineRule(spec) {
+		case InlineRuleTargetSubnetDst, InlineRuleTargetSubnetSrc:
 			key, val, err := EncodeInlineSubnet(spec)
 			if err != nil {
 				log.Printf("inline: skip subnet rule %d: %v", spec.ID, err)
 				continue
 			}
 			subnets := m.Objs.ActiveFilterSubnetsDst
-			if spec.DstIP == "" && spec.SrcIP != "" {
+			if ClassifyInlineRule(spec) == InlineRuleTargetSubnetSrc {
 				subnets = m.Objs.ActiveFilterSubnetsSrc
 			}
 			if err := subnets.Update(&key, &val, ebpf.UpdateAny); err != nil {
@@ -362,36 +382,21 @@ func (m *Manager) ApplyInlineRules(specs []InlineRuleSpec) error {
 				continue
 			}
 			applied++
-			continue
+		default:
+			key, val, err := EncodeInlineRule(spec)
+			if err != nil {
+				log.Printf("inline: skip rule %d: %v", spec.ID, err)
+				continue
+			}
+			if err := m.Objs.ActiveFilterRules.Update(&key, &val, ebpf.UpdateAny); err != nil {
+				log.Printf("inline: rule %d update: %v", spec.ID, err)
+				continue
+			}
+			applied++
 		}
-		key, val, err := EncodeInlineRule(spec)
-		if err != nil {
-			log.Printf("inline: skip rule %d: %v", spec.ID, err)
-			continue
-		}
-		if err := m.Objs.ActiveFilterRules.Update(&key, &val, ebpf.UpdateAny); err != nil {
-			log.Printf("inline: rule %d update: %v", spec.ID, err)
-			continue
-		}
-		applied++
 	}
 	log.Printf("inline: applied %d/%d filter rules", applied, len(specs))
 	return nil
-}
-
-func isIPv4Str(s string) bool {
-	ip := net.ParseIP(s)
-	return ip != nil && ip.To4() != nil && !isV6Literal(s)
-}
-
-// isV6Literal rejects v4-mapped strings so ParseIP's To4() doesn't fool us.
-func isV6Literal(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] == ':' {
-			return true
-		}
-	}
-	return false
 }
 
 // clearExactMap clears a hash map keyed by FilterRuleKey.

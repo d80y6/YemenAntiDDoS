@@ -236,6 +236,62 @@ func TestEncodeInlineSubnetKeepsRealPrefixLen(t *testing.T) {
 	}
 }
 
+func TestClassifyInlineRuleRoutesMixedPrefixes(t *testing.T) {
+	cases := []struct {
+		name string
+		spec bpf.InlineRuleSpec
+		want bpf.InlineRuleTarget
+	}{
+		{
+			name: "exact",
+			spec: bpf.InlineRuleSpec{DstIP: "198.51.100.7"},
+			want: bpf.InlineRuleTargetExact,
+		},
+		{
+			name: "dst-subnet",
+			spec: bpf.InlineRuleSpec{DstIP: "198.51.100.0", DstPrefixLen: 24},
+			want: bpf.InlineRuleTargetSubnetDst,
+		},
+		{
+			name: "src-subnet",
+			spec: bpf.InlineRuleSpec{SrcIP: "198.51.100.0", SrcPrefixLen: 24},
+			want: bpf.InlineRuleTargetSubnetSrc,
+		},
+		{
+			name: "mixed-exact-dst-src-prefix",
+			spec: bpf.InlineRuleSpec{
+				DstIP: "203.0.113.7", SrcIP: "198.51.100.0", SrcPrefixLen: 24,
+			},
+			want: bpf.InlineRuleTargetSubnetSrc,
+		},
+		{
+			name: "mixed-dst-prefix-src-exact",
+			spec: bpf.InlineRuleSpec{
+				DstIP: "203.0.113.0", DstPrefixLen: 24, SrcIP: "198.51.100.9",
+			},
+			want: bpf.InlineRuleTargetSubnetDst,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bpf.ClassifyInlineRule(tc.spec); got != tc.want {
+				t.Fatalf("ClassifyInlineRule = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	// Mixed exact-dst + src-prefix must encode the source side of the LPM key.
+	key, _, err := bpf.EncodeInlineSubnet(bpf.InlineRuleSpec{
+		DstIP: "203.0.113.7", SrcIP: "198.51.100.0", SrcPrefixLen: 24, Action: "drop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Prefixlen != 24 || key.Addr[0] != 198 || key.Addr[3] != 0 {
+		t.Errorf("mixed rule key = %+v, want source 198.51.100.0/24", key)
+	}
+}
+
 func TestBurstAlertHelpers(t *testing.T) {
 	a := bpf.BurstAlert{IsV4: 1}
 	copy(a.DstAddr[:4], []byte{198, 51, 100, 7})
