@@ -28,7 +28,7 @@ func dao6MainSource() string {
 }
 func TestDao6_S2g_QueueWiring(t *testing.T) {
 	p := dao6MainSource()
-	for _, pattern := range []string{`tracker.New(.*actionEngine.Enqueue)`, `SetRebreachCallback(actionEngine.EnqueueRebreach)`, `tracker.New(`} {
+	for _, pattern := range []string{`tracker.New(.*actionEngine.EnqueueNonBlocking)`, `SetRebreachCallback(actionEngine.EnqueueRebreach)`, `tracker.New(`} {
 		if got := strings.TrimSpace(dao6Grep(t, "-c", pattern, p)); got != "1" {
 			t.Errorf("grep %q count=%s want 1", pattern, got)
 		}

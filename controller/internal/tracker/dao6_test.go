@@ -208,3 +208,29 @@ func TestDao6_T5_CallbackLockOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestEndedHookDoesNotBlockExpiry(t *testing.T) {
+	tk := dao6New(nil)
+	tk.Feed(dao6Threshold())
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	tk.SetInlineMitigatorHook(func(int) {
+		close(started)
+		<-release
+	})
+
+	done := make(chan struct{})
+	go func() { tk.ForceExpire(1); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ForceExpire blocked on the inline-withdrawal hook")
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("inline-withdrawal hook did not run")
+	}
+	close(release)
+}

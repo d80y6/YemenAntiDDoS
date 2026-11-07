@@ -580,7 +580,11 @@ func (t *Tracker) endAttack(a *trackedAttack, now time.Time, clearDedup bool) {
 	}
 
 	if t.onEndedHook != nil && a.DBID > 0 {
-		t.onEndedHook(a.DBID)
+		// Withdrawal may hit the network; run it off the tracker lock so a
+		// slow inline push cannot stall the detection tick.
+		id := a.DBID
+		hook := t.onEndedHook
+		go hook(id)
 	}
 }
 

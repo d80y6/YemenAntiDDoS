@@ -329,3 +329,35 @@ func TestDao6_E9_ConcurrentDrainDeadlinesIndependent(t *testing.T) {
 		}
 	})
 }
+
+func TestDao6_E3c_FeedSurvivesStalledDispatcher(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, e, b := dao6BlockedEngine()
+		tk := dao6Tracker(s, e.EnqueueNonBlocking)
+		defer func() { b.open(); e.WaitIdle(); e.stop() }()
+
+		before := dao6Counter("dropped")
+		e.EnqueueNonBlocking(dao6Event(2))
+		e.EnqueueNonBlocking(dao6Event(3))
+		if cap(e.queue) != 2 {
+			t.Fatalf("test expects a full queue, cap=%d", cap(e.queue))
+		}
+
+		// The detection tick runs while holding the tracker lock; a stalled
+		// dispatcher must not block it.
+		done := make(chan struct{})
+		go func() { tk.Feed(dao6Threshold("192.0.2.10")); close(done) }()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Feed blocked on a stalled action dispatcher")
+		}
+		if n := dao6Counter("dropped") - before; n < 1 {
+			t.Fatalf("dropped counter delta=%v, want >=1", n)
+		}
+		if got := e.DroppedEvents(); got < 1 {
+			t.Fatalf("DroppedEvents = %d, want >=1", got)
+		}
+	})
+}

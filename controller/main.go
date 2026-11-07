@@ -232,7 +232,7 @@ func main() {
 	actionEngine := action.NewEngine(iStore, cfg.Action.Mode)
 	actionEngine.Start()
 
-	attackTracker := tracker.New(trackerCfg, iStore, rings, alertDedup, actionEngine.Enqueue)
+	attackTracker := tracker.New(trackerCfg, iStore, rings, alertDedup, actionEngine.EnqueueNonBlocking)
 	attackTracker.SetRebreachCallback(actionEngine.EnqueueRebreach)
 
 	// v4.0: inline scrubbing action plane. The pusher is bound to the gRPC
