@@ -144,8 +144,9 @@ type Tracker struct {
 	rings       *ring.RingStore
 	dedup       *dedup.Dedup
 	onAction    ActionCallback
-	onRebreach  func(attackDBID int) // called when attack transitions Expiring→Active
-	onEndedHook func(attackDBID int) // called when an attack ends (inline rule withdrawal)
+	onRebreach  func(attackDBID int)  // called when attack transitions Expiring→Active
+	onEndedHook func(attackDBID int)  // called when an attack ends (inline rule withdrawal)
+	onRecovered func(a *store.Attack) // called for each active attack restored by RecoverFromDB
 
 	// Periodic update tracking
 	lastPeriodicUpdate time.Time
@@ -183,6 +184,13 @@ func (t *Tracker) SetInlineMitigatorHook(fn func(attackDBID int)) {
 
 func (t *Tracker) SetRebreachCallback(fn func(attackDBID int)) {
 	t.onRebreach = fn
+}
+
+// SetRecoveredCallback registers a callback fired for every active attack
+// restored by RecoverFromDB. It runs after the tracker lock is released so the
+// inline mitigation plane can rebuild its rule snapshot without lock inversion.
+func (t *Tracker) SetRecoveredCallback(fn func(a *store.Attack)) {
+	t.onRecovered = fn
 }
 
 // canonicalHostKey gives host-length prefixes the same identity as individual IPs.
@@ -793,9 +801,9 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 	}
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	kept := make(map[attackKey]*trackedAttack)
+	keptRows := make(map[attackKey]store.Attack)
 	var duplicates []*trackedAttack
 	for _, a := range attacks {
 		key := attackKey{
@@ -831,11 +839,13 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 			if ta.FirstSeen.After(current.FirstSeen) || (ta.FirstSeen.Equal(current.FirstSeen) && ta.DBID > current.DBID) {
 				duplicates = append(duplicates, current)
 				kept[key] = ta
+				keptRows[key] = a
 			} else {
 				duplicates = append(duplicates, ta)
 			}
 		} else {
 			kept[key] = ta
+			keptRows[key] = a
 		}
 	}
 
@@ -849,11 +859,24 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 		t.endAttack(dup, now, false)
 	}
 
+	recovered := make([]store.Attack, 0, len(keptRows))
+	for _, a := range keptRows {
+		recovered = append(recovered, a)
+	}
+	t.mu.Unlock()
+
 	if len(kept) > 0 {
 		log.Printf("tracker: recovered %d active attacks from DB", len(kept))
 	}
 	if len(duplicates) > 0 {
 		log.Printf("tracker: recovery ended %d duplicate-key active attacks", len(duplicates))
+	}
+
+	// Rebuild dependent state (inline rules) outside the tracker lock.
+	if t.onRecovered != nil {
+		for i := range recovered {
+			t.onRecovered(&recovered[i])
+		}
 	}
 	return nil
 }

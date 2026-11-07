@@ -165,6 +165,12 @@ type InlineMitigator struct {
 	// narrowFn optionally overrides narrowing evidence (tests).
 	narrowFn func(attackID int) NarrowingInput
 	nowFn    func() time.Time
+
+	// seeded marks Nodes that have received this Controller epoch's first
+	// push. A restarted Controller's version counter is below what a Node
+	// already applied, so that first push is v1 (epoch reset) and later
+	// pushes use the global generation.
+	seeded map[string]bool
 }
 
 // NewInlineMitigator builds the mitigator.
@@ -176,7 +182,20 @@ func NewInlineMitigator(cfg InlineMitigatorConfig, pusher InlinePusher) *InlineM
 		active:        make(map[int]*InlineMitigation),
 		cookieTargets: make(map[string]struct{}),
 		nowFn:         time.Now,
+		seeded:        make(map[string]bool),
 	}
+}
+
+// SetPusher binds the push transport. The mitigator can exist before the gRPC
+// handler (startup recovery rebuilds rules with no pusher); Nodes receive the
+// snapshot through Reconcile once they attach.
+func (m *InlineMitigator) SetPusher(p InlinePusher) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.pusher = p
+	m.mu.Unlock()
 }
 
 // SetNarrowingSource installs a callback that supplies flow evidence for the
@@ -233,6 +252,42 @@ func (m *InlineMitigator) OnCritical(attackID int, targetIP, decoder, eventType 
 
 	// Phase 2: narrow to the dominant ports/subnets once flow samples land.
 	go m.scheduleNarrow(attackID, flows)
+}
+
+// Recover rebuilds a mitigation from an attack restored after a Controller
+// restart. It records the broad phase but does not push: no Node has attached
+// yet, and version accounting must not advance before this epoch's first
+// per-Node push (see seeded). Reconcile delivers the snapshot on attach.
+func (m *InlineMitigator) Recover(attackID int, targetIP, decoder string,
+	nodes []string, pps uint64) {
+	if m == nil || !m.cfg.Enabled || attackID <= 0 || targetIP == "" {
+		return
+	}
+	now := m.nowFn()
+
+	m.mu.Lock()
+	if existing, ok := m.active[attackID]; ok {
+		existing.PeakPPS = maxPeak(existing.PeakPPS, pps)
+		existing.Nodes = mergeStrings(existing.Nodes, nodes)
+		m.mu.Unlock()
+		return
+	}
+	mit := &InlineMitigation{
+		AttackID:  attackID,
+		TargetIP:  targetIP,
+		Decoder:   decoder,
+		Nodes:     append([]string(nil), nodes...),
+		Phase:     "broad",
+		StartedAt: now,
+		PeakPPS:   pps,
+	}
+	mit.Rules = m.broadRulesLocked(mit, now)
+	m.active[attackID] = mit
+	m.mu.Unlock()
+
+	log.Printf("inline-mitigation: attack=%d target=%s decoder=%s RECOVERED broad phase (pps=%d nodes=%v)",
+		attackID, targetIP, decoder, pps, nodes)
+	go m.scheduleNarrow(attackID, nil)
 }
 
 // scheduleNarrow waits NarrowDelay, then narrows using the freshest evidence.
@@ -340,12 +395,25 @@ func (m *InlineMitigator) Withdraw(attackID int) {
 // a node opens its ControlStream (session recovery after a Controller
 // restart) and periodically for drift correction.
 func (m *InlineMitigator) Reconcile(nodeID string) error {
-	if m == nil || m.pusher == nil {
+	if m == nil {
 		return nil
 	}
 	m.mu.Lock()
-	m.version++
-	version := m.version
+	pusher := m.pusher
+	if pusher == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	var version uint64
+	if m.seeded[nodeID] {
+		m.version++
+		version = m.version
+	} else {
+		// First push of this Controller epoch: v1 tells the Node to reset
+		// its applied-version counters (a restarted Controller numbers from
+		// scratch below whatever the Node had already accepted).
+		version = 1
+	}
 	rules := m.snapshotRulesLocked()
 	cookies := make([]string, 0, len(m.cookieTargets))
 	for c := range m.cookieTargets {
@@ -360,12 +428,15 @@ func (m *InlineMitigator) Reconcile(nodeID string) error {
 		SynCookieEnabled: true,
 		CookieTargets:    cookies,
 	}
-	if err := m.pusher.PushInlineRules(nodeID, set); err != nil {
+	if err := pusher.PushInlineRules(nodeID, set); err != nil {
 		m.mu.Lock()
 		m.failures++
 		m.mu.Unlock()
 		return err
 	}
+	m.mu.Lock()
+	m.seeded[nodeID] = true
+	m.mu.Unlock()
 	if len(rules) > 0 {
 		log.Printf("inline-mitigation: reconciled %d rules to node=%s (v%d)", len(rules), nodeID, version)
 	}
@@ -374,10 +445,16 @@ func (m *InlineMitigator) Reconcile(nodeID string) error {
 
 // ReconcileAll pushes the current snapshot to every connected node.
 func (m *InlineMitigator) ReconcileAll() {
-	if m == nil || m.pusher == nil {
+	if m == nil {
 		return
 	}
-	for _, nodeID := range m.pusher.ConnectedInlineNodes() {
+	m.mu.Lock()
+	pusher := m.pusher
+	m.mu.Unlock()
+	if pusher == nil {
+		return
+	}
+	for _, nodeID := range pusher.ConnectedInlineNodes() {
 		_ = m.Reconcile(nodeID)
 	}
 }
@@ -539,34 +616,48 @@ func (m *InlineMitigator) push(mit *InlineMitigation, version uint64) {
 // Sending the whole set (rather than a delta) makes each push idempotent,
 // which is what lets a reconnecting Node recover state safely.
 func (m *InlineMitigator) pushSnapshot(nodes []string, version uint64) {
-	if m.pusher == nil {
+	m.mu.Lock()
+	pusher := m.pusher
+	if pusher == nil {
+		m.mu.Unlock()
 		return
 	}
-	m.mu.Lock()
 	rules := m.snapshotRulesLocked()
 	cookies := make([]string, 0, len(m.cookieTargets))
 	for c := range m.cookieTargets {
 		cookies = append(cookies, c)
 	}
-	m.mu.Unlock()
-
-	set := &pb.InlineRuleSet{
-		Version:          version,
-		Rules:            rules,
-		DefaultAction:    "pass",
-		SynCookieEnabled: true,
-		CookieTargets:    cookies,
-	}
-
 	targets := nodes
 	if len(targets) == 0 {
-		targets = m.pusher.ConnectedInlineNodes()
+		targets = pusher.ConnectedInlineNodes()
 	}
+	// A Node that has not yet received this epoch's first push resets on v1
+	// even when the global generation is already higher.
+	perNode := make(map[string]uint64, len(targets))
 	for _, nodeID := range targets {
 		if nodeID == "" {
 			continue
 		}
-		if err := m.pusher.PushInlineRules(nodeID, set); err != nil {
+		if m.seeded[nodeID] {
+			perNode[nodeID] = version
+		} else {
+			perNode[nodeID] = 1
+		}
+	}
+	m.mu.Unlock()
+
+	for _, nodeID := range targets {
+		if nodeID == "" {
+			continue
+		}
+		set := &pb.InlineRuleSet{
+			Version:          perNode[nodeID],
+			Rules:            rules,
+			DefaultAction:    "pass",
+			SynCookieEnabled: true,
+			CookieTargets:    cookies,
+		}
+		if err := pusher.PushInlineRules(nodeID, set); err != nil {
 			log.Printf("inline-mitigation: push to %s failed: %v", nodeID, err)
 			m.mu.Lock()
 			m.failures++
@@ -575,6 +666,7 @@ func (m *InlineMitigator) pushSnapshot(nodes []string, version uint64) {
 		}
 		m.mu.Lock()
 		m.pushes++
+		m.seeded[nodeID] = true
 		m.mu.Unlock()
 	}
 }

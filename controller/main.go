@@ -235,10 +235,18 @@ func main() {
 	attackTracker := tracker.New(trackerCfg, iStore, rings, alertDedup, actionEngine.EnqueueNonBlocking)
 	attackTracker.SetRebreachCallback(actionEngine.EnqueueRebreach)
 
-	// v4.0: inline scrubbing action plane. The pusher is bound to the gRPC
-	// handler further down (once it exists); the mitigator itself is created
-	// here so the tracker fast path can reach it from the CriticalEvent hook.
-	var inlineMitigator *action.InlineMitigator
+	// v4.0: inline scrubbing action plane. Created before startup recovery so
+	// recovered active attacks rebuild their rule snapshot; the pusher is
+	// bound to the gRPC handler further down (once it exists). Nodes receive
+	// the snapshot through Reconcile when they attach.
+	inlineMitigator := action.NewInlineMitigator(inlineMitigatorConfig(cfg), nil)
+	attackTracker.SetRecoveredCallback(func(a *store.Attack) {
+		inlineMitigator.Recover(a.ID, a.DstIP, a.DecoderFamily,
+			a.NodeSources, uint64(a.PeakPPS))
+	})
+	attackTracker.SetInlineMitigatorHook(func(attackID int) {
+		inlineMitigator.Withdraw(attackID)
+	})
 
 	// Restore FRR synchronously before reconciliation starts side-effect workers.
 	var pre action.StartupScheduleSnapshot
@@ -421,11 +429,8 @@ func main() {
 		},
 	})
 
-	// v4.0 inline action plane: pushes filter tables over ControlStream.
-	inlineMitigator = action.NewInlineMitigator(inlineMitigatorConfig(cfg), handler)
-	attackTracker.SetInlineMitigatorHook(func(attackID int) {
-		inlineMitigator.Withdraw(attackID)
-	})
+	// v4.0 inline action plane: push transport now that the handler exists.
+	inlineMitigator.SetPusher(handler)
 
 	var grpcTLS *tls.Config
 	if cfg.TLS.Enabled {
