@@ -579,13 +579,7 @@ func (t *Tracker) endAttack(a *trackedAttack, now time.Time, clearDedup bool) {
 		}
 	}
 
-	if t.onEndedHook != nil && a.DBID > 0 {
-		// Withdrawal may hit the network; run it off the tracker lock so a
-		// slow inline push cannot stall the detection tick.
-		id := a.DBID
-		hook := t.onEndedHook
-		go hook(id)
-	}
+	t.notifyEnded(a)
 }
 
 // ForceExpire manually expires an attack using the configured in-memory hold.
@@ -1095,10 +1089,25 @@ func (t *Tracker) evictAttack(a *trackedAttack, now time.Time) {
 		if t.onAction != nil {
 			t.notifyAction(AttackEvent{Type: "evicted", Attack: attack, DBID: a.DBID})
 		}
+
+		// Eviction also ends the attack from the data plane's perspective:
+		// withdraw any inline rules or a capped-out flood keeps being dropped.
+		t.notifyEnded(a)
 	}
 
 	// Remove from tracker
 	delete(t.attacks, a.Key)
+}
+
+// notifyEnded fires the inline-withdrawal hook off the tracker lock: the
+// withdrawal may hit the network, and a slow push must not stall detection.
+func (t *Tracker) notifyEnded(a *trackedAttack) {
+	if t.onEndedHook == nil || a.DBID <= 0 {
+		return
+	}
+	id := a.DBID
+	hook := t.onEndedHook
+	go hook(id)
 }
 
 // markRing protects a confirming attack's source using the existing ring protection bit.

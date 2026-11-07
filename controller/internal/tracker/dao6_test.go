@@ -234,3 +234,28 @@ func TestEndedHookDoesNotBlockExpiry(t *testing.T) {
 	}
 	close(release)
 }
+
+func TestEvictedAttackWithdrawsInlineRules(t *testing.T) {
+	tk := dao6New(nil)
+	ended := make(chan int, 2)
+	tk.SetInlineMitigatorHook(func(id int) { ended <- id })
+
+	tk.Feed(dao6Threshold())
+	tk.mu.Lock()
+	tk.cfg.MaxActiveAttacks = 1
+	tk.mu.Unlock()
+
+	rows := dao6Threshold()
+	rows[0].DstIP = net.ParseIP("192.0.2.11")
+	rows[0].Actual = 2000000
+	tk.Feed(append(dao6Threshold(), rows...))
+
+	select {
+	case id := <-ended:
+		if id != 1 {
+			t.Fatalf("withdrew attack %d, want the evicted attack 1", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("evicted attack did not withdraw inline rules")
+	}
+}
