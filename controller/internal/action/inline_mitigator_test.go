@@ -326,16 +326,22 @@ func TestRebreathReNarrows(t *testing.T) {
 	// No seed flows: narrowing must come from the wired narrowing source, the
 	// rebreath must re-broaden, and the next narrow attempt must re-narrow.
 	m.OnCritical(61, "192.0.2.61", "tcp", "syn_flood", []string{"edge-a"}, 1000, nil)
-	time.Sleep(300 * time.Millisecond)
 
-	mit := m.ActiveMitigations()
-	if len(mit) != 1 {
-		t.Fatalf("mitigations = %d, want 1", len(mit))
-	}
-	if mit[0].Phase != "narrow" {
-		t.Fatalf("phase = %q after rebreath, want narrow", mit[0].Phase)
-	}
-	if mit[0].Rebreadths < 1 {
-		t.Fatalf("rebreadths = %d, want >= 1", mit[0].Rebreadths)
+	// Narrow and rebreath oscillate on short timers; poll instead of sampling
+	// a single point in the cycle.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		mit := m.ActiveMitigations()
+		if len(mit) != 1 {
+			t.Fatalf("mitigations = %d, want 1", len(mit))
+		}
+		if mit[0].Phase == "narrow" && mit[0].Rebreadths >= 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("phase = %q rebreadths = %d after rebreath, want narrow with rebreadths >= 1",
+				mit[0].Phase, mit[0].Rebreadths)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
