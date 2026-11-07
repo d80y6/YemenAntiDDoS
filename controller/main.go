@@ -269,6 +269,9 @@ func main() {
 	go actionEngine.RunXDropReconcile(ctx, 2*time.Minute)
 	go actionEngine.RunWithdrawingReconcile(ctx, withdrawingReconcileInterval)
 	go actionEngine.RunAnnouncingReconcile(ctx, announcingReconcileInterval)
+	// Refresh inline snapshots at half the kernel RuleTTL (10min default):
+	// Node-side expiry must never lapse an active mitigation between pushes.
+	go inlineMitigator.RunReconcile(ctx, 5*time.Minute)
 
 	// Prometheus metrics: register v1.2.1 custom collectors + counters with
 	// the default registry (the /metrics HTTP route uses promhttp.Handler()

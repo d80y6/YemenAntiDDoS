@@ -459,6 +459,25 @@ func (m *InlineMitigator) ReconcileAll() {
 	}
 }
 
+// RunReconcile re-pushes the snapshot to every connected node on a timer.
+// The interval must stay below RuleTTL so Node-side rule expiry never lapses
+// a mitigation between pushes.
+func (m *InlineMitigator) RunReconcile(ctx context.Context, every time.Duration) {
+	if m == nil || every <= 0 || !m.cfg.Enabled {
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			m.ReconcileAll()
+		}
+	}
+}
+
 // Stats returns counters for the API/console.
 func (m *InlineMitigator) Stats() (active int, pushes, failures int64) {
 	if m == nil {

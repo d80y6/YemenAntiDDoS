@@ -1,6 +1,7 @@
 package action
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -376,5 +377,49 @@ func TestNarrowUsesDominantProtocol(t *testing.T) {
 	}
 	if udpPorts == 0 {
 		t.Fatalf("rules %+v contain no port drop rule", mit[0].Rules)
+	}
+}
+
+func TestReconcileTickerRefreshesBeforeTTL(t *testing.T) {
+	pusher := newRecordingPusher("edge-a", "edge-b")
+	m := NewInlineMitigator(testMitigatorConfig(time.Hour), pusher)
+	m.OnCritical(80, "192.0.2.80", "tcp", "syn_flood", []string{"edge-a"}, 1000, nil)
+	base := pusher.count("edge-a")
+	if base == 0 {
+		t.Fatal("expected initial push to edge-a")
+	}
+
+	// Attaching a second node to an already-mitigated attack pushes the
+	// active rules immediately, without waiting for the refresh ticker.
+	if err := m.Reconcile("edge-b"); err != nil {
+		t.Fatalf("Reconcile on attach: %v", err)
+	}
+	attached := pusher.last("edge-b")
+	if attached == nil || len(attached.Rules) == 0 {
+		t.Fatalf("attach pushed %+v, want active rules", attached)
+	}
+	if pusher.count("edge-a") != base {
+		t.Fatalf("attach pushed %d times, want the attaching node only", pusher.count("edge-a"))
+	}
+
+	// The ticker must re-push before RuleTTL so the Node-side expiry never
+	// lapses an active rule set.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { m.RunReconcile(ctx, 20*time.Millisecond); close(done) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for pusher.count("edge-a") <= base {
+		if time.Now().After(deadline) {
+			t.Fatalf("ticker did not re-push (edge-a count=%d, want > %d)", pusher.count("edge-a"), base)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	last := pusher.last("edge-a")
+	if last == nil || len(last.Rules) == 0 {
+		t.Fatalf("ticker pushed %+v, want active rules", last)
 	}
 }
