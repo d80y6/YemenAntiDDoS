@@ -173,3 +173,13 @@ ring:
 		t.Fatalf("max_global_keys=500000 with small points should pass, got: %v", err)
 	}
 }
+
+func TestLoadInlineEnabledByDefault(t *testing.T) {
+	cfg, err := Load(writeConfig(t, baseYAML))
+	if err != nil {
+		t.Fatalf("expected valid config, got error: %v", err)
+	}
+	if !cfg.Action.InlineEnabled {
+		t.Error("Action.InlineEnabled = false, want true by default")
+	}
+}

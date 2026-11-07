@@ -161,6 +161,7 @@ func Load(path string) (*Config, error) {
 		},
 		Action: ActionConfig{
 			Mode:                  "observe",
+			InlineEnabled:         true,
 			XDropNarrowPct:        80,
 			XDropMinSamplePackets: 1000,
 			XDropTopKPct:          80,
