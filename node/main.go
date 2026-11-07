@@ -176,11 +176,15 @@ func main() {
 	// Collector ref for HotSwap notification (set after collector is created)
 	var collRef *collector.Collector
 
+	// Inline rule pushes carry a monotonic version; one applier keeps the
+	// guard state across handshake and ConfigPush callbacks.
+	rulesApplier := &inlineRulesApplier{sink: mgr}
+
 	// P6: applyConfig callback — called by reporter on handshake + ConfigPush
 	applyConfig := func(wc *pb.WatchConfig, deliveryVersion uint64) error {
 		// v4.0: inline filter tables ride the same ConfigPush. nil = unchanged.
 		if wc.GetInlineRules() != nil {
-			if err := applyInlineRules(mgr, wc.GetInlineRules()); err != nil {
+			if err := rulesApplier.apply(wc.GetInlineRules()); err != nil {
 				return fmt.Errorf("apply inline rules: %w", err)
 			}
 		}

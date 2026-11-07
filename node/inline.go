@@ -301,12 +301,42 @@ func attackTypeForProto(proto uint32) string {
 	}
 }
 
-// applyInlineRules converts controller-pushed proto rules into kernel specs
-// and installs them. A nil rule set means "unchanged"; an empty list clears.
-func applyInlineRules(mgr *bpf.Manager, rs *pb.InlineRuleSet) error {
+// inlineRuleSink is the kernel-facing surface used by inlineRulesApplier.
+type inlineRuleSink interface {
+	ApplyInlineRules(specs []bpf.InlineRuleSpec, defaultAction string) error
+	SetSynCookieEnabled(on bool) error
+}
+
+// inlineRulesApplier applies controller rule-set snapshots. It owns the
+// monotonic version guard and the SYN-cookie tri-state so a stale or
+// rules-only push cannot roll back node state.
+type inlineRulesApplier struct {
+	sink        inlineRuleSink
+	lastApplied atomic.Uint64
+}
+
+// inlineCookieRuleIDBase separates synthetic cookie-target rule IDs from the
+// controller's IDs, which stay well below it.
+const inlineCookieRuleIDBase = uint64(1) << 62
+
+// apply converts controller-pushed proto rules into kernel specs and installs
+// them. A nil rule set means "unchanged"; an empty list clears.
+func (a *inlineRulesApplier) apply(rs *pb.InlineRuleSet) error {
 	if rs == nil {
 		return nil
 	}
+	version := rs.GetVersion()
+	if version != 0 {
+		// A freshly started controller numbers pushes from 1 again; treat
+		// that as a new epoch so a node reconnecting after a controller
+		// restart is not stuck rejecting every push forever. Otherwise an
+		// older snapshot must never overwrite a newer one.
+		if last := a.lastApplied.Load(); version < last && version != 1 {
+			return fmt.Errorf("inline: reject stale rule set v%d (already applied v%d)",
+				version, last)
+		}
+	}
+
 	specs := make([]bpf.InlineRuleSpec, 0, len(rs.GetRules()))
 	nowWall := time.Now().Unix()
 	nowNS := bpf.MonotonicNowNS()
@@ -334,15 +364,77 @@ func applyInlineRules(mgr *bpf.Manager, rs *pb.InlineRuleSet) error {
 			EncapDaddr:    r.GetEncapDaddr(),
 		})
 	}
-	if err := mgr.ApplyInlineRules(specs, rs.GetDefaultAction()); err != nil {
+	specs = append(specs, cookieTargetSpecs(rs.GetCookieTargets(), specs)...)
+
+	if err := a.sink.ApplyInlineRules(specs, rs.GetDefaultAction()); err != nil {
 		return err
 	}
-	if err := mgr.SetSynCookieEnabled(rs.GetSynCookieEnabled()); err != nil {
+	if err := a.applyCookieSwitch(rs); err != nil {
 		return fmt.Errorf("apply cookie switch: %w", err)
 	}
+	if version != 0 {
+		a.lastApplied.Store(version)
+	}
 	log.Printf("inline: config push v%d applied (%d rules, cookie=%v, default=%s)",
-		rs.GetVersion(), len(specs), rs.GetSynCookieEnabled(), rs.GetDefaultAction())
+		version, len(specs), rs.GetSynCookieEnabled(), rs.GetDefaultAction())
 	return nil
+}
+
+// applyCookieSwitch implements tri-state SYN-cookie control on top of the
+// proto's plain bool. syn_cookie_enabled=false is indistinguishable from an
+// unset field, so a push only turns cookies on when it carries intent (the
+// switch is true or protected targets are named); a rules-only push leaves
+// the node's current setting (local config or an earlier push) intact. An
+// explicit disable therefore requires the local config or a proto change to
+// an optional field.
+func (a *inlineRulesApplier) applyCookieSwitch(rs *pb.InlineRuleSet) error {
+	if !rs.GetSynCookieEnabled() && len(rs.GetCookieTargets()) == 0 {
+		return nil
+	}
+	return a.sink.SetSynCookieEnabled(true)
+}
+
+// cookieTargetSpecs converts protected CIDR prefixes into rule-driven
+// SYN-cookie entries. The data plane only answers cookies for flows that
+// match a syn_cookie rule, so the proto field must reach the filter tables
+// instead of being silently dropped.
+func cookieTargetSpecs(targets []string, existing []bpf.InlineRuleSpec) []bpf.InlineRuleSpec {
+	if len(targets) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(existing))
+	for _, s := range existing {
+		if s.Action == "syn_cookie" {
+			seen[cookieRuleKey(s.DstIP, s.DstPrefixLen, s.Protocol)] = struct{}{}
+		}
+	}
+	out := make([]bpf.InlineRuleSpec, 0, len(targets))
+	for i, cidr := range targets {
+		_, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Printf("inline: skip cookie target %q: %v", cidr, err)
+			continue
+		}
+		ones, _ := ipnet.Mask.Size()
+		key := cookieRuleKey(ipnet.IP.String(), ones, 6)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, bpf.InlineRuleSpec{
+			ID:           inlineCookieRuleIDBase + uint64(i+1),
+			DstIP:        ipnet.IP.String(),
+			DstPrefixLen: ones,
+			Protocol:     6,
+			Action:       "syn_cookie",
+			Priority:     10,
+		})
+	}
+	return out
+}
+
+func cookieRuleKey(ip string, prefixLen int, protocol uint32) string {
+	return fmt.Sprintf("%s/%d/%d", ip, prefixLen, protocol)
 }
 
 // ipString renders proto IP bytes for rule conversion ("" for empty).
