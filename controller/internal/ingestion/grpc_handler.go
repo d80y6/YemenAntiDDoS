@@ -56,6 +56,7 @@ type GRPCHandler struct {
 	StatsDropped    atomic.Uint64 // reports dropped due to processing queue full
 	SamplesReceived atomic.Uint64
 	EventsReceived  atomic.Uint64
+	EventsDropped   atomic.Uint64 // critical events dropped due to processing queue full
 }
 
 type GRPCHandlerConfig struct {
@@ -495,26 +496,64 @@ func (h *GRPCHandler) SampleStream(stream grpc.ClientStreamingServer[pb.SampleBa
 // --- 1.5 CriticalEventStream ---
 
 func (h *GRPCHandler) CriticalEventStream(stream grpc.ClientStreamingServer[pb.CriticalEvent, emptypb.Empty]) error {
+	// Decouple Recv from processing, mirroring StatsStream: a stalled
+	// onCritical (e.g. tracker lock contention during a flood) must not block
+	// stream receipt. Overflow drops the oldest event — the newest evidence
+	// wins — and is counted in EventsDropped.
+	const queueSize = 64
+	queue := make(chan *pb.CriticalEvent, queueSize)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for msg := range queue {
+			if h.onCritical != nil {
+				h.onCritical(msg.NodeId, msg)
+			}
+		}
+	}()
+
+	var recvErr error
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
-			return stream.SendAndClose(&emptypb.Empty{})
+			break
 		}
 		if err != nil {
-			return err
+			recvErr = err
+			break
 		}
 
 		if err := h.requireHandshake(stream.Context(), msg.NodeId, "critical"); err != nil {
-			return err
+			recvErr = err
+			break
 		}
 		h.EventsReceived.Add(1)
 		log.Printf("grpc: critical event node=%s type=%s dst=%v",
 			msg.NodeId, msg.EventType, net.IP(msg.DstIp))
 
-		if h.onCritical != nil {
-			h.onCritical(msg.NodeId, msg)
+		select {
+		case queue <- msg:
+		default:
+			// Queue full — drop oldest to keep Recv flowing.
+			select {
+			case <-queue:
+			default:
+			}
+			select {
+			case queue <- msg:
+			default:
+			}
+			h.EventsDropped.Add(1)
+			log.Printf("grpc: critical event queue full for node=%s, dropped event (total_dropped=%d)",
+				msg.NodeId, h.EventsDropped.Load())
 		}
 	}
+	close(queue)
+	<-done
+	if recvErr != nil {
+		return recvErr
+	}
+	return stream.SendAndClose(&emptypb.Empty{})
 }
 
 // --- 1.6 ControlStream ---
