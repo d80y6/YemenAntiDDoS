@@ -194,6 +194,10 @@ type inlinePosture struct {
 	pins    []int
 	xsk     *bpf.XSKManager
 	enabled bool
+	// burstAlerts counts ringbuf alerts drained to userspace. NodePosture
+	// carries it as burst_alerts; redirect/CPU detail has no wire field yet
+	// and is reported in the periodic posture log instead.
+	burstAlerts atomic.Uint64
 }
 
 func (p *inlinePosture) snapshot() *pb.NodePosture {
@@ -210,6 +214,7 @@ func (p *inlinePosture) snapshot() *pb.NodePosture {
 		SynCookiesValidated: st.CookieValidated,
 		SynCookiesDropped:   st.CookieDropped,
 		EmergencyDrops:      st.EmergencyDrops,
+		BurstAlerts:         p.burstAlerts.Load(),
 		CleanpipeEgress:     p.egress,
 	}
 	for _, c := range p.pins {
@@ -231,7 +236,7 @@ func (p *inlinePosture) snapshot() *pb.NodePosture {
 // bypasses the 1s stats batching in the Controller. The ringbuf record only
 // carries PPS and L4 metadata, so current_bps/top_flows stay unset and are
 // filled by the Controller from the next StatsReport.
-func streamBurstAlerts(ctx context.Context, mgr *bpf.Manager, rpt criticalSender, nodeID, iface string) {
+func streamBurstAlerts(ctx context.Context, mgr *bpf.Manager, rpt criticalSender, nodeID, iface string, alerts *atomic.Uint64) {
 	go func() {
 		for {
 			select {
@@ -242,6 +247,9 @@ func streamBurstAlerts(ctx context.Context, mgr *bpf.Manager, rpt criticalSender
 			now := time.Now()
 			nowMono := bpf.MonotonicNowNS()
 			err := mgr.DrainAlerts(func(a bpf.BurstAlert) {
+				if alerts != nil {
+					alerts.Add(1)
+				}
 				rpt.SendCriticalEvent(burstAlertEvent(nodeID, iface, a, now, nowMono))
 			})
 			if err != nil {

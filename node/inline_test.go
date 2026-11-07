@@ -67,3 +67,16 @@ func TestSetupInlineEngineInstallsCookieSecret(t *testing.T) {
 		t.Fatalf("CFG_SYN_COOKIE_ENABLE = %d, want 1", v)
 	}
 }
+
+func TestInlinePostureSnapshotBurstAlerts(t *testing.T) {
+	mgr := testInlineManager(t)
+	p := &inlinePosture{mgr: mgr, mode: "driver", enabled: true}
+	p.burstAlerts.Store(7)
+	got := p.snapshot()
+	if got.GetBurstAlerts() != 7 {
+		t.Fatalf("BurstAlerts = %d, want 7", got.GetBurstAlerts())
+	}
+	if got.GetXdpMode() != "driver" || !got.GetInlineEnabled() {
+		t.Fatalf("posture metadata = %+v", got)
+	}
+}

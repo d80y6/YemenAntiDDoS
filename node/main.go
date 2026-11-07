@@ -350,11 +350,6 @@ func main() {
 		}
 	}
 
-	// v4.0: kernel burst alerts → CriticalEventStream (sub-second path).
-	if inlineActive || cfg.Inline.Enabled {
-		streamBurstAlerts(collectorCtx, mgr, rpt, cfg.NodeID, primaryIface.Name)
-	}
-
 	// v4.0: posture reporting (XDP mode, AF_XDP health, cookie rates).
 	posture := &inlinePosture{
 		mgr:     mgr,
@@ -366,6 +361,11 @@ func main() {
 		enabled: inlineActive,
 	}
 	rpt.SetPostureFunc(posture.snapshot)
+
+	// v4.0: kernel burst alerts → CriticalEventStream (sub-second path).
+	if inlineActive || cfg.Inline.Enabled {
+		streamBurstAlerts(collectorCtx, mgr, rpt, cfg.NodeID, primaryIface.Name, &posture.burstAlerts)
+	}
 
 	// Rotate the SYN-cookie secret hourly whenever inline is active: a later
 	// controller push may enable cookies even if startup config had them off.
@@ -382,6 +382,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
 
 	// Health check: log global_stats + interface state every 10s (P7)
+	prevCPU, _ := readCPUTimes()
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -399,11 +400,21 @@ func main() {
 			} else if iface.Flags&net.FlagUp == 0 {
 				ifaceStatus = "DOWN"
 			}
-			log.Printf("health: total_pkts=%d total_bytes=%d matched_pkts=%d samples=%d batches=%d decode_err=%d unique_src=%d grpc=%v iface=%s pin=%v workers=%d parsed=%d dispatch_drop=%d",
+			// Per-core utilization has no NodePosture wire field yet; keep it
+			// (and the redirect counters) in the operator log until the
+			// console phase adds them to the proto.
+			var cpuPct []float64
+			if curCPU, err := readCPUTimes(); err == nil {
+				cpuPct = cpuUtilPercent(prevCPU, curCPU)
+				prevCPU = curCPU
+			}
+			ist := mgr.InlineCounters()
+			log.Printf("health: total_pkts=%d total_bytes=%d matched_pkts=%d samples=%d batches=%d decode_err=%d unique_src=%d grpc=%v iface=%s pin=%v workers=%d parsed=%d dispatch_drop=%d redirect_ok=%d redirect_err=%d cpu_util=%v",
 				gs.TotalPkts, gs.TotalBytes, gs.MatchedPkts, s.TotalSamples.Load(),
 				batcher.Metrics.BatchesSent.Load(), batcher.Metrics.DecodeErrors.Load(),
 				uniqueSources, rpt.Connected(), ifaceStatus, mgr.PinPath != "",
-				pool.Workers(), pool.ParsedTotal.Load(), pool.DispatchDropped.Load())
+				pool.Workers(), pool.ParsedTotal.Load(), pool.DispatchDropped.Load(),
+				ist.RedirectOK, ist.RedirectErr, cpuPct)
 		}
 	}()
 
