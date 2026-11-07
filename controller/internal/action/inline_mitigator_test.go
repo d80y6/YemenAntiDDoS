@@ -345,3 +345,36 @@ func TestRebreathReNarrows(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+func TestNarrowUsesDominantProtocol(t *testing.T) {
+	pusher := newRecordingPusher("edge-a")
+	m := NewInlineMitigator(testMitigatorConfig(20*time.Millisecond), pusher)
+	flows := []FlowKey{
+		{SrcIP: "203.0.113.7", DstPort: 53, Protocol: 17, Packets: 80},
+		{SrcIP: "203.0.113.8", DstPort: 53, Protocol: 17, Packets: 20},
+		{SrcIP: "198.51.100.5", DstPort: 443, Protocol: 6, Packets: 5},
+	}
+	m.OnCritical(70, "192.0.2.70", "udp", "dns_amplification", []string{"edge-a"}, 1000, flows)
+	time.Sleep(150 * time.Millisecond)
+
+	mit := m.ActiveMitigations()
+	if len(mit) != 1 {
+		t.Fatalf("mitigations = %d, want 1", len(mit))
+	}
+	if mit[0].Phase != "narrow" {
+		t.Fatalf("phase = %q, want narrow", mit[0].Phase)
+	}
+	var udpPorts int
+	for _, r := range mit[0].Rules {
+		if r.Action != "drop" || r.DstPort == 0 {
+			continue
+		}
+		if r.Protocol != 17 {
+			t.Errorf("port drop rule %+v proto=%d, want 17 (dominant protocol of the flood)", r, r.Protocol)
+		}
+		udpPorts++
+	}
+	if udpPorts == 0 {
+		t.Fatalf("rules %+v contain no port drop rule", mit[0].Rules)
+	}
+}

@@ -529,10 +529,14 @@ func (m *InlineMitigator) narrowRulesLocked(mit *InlineMitigation, flows []FlowK
 	var total uint64
 	portCount := map[uint32]uint64{}
 	subnetCount := map[string]uint64{}
+	protoCount := map[uint32]uint64{}
 	for _, f := range flows {
 		total += f.Packets
 		if f.DstPort != 0 {
 			portCount[f.DstPort] += f.Packets
+		}
+		if f.Protocol != 0 {
+			protoCount[f.Protocol] += f.Packets
 		}
 		if m.cfg.TopSrcSubnets && f.SrcIP != "" {
 			if sn := subnet24(f.SrcIP); sn != "" {
@@ -542,6 +546,19 @@ func (m *InlineMitigator) narrowRulesLocked(mit *InlineMitigation, flows []FlowK
 	}
 	if total == 0 {
 		return nil, false
+	}
+	// Carry the flood's dominant L4 protocol into the narrow rules: a UDP
+	// port flood must not be narrowed to TCP port drops.
+	dominantProto := uint32(6)
+	var protoBest uint64
+	for p, n := range protoCount {
+		if n == 0 {
+			continue
+		}
+		if n > protoBest || (n == protoBest && p < dominantProto) {
+			protoBest = n
+			dominantProto = p
+		}
 	}
 
 	ports := topPorts(portCount, total, m.cfg.NarrowMinShare, m.cfg.NarrowMaxPorts)
@@ -559,13 +576,13 @@ func (m *InlineMitigator) narrowRulesLocked(mit *InlineMitigation, flows []FlowK
 			ID:           m.newRuleIDLocked(),
 			DstIP:        mit.TargetIP,
 			DstPrefixLen: prefixLenOf(mit.TargetIP),
-			Protocol:     6,
+			Protocol:     dominantProto,
 			DstPort:      p.port,
 			Action:       "drop",
 			Priority:     20,
 			ExpiresUnix:  now.Add(m.cfg.RuleTTL).Unix(),
-			Reason: fmt.Sprintf("narrow:attack=%d:tcp/%d:share=%.0f%%",
-				mit.AttackID, p.port, p.share*100),
+			Reason: fmt.Sprintf("narrow:attack=%d:%s/%d:share=%.0f%%",
+				mit.AttackID, protoName(dominantProto), p.port, p.share*100),
 		})
 	}
 	// Dominant source networks: when a few /24s carry most of the flood, drop
@@ -582,6 +599,7 @@ func (m *InlineMitigator) narrowRulesLocked(mit *InlineMitigation, flows []FlowK
 			DstPrefixLen: prefixLenOf(mit.TargetIP),
 			SrcIP:        ip.String(),
 			SrcPrefixLen: onesLen,
+			Protocol:     dominantProto,
 			Action:       "drop",
 			Priority:     30,
 			ExpiresUnix:  now.Add(m.cfg.RuleTTL).Unix(),
@@ -815,6 +833,18 @@ func subnet24(ip string) string {
 		return ""
 	}
 	return fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2])
+}
+
+// protoName renders an L4 protocol number for rule reasons.
+func protoName(p uint32) string {
+	switch p {
+	case 6:
+		return "tcp"
+	case 17:
+		return "udp"
+	default:
+		return fmt.Sprintf("p%d", p)
+	}
 }
 
 // maxPeak returns the larger of two peak counters.
