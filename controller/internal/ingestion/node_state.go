@@ -2,6 +2,7 @@
 package ingestion
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -71,6 +72,10 @@ type NodeState struct {
 	listenerStatuses map[string][]ListenerStatus                     // nodeID → per-listener statuses
 	peerTLS          map[string]PeerTLS                              // nodeID → last verified client certificate
 	posture          map[string]NodePosture                          // nodeID → last data-plane posture
+	// sendMu serializes Send calls per ControlStream: gRPC allows only one
+	// concurrent SendMsg per stream. Entries are intentionally never deleted
+	// so a send in flight can never race with a fresh mutex allocation.
+	sendMu map[string]*sync.Mutex
 }
 
 // PeerTLS describes the client certificate a Node presented during the gRPC
@@ -103,6 +108,7 @@ func NewNodeState() *NodeState {
 		listenerStatuses: make(map[string][]ListenerStatus),
 		peerTLS:          make(map[string]PeerTLS),
 		posture:          make(map[string]NodePosture),
+		sendMu:           make(map[string]*sync.Mutex),
 	}
 }
 
@@ -280,6 +286,29 @@ func (ns *NodeState) GetControlStream(nodeID string) pb.XSightService_ControlStr
 	ns.mu.RLock()
 	defer ns.mu.RUnlock()
 	return ns.controlStream[nodeID]
+}
+
+// SendControlMessage sends msg on the node's ControlStream, serializing
+// concurrent senders (gRPC permits one concurrent SendMsg per stream).
+func (ns *NodeState) SendControlMessage(nodeID string, msg *pb.ControlMessage) error {
+	ns.mu.Lock()
+	mu := ns.sendMu[nodeID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		ns.sendMu[nodeID] = mu
+	}
+	ns.mu.Unlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	ns.mu.RLock()
+	stream := ns.controlStream[nodeID]
+	ns.mu.RUnlock()
+	if stream == nil {
+		return fmt.Errorf("node %s not connected", nodeID)
+	}
+	return stream.Send(msg)
 }
 
 // ConnectedNodes returns a list of node IDs with active ControlStreams.

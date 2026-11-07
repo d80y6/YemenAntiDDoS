@@ -596,11 +596,7 @@ func (h *GRPCHandler) ControlStream(stream grpc.BidiStreamingServer[pb.ControlMe
 // disturbing its watch prefixes: the WatchConfig carries only inline_rules, so
 // the Node applies the rule table and leaves prefix/threshold state untouched.
 func (h *GRPCHandler) SendInlineRulePush(nodeID string, rules *pb.InlineRuleSet) error {
-	stream := h.nodeState.GetControlStream(nodeID)
-	if stream == nil {
-		return fmt.Errorf("node %s not connected", nodeID)
-	}
-	return stream.Send(&pb.ControlMessage{
+	return h.nodeState.SendControlMessage(nodeID, &pb.ControlMessage{
 		Payload: &pb.ControlMessage_ConfigPush{
 			ConfigPush: &pb.ConfigPush{
 				WatchConfig: &pb.WatchConfig{InlineRules: rules},
@@ -623,11 +619,7 @@ func (h *GRPCHandler) ConnectedInlineNodes() []string {
 
 // SendConfigPush sends a ConfigPush to a specific node via its ControlStream.
 func (h *GRPCHandler) SendConfigPush(nodeID string, config *pb.WatchConfig, version uint64) error {
-	stream := h.nodeState.GetControlStream(nodeID)
-	if stream == nil {
-		return fmt.Errorf("node %s not connected", nodeID)
-	}
-	return stream.Send(&pb.ControlMessage{
+	return h.nodeState.SendControlMessage(nodeID, &pb.ControlMessage{
 		Payload: &pb.ControlMessage_ConfigPush{
 			ConfigPush: &pb.ConfigPush{
 				WatchConfig:            config,
