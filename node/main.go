@@ -70,8 +70,9 @@ func main() {
 		}
 		_ = mgr.AttachXDP(primaryIface.Name) // recover link to unpin it
 		mgr.Unload()
+		mgr.Close()
 		log.Println("unload complete")
-		os.Exit(0)
+		return
 	}
 
 	log.Printf("xsight-node starting: node_id=%s interfaces=%d", cfg.NodeID, len(cfg.Interfaces))
@@ -427,7 +428,9 @@ func main() {
 			log.Printf("%s received — graceful shutdown (pins preserved)", sig)
 			watchdog.Stopping()
 			close(watchdogDone)
-			os.Exit(0)
+			// Return instead of os.Exit so deferred cleanup (XSK rings,
+			// sampler, batcher, collector context, BPF fds) actually runs.
+			return
 		}
 	}
 }

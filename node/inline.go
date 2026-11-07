@@ -21,8 +21,6 @@ import (
 	"github.com/d80y6/YemenDDoS/node/internal/config"
 	"github.com/d80y6/YemenDDoS/node/internal/l7collector"
 	"github.com/d80y6/YemenDDoS/node/internal/pb"
-
-	"golang.org/x/sys/unix"
 )
 
 // cookieSecret holds the current SYN-cookie siphash secret (rotated hourly).
@@ -230,7 +228,9 @@ func (p *inlinePosture) snapshot() *pb.NodePosture {
 
 // streamBurstAlerts drains the kernel burst ringbuf and pushes each alert
 // straight onto CriticalEventStream — the sub-second detection path that
-// bypasses the 1s stats batching in the Controller.
+// bypasses the 1s stats batching in the Controller. The ringbuf record only
+// carries PPS and L4 metadata, so current_bps/top_flows stay unset and are
+// filled by the Controller from the next StatsReport.
 func streamBurstAlerts(ctx context.Context, mgr *bpf.Manager, rpt criticalSender, nodeID, iface string) {
 	go func() {
 		for {
@@ -239,28 +239,10 @@ func streamBurstAlerts(ctx context.Context, mgr *bpf.Manager, rpt criticalSender
 				return
 			default:
 			}
+			now := time.Now()
+			nowMono := bpf.MonotonicNowNS()
 			err := mgr.DrainAlerts(func(a bpf.BurstAlert) {
-				dst := a.DstIP()
-				now := time.Now()
-				rpt.SendCriticalEvent(&pb.CriticalEvent{
-					NodeId:         nodeID,
-					InterfaceName:  iface,
-					Timestamp:      now.Unix(),
-					TimestampNs:    now.UnixNano(),
-					DstIp:          dst,
-					TargetIp:       dst,
-					EventType:      "burst_emergency",
-					Decoder:        decoderForProto(a.Proto),
-					CurrentPps:     uint64(a.WindowPPS),
-					AttackType:     attackTypeForProto(a.Proto),
-					LocalMitigated: true,
-					Counters: map[string]uint64{
-						"window_pps": uint64(a.WindowPPS),
-						"proto":      uint64(a.Proto),
-						"tcp_flags":  uint64(a.TCPFlags),
-						"emergency":  1,
-					},
-				})
+				rpt.SendCriticalEvent(burstAlertEvent(nodeID, iface, a, now, nowMono))
 			})
 			if err != nil {
 				log.Printf("inline: alert reader stopped: %v", err)
@@ -268,6 +250,45 @@ func streamBurstAlerts(ctx context.Context, mgr *bpf.Manager, rpt criticalSender
 			}
 		}
 	}()
+}
+
+// alertEventTime maps a BPF CLOCK_MONOTONIC timestamp onto the wall clock
+// without losing the in-kernel capture time. now/nowMono are a matched
+// (realtime, monotonic) pair sampled in userspace. Zero or implausible
+// timestamps (old kernels that leave the field unset) fall back to now.
+func alertEventTime(tsNS uint64, now time.Time, nowMono uint64) time.Time {
+	if tsNS == 0 || tsNS > nowMono {
+		return now
+	}
+	return time.Unix(0, now.UnixNano()-int64(nowMono-tsNS))
+}
+
+// burstAlertEvent converts one kernel burst-ringbuf record into the enriched
+// CriticalEvent the Controller escalates on.
+func burstAlertEvent(nodeID, iface string, a bpf.BurstAlert, now time.Time, nowMono uint64) *pb.CriticalEvent {
+	dst := a.DstIP()
+	// Report the instant the kernel captured the alert rather than whenever
+	// userspace got around to draining the ring.
+	at := alertEventTime(a.TimestampNS, now, nowMono)
+	return &pb.CriticalEvent{
+		NodeId:         nodeID,
+		InterfaceName:  iface,
+		Timestamp:      at.Unix(),
+		TimestampNs:    at.UnixNano(),
+		DstIp:          dst,
+		TargetIp:       dst,
+		EventType:      "burst_emergency",
+		Decoder:        decoderForProto(a.Proto),
+		CurrentPps:     uint64(a.WindowPPS),
+		AttackType:     attackTypeForProto(a.Proto),
+		LocalMitigated: true,
+		Counters: map[string]uint64{
+			"window_pps": uint64(a.WindowPPS),
+			"proto":      uint64(a.Proto),
+			"tcp_flags":  uint64(a.TCPFlags),
+			"emergency":  1,
+		},
+	}
 }
 
 // criticalSender is the subset of the reporter used for alert streaming.
@@ -469,28 +490,6 @@ func intSlice(in []int64) []int {
 		out = append(out, int(v))
 	}
 	return out
-}
-
-// applyCPUPins pins the whole node process (all goroutines) to the given
-// cores. Hot-path threads are short-lived, so process-wide affinity is the
-// practical knob for keeping XDP/AF_XDP work off management cores.
-func applyCPUPins(cores []int) error {
-	if len(cores) == 0 {
-		return nil
-	}
-	var set unix.CPUSet
-	set.Zero()
-	for _, c := range cores {
-		if c < 0 {
-			continue
-		}
-		set.Set(c)
-	}
-	if err := unix.SchedSetaffinity(0, &set); err != nil {
-		return fmt.Errorf("sched_setaffinity %v: %w", cores, err)
-	}
-	log.Printf("perf: process pinned to cores %v", cores)
-	return nil
 }
 
 // startAFXDP opens the zero-copy inspection socket feeding the L7 collector.
