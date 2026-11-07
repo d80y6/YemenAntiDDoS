@@ -548,8 +548,12 @@ func (m *InlineMitigator) narrowRulesLocked(mit *InlineMitigation, flows []FlowK
 	if len(ports) == 0 {
 		return nil, false
 	}
+	var subnets []subnetShare
+	if m.cfg.TopSrcSubnets {
+		subnets = topSubnets(subnetCount, total, m.cfg.NarrowMinShare, m.cfg.NarrowMaxPorts)
+	}
 
-	rules := make([]InlineRule, 0, len(ports)+1)
+	rules := make([]InlineRule, 0, len(ports)+len(subnets)+1)
 	for _, p := range ports {
 		rules = append(rules, InlineRule{
 			ID:           m.newRuleIDLocked(),
@@ -562,6 +566,27 @@ func (m *InlineMitigator) narrowRulesLocked(mit *InlineMitigation, flows []FlowK
 			ExpiresUnix:  now.Add(m.cfg.RuleTTL).Unix(),
 			Reason: fmt.Sprintf("narrow:attack=%d:tcp/%d:share=%.0f%%",
 				mit.AttackID, p.port, p.share*100),
+		})
+	}
+	// Dominant source networks: when a few /24s carry most of the flood, drop
+	// them wholesale for this target instead of chasing per-flow signatures.
+	for _, sn := range subnets {
+		ip, ones, err := net.ParseCIDR(sn.cidr)
+		if err != nil {
+			continue
+		}
+		onesLen, _ := ones.Mask.Size()
+		rules = append(rules, InlineRule{
+			ID:           m.newRuleIDLocked(),
+			DstIP:        mit.TargetIP,
+			DstPrefixLen: prefixLenOf(mit.TargetIP),
+			SrcIP:        ip.String(),
+			SrcPrefixLen: onesLen,
+			Action:       "drop",
+			Priority:     30,
+			ExpiresUnix:  now.Add(m.cfg.RuleTTL).Unix(),
+			Reason: fmt.Sprintf("narrow-subnet:attack=%d:%s:share=%.0f%%",
+				mit.AttackID, sn.cidr, sn.share*100),
 		})
 	}
 	// Keep a rate cap for the residual (rotating source ports) traffic.
@@ -583,6 +608,11 @@ type portShare struct {
 	share float64
 }
 
+type subnetShare struct {
+	cidr  string
+	share float64
+}
+
 func topPorts(counts map[uint32]uint64, total uint64, minShare float64, maxPorts int) []portShare {
 	list := make([]portShare, 0, len(counts))
 	for p, n := range counts {
@@ -599,6 +629,27 @@ func topPorts(counts map[uint32]uint64, total uint64, minShare float64, maxPorts
 	})
 	if len(list) > maxPorts {
 		list = list[:maxPorts]
+	}
+	return list
+}
+
+// topSubnets ranks source /24s by packet share, mirroring topPorts.
+func topSubnets(counts map[string]uint64, total uint64, minShare float64, max int) []subnetShare {
+	list := make([]subnetShare, 0, len(counts))
+	for cidr, n := range counts {
+		share := float64(n) / float64(total)
+		if share >= minShare {
+			list = append(list, subnetShare{cidr: cidr, share: share})
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].share != list[j].share {
+			return list[i].share > list[j].share
+		}
+		return list[i].cidr < list[j].cidr
+	})
+	if len(list) > max {
+		list = list[:max]
 	}
 	return list
 }

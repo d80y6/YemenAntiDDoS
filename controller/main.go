@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -247,6 +248,13 @@ func main() {
 	attackTracker.SetInlineMitigatorHook(func(attackID int) {
 		inlineMitigator.Withdraw(attackID)
 	})
+	// Narrow-phase evidence: remember the latest CriticalEvent top flows per
+	// attack so the narrow/rebreath attempts consult fresher samples than the
+	// event that first confirmed the attack.
+	criticalFlows := newCriticalFlowRing(4096)
+	inlineMitigator.SetNarrowingSource(func(attackID int) action.NarrowingInput {
+		return action.NarrowingInput{TopFlows: criticalFlows.get(attackID)}
+	})
 
 	// Restore FRR synchronously before reconciliation starts side-effect workers.
 	var pre action.StartupScheduleSnapshot
@@ -400,10 +408,12 @@ func main() {
 		if dbID == 0 {
 			return
 		}
+		flows := flowKeysFromProto(event.GetTopFlows())
+		criticalFlows.add(dbID, flows)
 		if inlineMitigator != nil {
 			inlineMitigator.OnCritical(dbID, target.String(), decoder,
 				event.GetEventType(), []string{nodeID},
-				event.GetCurrentPps(), flowKeysFromProto(event.GetTopFlows()))
+				event.GetCurrentPps(), flows)
 		}
 		if escalated {
 			log.Printf("critical: FAST-PATH escalated node=%s target=%s decoder=%s pps=%d db_id=%d",
@@ -773,6 +783,41 @@ func isFastPathEvent(event *pb.CriticalEvent) bool {
 		return true
 	}
 	return false
+}
+
+// criticalFlowRing remembers the latest CriticalEvent top flows per attack
+// (bounded; the map doubles as the ring for LRU eviction).
+type criticalFlowRing struct {
+	mu    sync.Mutex
+	flows map[int][]action.FlowKey
+	order []int
+	cap   int
+}
+
+func newCriticalFlowRing(capacity int) *criticalFlowRing {
+	return &criticalFlowRing{flows: make(map[int][]action.FlowKey), cap: capacity}
+}
+
+func (r *criticalFlowRing) add(attackID int, flows []action.FlowKey) {
+	if len(flows) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.flows[attackID]; !ok {
+		r.order = append(r.order, attackID)
+		for len(r.order) > r.cap {
+			delete(r.flows, r.order[0])
+			r.order = r.order[1:]
+		}
+	}
+	r.flows[attackID] = flows
+}
+
+func (r *criticalFlowRing) get(attackID int) []action.FlowKey {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.flows[attackID]
 }
 
 // flowKeysFromProto converts wire FlowSamples into mitigator flow keys.

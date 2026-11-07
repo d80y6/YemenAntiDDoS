@@ -272,3 +272,70 @@ func hasDropOnPort(set *pb.InlineRuleSet, port uint32) bool {
 	}
 	return false
 }
+
+func TestNarrowEmitsSrcSubnetRules(t *testing.T) {
+	pusher := newRecordingPusher("edge-a")
+	m := NewInlineMitigator(testMitigatorConfig(20*time.Millisecond), pusher)
+	flows := []FlowKey{
+		{SrcIP: "203.0.113.7", DstPort: 443, Protocol: 6, Packets: 70},
+		{SrcIP: "203.0.113.9", DstPort: 444, Protocol: 6, Packets: 30},
+		{SrcIP: "198.51.100.5", DstPort: 80, Protocol: 6, Packets: 5},
+	}
+	m.OnCritical(60, "192.0.2.60", "tcp", "syn_flood", []string{"edge-a"}, 1000, flows)
+	time.Sleep(150 * time.Millisecond)
+
+	mit := m.ActiveMitigations()
+	if len(mit) != 1 {
+		t.Fatalf("mitigations = %d, want 1", len(mit))
+	}
+	if mit[0].Phase != "narrow" {
+		t.Fatalf("phase = %q, want narrow", mit[0].Phase)
+	}
+	var subnetOK, minorityOK bool
+	for _, r := range mit[0].Rules {
+		if r.Action != "drop" {
+			continue
+		}
+		if r.SrcPrefixLen == 24 && r.SrcIP == "203.0.113.0" {
+			subnetOK = true
+		}
+		if r.SrcPrefixLen == 24 && r.SrcIP == "198.51.100.0" {
+			minorityOK = true
+		}
+	}
+	if !subnetOK {
+		t.Fatalf("rules %+v missing drop for dominant source subnet 203.0.113.0/24", mit[0].Rules)
+	}
+	if minorityOK {
+		t.Fatalf("rules %+v drop the minority source subnet 198.51.100.0/24", mit[0].Rules)
+	}
+}
+
+func TestRebreathReNarrows(t *testing.T) {
+	pusher := newRecordingPusher("edge-a")
+	cfg := testMitigatorConfig(20 * time.Millisecond)
+	cfg.RebreathAfter = 60 * time.Millisecond
+	m := NewInlineMitigator(cfg, pusher)
+	m.SetNarrowingSource(func(int) NarrowingInput {
+		return NarrowingInput{TopFlows: []FlowKey{
+			{SrcIP: "203.0.113.7", DstPort: 443, Protocol: 6, Packets: 90},
+			{SrcIP: "198.51.100.5", DstPort: 80, Protocol: 6, Packets: 10},
+		}}
+	})
+
+	// No seed flows: narrowing must come from the wired narrowing source, the
+	// rebreath must re-broaden, and the next narrow attempt must re-narrow.
+	m.OnCritical(61, "192.0.2.61", "tcp", "syn_flood", []string{"edge-a"}, 1000, nil)
+	time.Sleep(300 * time.Millisecond)
+
+	mit := m.ActiveMitigations()
+	if len(mit) != 1 {
+		t.Fatalf("mitigations = %d, want 1", len(mit))
+	}
+	if mit[0].Phase != "narrow" {
+		t.Fatalf("phase = %q after rebreath, want narrow", mit[0].Phase)
+	}
+	if mit[0].Rebreadths < 1 {
+		t.Fatalf("rebreadths = %d, want >= 1", mit[0].Rebreadths)
+	}
+}
