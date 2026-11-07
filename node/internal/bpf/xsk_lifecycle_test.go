@@ -110,6 +110,11 @@ func TestSendRawFrameKicksTX(t *testing.T) {
 	}
 	defer s.Close()
 
+	kicks := 0
+	prevKick := xskKickTX
+	xskKickTX = func(*XSK) { kicks++ }
+	defer func() { xskKickTX = prevKick }()
+
 	if !s.SendRawFrame(0x1000, 60) {
 		t.Fatal("SendRawFrame returned false with an empty TX ring")
 	}
@@ -119,8 +124,11 @@ func TestSendRawFrameKicksTX(t *testing.T) {
 	if descs[0].Addr != 0x1000 || descs[0].Len != 60 {
 		t.Fatalf("tx desc = %+v, want addr 0x1000 len 60", descs[0])
 	}
+	if kicks != 1 {
+		t.Fatalf("TX doorbell kicked %d times, want 1", kicks)
+	}
 	if got := s.txDrop.Load(); got != 0 {
-		t.Fatalf("txDrop = %d, want 0 (TX kick failed)", got)
+		t.Fatalf("txDrop = %d, want 0", got)
 	}
 }
 

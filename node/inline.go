@@ -244,13 +244,14 @@ func streamBurstAlerts(ctx context.Context, mgr *bpf.Manager, rpt criticalSender
 				return
 			default:
 			}
-			now := time.Now()
-			nowMono := bpf.MonotonicNowNS()
 			err := mgr.DrainAlerts(func(a bpf.BurstAlert) {
 				if alerts != nil {
 					alerts.Add(1)
 				}
-				rpt.SendCriticalEvent(burstAlertEvent(nodeID, iface, a, now, nowMono))
+				// DrainAlerts blocks on the next ringbuf record, so the
+				// clock pair must be sampled per alert, not once per call.
+				rpt.SendCriticalEvent(burstAlertEvent(nodeID, iface, a,
+					time.Now(), bpf.MonotonicNowNS()))
 			})
 			if err != nil {
 				log.Printf("inline: alert reader stopped: %v", err)
@@ -342,6 +343,7 @@ type inlineRuleSink interface {
 type inlineRulesApplier struct {
 	sink        inlineRuleSink
 	lastApplied atomic.Uint64
+	lastDefault atomic.Value // string; last non-empty default_action
 }
 
 // inlineCookieRuleIDBase separates synthetic cookie-target rule IDs from the
@@ -360,9 +362,12 @@ func (a *inlineRulesApplier) apply(rs *pb.InlineRuleSet) error {
 		// that as a new epoch so a node reconnecting after a controller
 		// restart is not stuck rejecting every push forever. Otherwise an
 		// older snapshot must never overwrite a newer one.
-		if last := a.lastApplied.Load(); version < last && version != 1 {
-			return fmt.Errorf("inline: reject stale rule set v%d (already applied v%d)",
-				version, last)
+		if last := a.lastApplied.Load(); version < last {
+			if version != 1 {
+				return fmt.Errorf("inline: reject stale rule set v%d (already applied v%d)",
+					version, last)
+			}
+			log.Printf("inline: controller epoch reset (v1 after applied v%d)", last)
 		}
 	}
 
@@ -395,8 +400,20 @@ func (a *inlineRulesApplier) apply(rs *pb.InlineRuleSet) error {
 	}
 	specs = append(specs, cookieTargetSpecs(rs.GetCookieTargets(), specs)...)
 
-	if err := a.sink.ApplyInlineRules(specs, rs.GetDefaultAction()); err != nil {
+	// Like the cookie switch, an empty default_action is indistinguishable
+	// from "unset" in proto3. Preserve the last explicit policy rather than
+	// silently resetting a drop default to pass.
+	defaultAction := rs.GetDefaultAction()
+	if defaultAction == "" {
+		if prev, ok := a.lastDefault.Load().(string); ok {
+			defaultAction = prev
+		}
+	}
+	if err := a.sink.ApplyInlineRules(specs, defaultAction); err != nil {
 		return err
+	}
+	if defaultAction != "" {
+		a.lastDefault.Store(defaultAction)
 	}
 	if err := a.applyCookieSwitch(rs); err != nil {
 		return fmt.Errorf("apply cookie switch: %w", err)
@@ -405,7 +422,7 @@ func (a *inlineRulesApplier) apply(rs *pb.InlineRuleSet) error {
 		a.lastApplied.Store(version)
 	}
 	log.Printf("inline: config push v%d applied (%d rules, cookie=%v, default=%s)",
-		version, len(specs), rs.GetSynCookieEnabled(), rs.GetDefaultAction())
+		version, len(specs), rs.GetSynCookieEnabled(), defaultAction)
 	return nil
 }
 

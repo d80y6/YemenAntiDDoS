@@ -171,3 +171,35 @@ func TestCookieTargetSpecsDedupesExistingRules(t *testing.T) {
 		t.Fatalf("cookie target spec = %+v", got[0])
 	}
 }
+
+type recordingRuleSink struct {
+	defaultActions []string
+	cookieCalls    []bool
+}
+
+func (r *recordingRuleSink) ApplyInlineRules(_ []bpf.InlineRuleSpec, defaultAction string) error {
+	r.defaultActions = append(r.defaultActions, defaultAction)
+	return nil
+}
+
+func (r *recordingRuleSink) SetSynCookieEnabled(on bool) error {
+	r.cookieCalls = append(r.cookieCalls, on)
+	return nil
+}
+
+func TestInlineRulesApplier_PreservesDefaultActionWhenEmpty(t *testing.T) {
+	r := &recordingRuleSink{}
+	a := &inlineRulesApplier{sink: r}
+	if err := a.apply(&pb.InlineRuleSet{Version: 1, DefaultAction: "drop"}); err != nil {
+		t.Fatal(err)
+	}
+	// proto3 cannot distinguish an empty default_action from "unset", so a
+	// partial push must not silently reset the drop policy to pass.
+	if err := a.apply(&pb.InlineRuleSet{Version: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.defaultActions) != 2 ||
+		r.defaultActions[0] != "drop" || r.defaultActions[1] != "drop" {
+		t.Fatalf("default actions = %v, want [drop drop]", r.defaultActions)
+	}
+}

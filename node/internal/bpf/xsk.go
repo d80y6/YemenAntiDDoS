@@ -18,6 +18,7 @@ package bpf
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -75,9 +76,12 @@ type ringPlan struct {
 
 // ringMapPlans returns the mmap geometry for a UMEM of n frames: rx/tx hold
 // xdp_desc entries, fill/completion hold 8-byte UMEM offsets.
-func ringMapPlans(n uint32) [4]ringPlan {
+func ringMapPlans(n, rx uint32) [4]ringPlan {
+	if rx == 0 {
+		rx = n
+	}
 	return [4]ringPlan{
-		{"rx", xdpPgoffRXRing, n, xskRingDescSize},
+		{"rx", xdpPgoffRXRing, rx, xskRingDescSize},
 		{"tx", xdpPgoffTXRing, n, xskRingDescSize},
 		{"fill", xdpPgoffFillRing, DefaultFillRings, xskUmemDescSize},
 		{"comp", xdpPgoffCompRing, DefaultCompRings, xskUmemDescSize},
@@ -143,6 +147,15 @@ type xdpRing struct {
 	mask     uint32 // size-1 (power-of-two rings)
 }
 
+// Ring indices are shared with the kernel. Plain loads/stores let the compiler
+// or CPU reorder descriptor accesses past index publication on weakly ordered
+// targets (arm64); Go atomics provide the release/acquire ordering the kernel
+// expects (it uses smp_load_acquire/smp_store_release on the same fields).
+func (r *xdpRing) loadProducer() uint32   { return atomic.LoadUint32(r.producer) }
+func (r *xdpRing) loadConsumer() uint32   { return atomic.LoadUint32(r.consumer) }
+func (r *xdpRing) storeProducer(v uint32) { atomic.StoreUint32(r.producer, v) }
+func (r *xdpRing) storeConsumer(v uint32) { atomic.StoreUint32(r.consumer, v) }
+
 // XSKStats exposes socket health for the Node posture report.
 type XSKStats struct {
 	RX          uint64 // frames received
@@ -164,8 +177,10 @@ type XSK struct {
 	headroom uint32
 
 	rx, tx, fill, comp xdpRing
+	rxRingSize         uint32
 	rxMap, txMap       []byte
 	fillMap, compMap   []byte
+	pending            []uint64 // UMEM frames awaiting fill-ring space
 
 	rxCount  atomic.Uint64
 	rxDrop   atomic.Uint64
@@ -197,10 +212,11 @@ func (s *XSK) SetHandler(h func(XSKFrame)) {
 // Stats returns a consistent counter snapshot.
 func (s *XSK) Stats() XSKStats {
 	return XSKStats{
-		RX:        s.rxCount.Load(),
-		RXDropped: s.rxDrop.Load(),
-		TX:        s.txCount.Load(),
-		TXDropped: s.txDrop.Load(),
+		RX:          s.rxCount.Load(),
+		RXDropped:   s.rxDrop.Load(),
+		TX:          s.txCount.Load(),
+		TXDropped:   s.txDrop.Load(),
+		ParseErrors: s.parseErr.Load(),
 	}
 }
 
@@ -273,9 +289,17 @@ func OpenXSK(iface string, queueID uint32, frames, frameSize uint32, zeroCopy bo
 		s.Close()
 		return nil, fmt.Errorf("af_xdp: tx ring: %w", err)
 	}
-	// RX ring is created explicitly on kernels that expose XDP_RX_RING;
-	// 5.4+ allocates it together with the fill ring. Ignore ENOTSUP.
-	_ = s.createRing(xdpOptRxRing, int(frames))
+	// RX ring is created explicitly where the kernel exposes XDP_RX_RING.
+	// Older kernels default the RX ring to the fill-ring size, so fall back to
+	// that geometry instead of mapping a ring larger than the kernel created.
+	s.rxRingSize = frames
+	if err := s.createRing(xdpOptRxRing, int(frames)); err != nil {
+		if !errors.Is(err, unix.ENOPROTOOPT) && !errors.Is(err, unix.EOPNOTSUPP) {
+			s.Close()
+			return nil, fmt.Errorf("af_xdp: rx ring: %w", err)
+		}
+		s.rxRingSize = DefaultFillRings
+	}
 
 	if err := s.mapRings(); err != nil {
 		s.Close()
@@ -323,6 +347,7 @@ func OpenXSK(iface string, queueID uint32, frames, frameSize uint32, zeroCopy bo
 }
 
 // registerIntoXSKMap inserts this socket's FD into the program's XSKMAP.
+// Callers must hold globalXSKMu (StartXSK does), which guards globalXSKManager.
 func (s *XSK) registerIntoXSKMap(queue uint32) error {
 	mgr := globalXSKManager
 	if mgr == nil || mgr.m == nil || mgr.m.Objs == nil || mgr.m.Objs.XsightXsk == nil {
@@ -373,7 +398,7 @@ func (s *XSK) mapRings() error {
 	}
 	copy((*(*[1 << 10]byte)(unsafe.Pointer(&off)))[:], offBuf)
 
-	plans := ringMapPlans(s.numFrms)
+	plans := ringMapPlans(s.numFrms, s.rxRingSize)
 	if s.rx, s.rxMap, err = mapRing(s.fd, off.RX, plans[0]); err != nil {
 		return err
 	}
@@ -416,19 +441,20 @@ func mapRing(fd int, ro xdpRingOffset, p ringPlan) (xdpRing, []byte, error) {
 // addresses than the UMEM actually owns, even though the fill ring can be larger
 // than numFrms.
 func (s *XSK) refillAll() {
+	s.flushPending()
 	nb := s.freeFrames()
 	if nb > s.numFrms {
 		nb = s.numFrms
 	}
-	idx := *s.fill.producer
+	idx := s.fill.loadProducer()
 	for i := uint32(0); i < nb; i++ {
 		s.fill.addrs[(idx+i)&s.fill.mask] = uint64(i) * uint64(s.frameSz)
 	}
-	*s.fill.producer = idx + nb
+	s.fill.storeProducer(idx + nb)
 }
 
 func (s *XSK) freeFrames() uint32 {
-	return s.fill.size - (*s.fill.producer - *s.fill.consumer)
+	return s.fill.size - (s.fill.loadProducer() - s.fill.loadConsumer())
 }
 
 // Run drains the RX ring until stop is closed. Frames are parsed and handed
@@ -446,26 +472,28 @@ func (s *XSK) Run(stop <-chan struct{}) {
 			log.Printf("af_xdp: poll: %v", err)
 			return
 		}
+		// Reap TX completions regardless of RX activity: the completion ring
+		// is not signalled through POLLIN, so this is the only progress path.
+		s.reapComp()
 		if n == 0 {
 			continue
 		}
 		s.drainRX()
-		s.reapComp()
 	}
 }
 
 // drainRX reads all available descriptors and dispatches parsed frames.
 func (s *XSK) drainRX() {
 	for {
-		cons := *s.rx.consumer
-		prod := *s.rx.producer
+		cons := s.rx.loadConsumer()
+		prod := s.rx.loadProducer()
 		if cons == prod {
 			break
 		}
 		d := &s.rx.desc[cons&s.rx.mask]
 		frameAddr := d.Addr
 		frameLen := d.Len
-		*s.rx.consumer = cons + 1
+		s.rx.storeConsumer(cons + 1)
 		s.rxCount.Add(1)
 
 		if frameAddr+uint64(frameLen) > uint64(len(s.umem)) {
@@ -489,31 +517,54 @@ func (s *XSK) drainRX() {
 	}
 }
 
-// returnFrame hands a UMEM chunk back to the fill ring.
+// returnFrame hands a UMEM chunk back to the fill ring. If the ring is full
+// the address is queued in pending and retried later, so frames are never
+// lost (a lost address would permanently shrink the UMEM).
 func (s *XSK) returnFrame(addr uint64) {
 	if s.freeFrames() == 0 {
-		// Fill ring full — kernel will hold; drop accounting happens at RX.
-		s.rxDrop.Add(1)
+		s.flushPending()
+	}
+	if s.freeFrames() == 0 {
+		s.pending = append(s.pending, addr)
 		return
 	}
-	idx := *s.fill.producer
+	idx := s.fill.loadProducer()
 	s.fill.addrs[idx&s.fill.mask] = addr
-	*s.fill.producer = idx + 1
+	s.fill.storeProducer(idx + 1)
+}
+
+// flushPending drains queued UMEM addresses into the fill ring.
+func (s *XSK) flushPending() {
+	for len(s.pending) > 0 && s.freeFrames() > 0 {
+		idx := s.fill.loadProducer()
+		s.fill.addrs[idx&s.fill.mask] = s.pending[0]
+		s.fill.storeProducer(idx + 1)
+		s.pending = s.pending[1:]
+	}
 }
 
 // reapComp collects transmitted UMEM frames from the completion ring and
 // returns them to the fill ring so the kernel can reuse them for RX.
 func (s *XSK) reapComp() {
 	for {
-		cons := *s.comp.consumer
-		prod := *s.comp.producer
+		cons := s.comp.loadConsumer()
+		prod := s.comp.loadProducer()
 		if cons == prod {
 			break
 		}
+		if s.freeFrames() == 0 {
+			s.flushPending()
+			if s.freeFrames() == 0 {
+				// Fill ring full: leave the entry in the completion ring so
+				// the frame is not lost; retried on the next loop.
+				break
+			}
+		}
 		addr := s.comp.addrs[cons&s.comp.mask]
-		*s.comp.consumer = cons + 1
+		s.comp.storeConsumer(cons + 1)
 		s.returnFrame(addr)
 	}
+	s.flushPending()
 }
 
 // SendRawFrame transmits a fully-formed Ethernet frame from the UMEM.
@@ -523,13 +574,13 @@ func (s *XSK) SendRawFrame(umemOffset uint64, length uint32) bool {
 		s.txDrop.Add(1)
 		return false
 	}
-	idx := *s.tx.producer
+	idx := s.tx.loadProducer()
 	d := &s.tx.desc[idx&s.tx.mask]
 	d.Addr = umemOffset
 	d.Len = length
-	*s.tx.producer = idx + 1
+	s.tx.storeProducer(idx + 1)
 	s.txCount.Add(1)
-	s.kickTX()
+	xskKickTX(s)
 	return true
 }
 
@@ -555,7 +606,7 @@ func (s *XSK) kickTX() {
 }
 
 func (s *XSK) freeTx() uint32 {
-	return s.tx.size - (*s.tx.producer - *s.tx.consumer)
+	return s.tx.size - (s.tx.loadProducer() - s.tx.loadConsumer())
 }
 
 // Umem exposes the shared memory region for frame building.
@@ -655,11 +706,12 @@ var (
 
 // XSKManager owns the AF_XDP sockets of this node (one per NIC queue).
 type XSKManager struct {
-	m       *Manager
-	iface   string
-	sockets map[uint32]*XSK
-	stop    chan struct{}
-	wg      sync.WaitGroup
+	m         *Manager
+	iface     string
+	sockets   map[uint32]*XSK
+	stop      chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // StartXSK opens an AF_XDP socket on iface/queue, registers it in the XSKMAP
@@ -704,21 +756,26 @@ func StartXSK(m *Manager, iface string, queue uint32, frames, frameSize uint32,
 // openXSKFn is a test seam for StartXSK's registration-ordering test.
 var openXSKFn = OpenXSK
 
+// xskKickTX is a test seam so the TX doorbell can be observed.
+var xskKickTX = func(s *XSK) { s.kickTX() }
+
 // Close stops all RX loops and releases sockets.
 func (x *XSKManager) Close() {
 	if x == nil {
 		return
 	}
-	close(x.stop)
-	x.wg.Wait()
-	for _, s := range x.sockets {
-		s.Close()
-	}
-	globalXSKMu.Lock()
-	if globalXSKManager == x {
-		globalXSKManager = nil
-	}
-	globalXSKMu.Unlock()
+	x.closeOnce.Do(func() {
+		close(x.stop)
+		x.wg.Wait()
+		for _, s := range x.sockets {
+			s.Close()
+		}
+		globalXSKMu.Lock()
+		if globalXSKManager == x {
+			globalXSKManager = nil
+		}
+		globalXSKMu.Unlock()
+	})
 }
 
 // Sockets returns the managed sockets (for posture reporting).

@@ -1,3 +1,5 @@
+//go:build linux
+
 package bpf
 
 import "testing"
@@ -44,7 +46,7 @@ func TestRingMapSize(t *testing.T) {
 }
 
 func TestRingMapPlans(t *testing.T) {
-	plans := ringMapPlans(4096)
+	plans := ringMapPlans(4096, 0)
 	want := [4]ringPlan{
 		{name: "rx", pgoff: xdpPgoffRXRing, nmemb: 4096, descSize: xskRingDescSize},
 		{name: "tx", pgoff: xdpPgoffTXRing, nmemb: 4096, descSize: xskRingDescSize},
@@ -53,5 +55,15 @@ func TestRingMapPlans(t *testing.T) {
 	}
 	if plans != want {
 		t.Fatalf("ringMapPlans = %+v, want %+v", plans, want)
+	}
+
+	// Kernels without an explicit XDP_RX_RING default the RX ring to the
+	// fill-ring size; the mapping must follow that geometry.
+	fallback := ringMapPlans(4096, DefaultFillRings)
+	if fallback[0].nmemb != DefaultFillRings {
+		t.Fatalf("rx nmemb = %d, want %d", fallback[0].nmemb, DefaultFillRings)
+	}
+	if fallback[1].nmemb != 4096 {
+		t.Fatalf("tx nmemb = %d, want 4096", fallback[1].nmemb)
 	}
 }
