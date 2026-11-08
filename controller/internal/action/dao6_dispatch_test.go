@@ -361,3 +361,30 @@ func TestDao6_E3c_FeedSurvivesStalledDispatcher(t *testing.T) {
 		}
 	})
 }
+
+func TestDao6_E3d_RebreachEnqueueNeverBlocks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, e, b := dao6BlockedEngine()
+		defer func() { b.open(); e.WaitIdle(); e.stop() }()
+		e.Enqueue(dao6Event(2))
+		e.Enqueue(dao6Event(3)) // queue now full
+
+		tk := dao6Tracker(s, e.EnqueueNonBlocking)
+		tk.SetRebreachCallback(e.EnqueueRebreachNonBlocking)
+		tk.Feed(dao6Threshold("192.0.2.10")) // confirm
+		tk.Feed(nil)                         // → expiring
+		before := dao6Counter("dropped")
+
+		done := make(chan struct{})
+		go func() { tk.Feed(dao6Threshold("192.0.2.10")); close(done) }() // rebreach
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("rebreach enqueue blocked the detection tick on a full queue")
+		}
+		if dao6Counter("dropped")-before < 1 {
+			t.Errorf("dropped counter delta=%v, want >=1", dao6Counter("dropped")-before)
+		}
+	})
+}

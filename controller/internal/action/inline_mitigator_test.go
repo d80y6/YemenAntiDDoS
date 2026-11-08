@@ -478,3 +478,70 @@ func TestConcurrentOnCriticalNodesRace(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+func (p *recordingPusher) versions(nodeID string) []uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]uint64, 0, len(p.byNode[nodeID]))
+	for _, s := range p.byNode[nodeID] {
+		out = append(out, s.Version)
+	}
+	return out
+}
+
+func TestOnCriticalNodeMergePushesSnapshot(t *testing.T) {
+	pusher := newRecordingPusher("edge-a", "edge-b")
+	m := NewInlineMitigator(testMitigatorConfig(time.Hour), pusher)
+	m.OnCritical(120, "192.0.2.120", "udp", "burst_emergency", []string{"edge-a"}, 100, nil)
+	baseA := pusher.count("edge-a")
+
+	// A second node reports the same attack: the merged snapshot must reach
+	// both nodes immediately, not on the next phase change or refresh tick.
+	m.OnCritical(120, "192.0.2.120", "udp", "burst_emergency", []string{"edge-b"}, 200, nil)
+	if pusher.count("edge-b") == 0 {
+		t.Fatal("node-set merge did not push to the newly joined node")
+	}
+	if set := pusher.last("edge-b"); set == nil || len(set.Rules) == 0 {
+		t.Fatalf("merged push to edge-b = %+v, want active rules", set)
+	}
+	if pusher.count("edge-a") != baseA+1 {
+		t.Fatalf("edge-a pushes = %d, want %d (merged snapshot)", pusher.count("edge-a"), baseA+1)
+	}
+
+	// A no-op merge (node already present) refreshes the peak without pushing.
+	m.OnCritical(120, "192.0.2.120", "udp", "burst_emergency", []string{"edge-b"}, 300, nil)
+	if pusher.count("edge-b") != 1 {
+		t.Fatalf("edge-b pushes = %d, want 1 (no node-set change)", pusher.count("edge-b"))
+	}
+}
+
+func TestPushVersionsSeedEachNodeOnce(t *testing.T) {
+	pusher := newRecordingPusher("edge-a")
+	m := NewInlineMitigator(testMitigatorConfig(time.Hour), pusher)
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				m.pushSnapshot([]string{"edge-a"}, uint64(100+g*10+i))
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	vers := pusher.versions("edge-a")
+	if len(vers) == 0 || vers[0] != 1 {
+		t.Fatalf("first pushed version = %v, want v1 (epoch seed first)", vers)
+	}
+	ones := 0
+	for _, v := range vers {
+		if v == 1 {
+			ones++
+		}
+	}
+	if ones != 1 {
+		t.Fatalf("epoch-seed v1 pushed %d times, want exactly 1 (versions=%v)", ones, vers)
+	}
+}

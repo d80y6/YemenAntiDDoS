@@ -170,8 +170,12 @@ type InlineMitigator struct {
 	// seeded marks Nodes that have received this Controller epoch's first
 	// push. A restarted Controller's version counter is below what a Node
 	// already applied, so that first push is v1 (epoch reset) and later
-	// pushes use the global generation.
+	// pushes use the global generation. Guarded by mu; paired with pushLocks
+	// so the decide-version → send → seed sequence is atomic per node.
 	seeded map[string]bool
+	// pushLocks serializes (decide version → send → seed) per node. Lock
+	// order: pushLocks[node] before mu, never the reverse.
+	pushLocks map[string]*sync.Mutex
 }
 
 // NewInlineMitigator builds the mitigator.
@@ -184,6 +188,7 @@ func NewInlineMitigator(cfg InlineMitigatorConfig, pusher InlinePusher) *InlineM
 		cookieTargets: make(map[string]struct{}),
 		nowFn:         time.Now,
 		seeded:        make(map[string]bool),
+		pushLocks:     make(map[string]*sync.Mutex),
 	}
 }
 
@@ -225,10 +230,25 @@ func (m *InlineMitigator) OnCritical(attackID int, targetIP, decoder, eventType 
 
 	m.mu.Lock()
 	if existing, ok := m.active[attackID]; ok {
-		// Already mitigating — refresh peaks and node set only.
+		// Already mitigating — refresh peaks and merge the node set. When
+		// the set grows (a second node reports the attack), push the merged
+		// snapshot immediately: without it the joined node waits for the
+		// next phase change or the 5-minute refresh tick.
 		existing.PeakPPS = maxPeak(existing.PeakPPS, pps)
-		existing.Nodes = mergeStrings(existing.Nodes, nodes)
+		merged := mergeStrings(existing.Nodes, nodes)
+		changed := len(merged) != len(existing.Nodes)
+		existing.Nodes = merged
+		if !changed {
+			m.mu.Unlock()
+			return
+		}
+		m.version++
+		version := m.version
+		nodesPush := append([]string(nil), merged...)
 		m.mu.Unlock()
+		log.Printf("inline-mitigation: attack=%d node set grew to %v, pushing merged snapshot",
+			attackID, nodesPush)
+		m.pushSnapshot(nodesPush, version)
 		return
 	}
 
@@ -407,10 +427,15 @@ func (m *InlineMitigator) Reconcile(nodeID string) error {
 	if m == nil {
 		return nil
 	}
+	l := m.nodePushLock(nodeID)
+	l.Lock()
+	defer l.Unlock()
+
 	m.mu.Lock()
 	pusher := m.pusher
 	if pusher == nil {
 		m.mu.Unlock()
+		log.Printf("inline-mitigation: reconcile node=%s skipped (pusher not bound)", nodeID)
 		return nil
 	}
 	var version uint64
@@ -704,6 +729,55 @@ func topSubnets(counts map[string]uint64, total uint64, minShare float64, max in
 // Push plumbing
 // ---------------------------------------------------------------------------
 
+// nodePushLock returns the per-node push lock, creating it on first use.
+// Callers take it before m.mu (never while holding m.mu).
+func (m *InlineMitigator) nodePushLock(nodeID string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.pushLocks[nodeID]
+	if l == nil {
+		l = &sync.Mutex{}
+		m.pushLocks[nodeID] = l
+	}
+	return l
+}
+
+// sendVersioned pushes one snapshot to one node with the version decided
+// atomically with the send: an unseeded node always receives v1 first, so a
+// late stale epoch-reset can never arrive after a newer generation.
+func (m *InlineMitigator) sendVersioned(nodeID string, pusher InlinePusher,
+	globalVersion uint64, rules []*pb.InlineRule, cookies []string) error {
+	l := m.nodePushLock(nodeID)
+	l.Lock()
+	defer l.Unlock()
+
+	m.mu.Lock()
+	version := globalVersion
+	if !m.seeded[nodeID] {
+		version = 1
+	}
+	m.mu.Unlock()
+
+	set := &pb.InlineRuleSet{
+		Version:          version,
+		Rules:            rules,
+		DefaultAction:    "pass",
+		SynCookieEnabled: true,
+		CookieTargets:    cookies,
+	}
+	if err := pusher.PushInlineRules(nodeID, set); err != nil {
+		m.mu.Lock()
+		m.failures++
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Lock()
+	m.pushes++
+	m.seeded[nodeID] = true
+	m.mu.Unlock()
+	return nil
+}
+
 // pushSnapshot sends the full authoritative snapshot to the given nodes.
 // Sending the whole set (rather than a delta) makes each push idempotent,
 // which is what lets a reconnecting Node recover state safely.
@@ -719,47 +793,20 @@ func (m *InlineMitigator) pushSnapshot(nodes []string, version uint64) {
 	for c := range m.cookieTargets {
 		cookies = append(cookies, c)
 	}
-	targets := nodes
-	if len(targets) == 0 {
-		targets = pusher.ConnectedInlineNodes()
-	}
-	// A Node that has not yet received this epoch's first push resets on v1
-	// even when the global generation is already higher.
-	perNode := make(map[string]uint64, len(targets))
-	for _, nodeID := range targets {
-		if nodeID == "" {
-			continue
-		}
-		if m.seeded[nodeID] {
-			perNode[nodeID] = version
-		} else {
-			perNode[nodeID] = 1
-		}
-	}
+	targets := append([]string(nil), nodes...)
 	m.mu.Unlock()
 
+	if len(targets) == 0 {
+		// Outside m.mu: the pusher takes its own node-state lock.
+		targets = pusher.ConnectedInlineNodes()
+	}
 	for _, nodeID := range targets {
 		if nodeID == "" {
 			continue
 		}
-		set := &pb.InlineRuleSet{
-			Version:          perNode[nodeID],
-			Rules:            rules,
-			DefaultAction:    "pass",
-			SynCookieEnabled: true,
-			CookieTargets:    cookies,
-		}
-		if err := pusher.PushInlineRules(nodeID, set); err != nil {
+		if err := m.sendVersioned(nodeID, pusher, version, rules, cookies); err != nil {
 			log.Printf("inline-mitigation: push to %s failed: %v", nodeID, err)
-			m.mu.Lock()
-			m.failures++
-			m.mu.Unlock()
-			continue
 		}
-		m.mu.Lock()
-		m.pushes++
-		m.seeded[nodeID] = true
-		m.mu.Unlock()
 	}
 }
 

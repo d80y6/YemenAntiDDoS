@@ -234,7 +234,7 @@ func main() {
 	actionEngine.Start()
 
 	attackTracker := tracker.New(trackerCfg, iStore, rings, alertDedup, actionEngine.EnqueueNonBlocking)
-	attackTracker.SetRebreachCallback(actionEngine.EnqueueRebreach)
+	attackTracker.SetRebreachCallback(actionEngine.EnqueueRebreachNonBlocking)
 
 	// v4.0: inline scrubbing action plane. Created before startup recovery so
 	// recovered active attacks rebuild their rule snapshot; the pusher is
@@ -788,8 +788,8 @@ func isFastPathEvent(event *pb.CriticalEvent) bool {
 	return false
 }
 
-// criticalFlowRing remembers the latest CriticalEvent top flows per attack
-// (bounded; the map doubles as the ring for LRU eviction).
+// criticalFlowRing remembers the latest CriticalEvent top flows per attack.
+// Bounded FIFO eviction by first insert; an updated attack keeps its position.
 type criticalFlowRing struct {
 	mu    sync.Mutex
 	flows map[int][]action.FlowKey

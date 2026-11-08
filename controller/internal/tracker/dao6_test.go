@@ -215,8 +215,9 @@ func TestEndedHookDoesNotBlockExpiry(t *testing.T) {
 
 	release := make(chan struct{})
 	started := make(chan struct{})
+	var once sync.Once
 	tk.SetInlineMitigatorHook(func(int) {
-		close(started)
+		once.Do(func() { close(started) })
 		<-release
 	})
 

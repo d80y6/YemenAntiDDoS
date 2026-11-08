@@ -241,6 +241,22 @@ func (e *Engine) EnqueueRebreach(attackDBID int) {
 	e.enqueue(dispatchItem{rebreach: true, attackID: attackDBID})
 }
 
+// EnqueueRebreachNonBlocking is the detection-path rebreach enqueue: the
+// caller holds the tracker lock, so it must never block. A full queue drops
+// the cancel and counts it; the snapshot refresh keeps rules convergent.
+func (e *Engine) EnqueueRebreachNonBlocking(attackDBID int) {
+	select {
+	case e.queue <- dispatchItem{rebreach: true, attackID: attackDBID}:
+	default:
+		n := e.dropped.Add(1)
+		metrics.ActionQueueEvents.WithLabelValues("dropped").Inc()
+		if n == 1 || n%1000 == 0 {
+			log.Printf("action: queue full; dropped rebreach for attack %d (total_dropped=%d)",
+				attackDBID, n)
+		}
+	}
+}
+
 // EnqueueNonBlocking is the detection-path entry point: the caller may hold the
 // tracker lock, so it must never block. A full queue drops the event and bumps
 // the drop counter; the periodic inline snapshot refresh re-derives mitigation
