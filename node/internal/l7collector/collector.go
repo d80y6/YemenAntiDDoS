@@ -367,9 +367,9 @@ func (c *Collector) Tick(now time.Time) []Event {
 		}
 		counters := make(map[string]uint64)
 		if httpOK {
-			counters["http_requests"] = b.http
-			counters["http_rps"] = rps
-			counters["http_unique_sources"] = uint64(len(b.uniqueSrc))
+			counters[l7.KeyHTTPRequests] = b.http
+			counters[l7.KeyHTTPRPS] = rps
+			counters[l7.KeyUniqueSources] = uint64(len(b.uniqueSrc))
 			addDetails(counters, "http_method:", b.methods)
 			addDetails(counters, "http_path:", b.paths)
 		}
@@ -378,18 +378,18 @@ func (c *Collector) Tick(now time.Time) []Event {
 			addDetails(counters, "tls_ja4:", b.ja4s)
 		}
 		if tlsOK {
-			counters["tls_handshakes"] = b.tls
-			counters["tls_hsps"] = hsps
-			counters["tls_unique_sources"] = uint64(len(b.uniqueSrc))
-			counters["tls_sni_missing"] = b.sniMissing
+			counters[l7.KeyHandshakes] = b.tls
+			counters[l7.KeyHSPS] = hsps
+			counters[l7.KeyUniqueSources] = uint64(len(b.uniqueSrc))
+			counters[l7.KeyMissingSNI] = b.sniMissing
 			addDetails(counters, "tls_sni:", b.snis)
 		}
 		if len(b.uas) > 0 {
 			addDetails(counters, "http_ua:", b.uas)
 		}
 		if slowOK {
-			counters["slowloris_conns"] = b.slow
-			counters["slowloris_sources"] = uint64(len(b.slowSrcs))
+			counters[l7.KeySlowlorisConns] = b.slow
+			counters[l7.KeySlowlorisSources] = uint64(len(b.slowSrcs))
 			for src := range b.slowSrcs {
 				if len(counters) > 64 {
 					break
