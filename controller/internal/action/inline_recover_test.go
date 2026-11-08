@@ -45,7 +45,7 @@ func TestRecoveredAttackIsReconciled(t *testing.T) {
 	tk := tracker.New(tracker.Config{HardConfirmSeconds: 1, ExpiryIntervalSeconds: 300},
 		st, nil, dedup.New(), nil)
 	tk.SetRecoveredCallback(func(a *store.Attack) {
-		m.Recover(a.ID, a.DstIP, a.DecoderFamily, a.NodeSources, uint64(a.PeakPPS))
+		m.Recover(a.ID, a.DstIP, a.DecoderFamily, a.AttackType, a.NodeSources, uint64(a.PeakPPS))
 	})
 
 	if err := tk.RecoverFromDB(context.Background()); err != nil {

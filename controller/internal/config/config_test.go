@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -181,5 +182,26 @@ func TestLoadInlineEnabledByDefault(t *testing.T) {
 	}
 	if !cfg.Action.InlineEnabled {
 		t.Error("Action.InlineEnabled = false, want true by default")
+	}
+}
+
+func TestInlineNarrowDelayClamped(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{
+		{0, 0},    // 0 keeps the built-in default
+		{50, 500}, // below the documented floor
+		{499, 500},
+		{500, 500},
+		{750, 750},
+		{1000, 1000},
+		{5000, 1000}, // above the documented ceiling
+	} {
+		yaml := fmt.Sprintf("%s\naction_engine:\n  inline_narrow_delay_ms: %d\n", baseYAML, tc.in)
+		cfg, err := Load(writeConfig(t, yaml))
+		if err != nil {
+			t.Fatalf("load delay=%d: %v", tc.in, err)
+		}
+		if cfg.Action.InlineNarrowDelayMS != tc.want {
+			t.Errorf("delay=%d -> %d, want %d", tc.in, cfg.Action.InlineNarrowDelayMS, tc.want)
+		}
 	}
 }

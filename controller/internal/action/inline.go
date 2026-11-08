@@ -64,6 +64,7 @@ type InlineMitigation struct {
 	AttackID   int
 	TargetIP   string
 	Decoder    string
+	EventType  string // critical-event / attack type (e.g. "syn_flood")
 	Nodes      []string
 	Phase      string // "broad" | "narrow"
 	Rules      []InlineRule
@@ -235,6 +236,7 @@ func (m *InlineMitigator) OnCritical(attackID int, targetIP, decoder, eventType 
 		AttackID:  attackID,
 		TargetIP:  targetIP,
 		Decoder:   decoder,
+		EventType: eventType,
 		Nodes:     append([]string(nil), nodes...),
 		Phase:     "broad",
 		StartedAt: now,
@@ -244,11 +246,14 @@ func (m *InlineMitigator) OnCritical(attackID int, targetIP, decoder, eventType 
 	m.active[attackID] = mit
 	m.version++
 	version := m.version
+	// Snapshot the node list under the lock: a concurrent OnCritical may
+	// merge nodes into this mitigation while the push is in flight.
+	nodesPush := append([]string(nil), mit.Nodes...)
 	m.mu.Unlock()
 
 	log.Printf("inline-mitigation: attack=%d target=%s decoder=%s BROAD phase (pps=%d nodes=%v)",
 		attackID, targetIP, decoder, pps, nodes)
-	m.push(mit, version)
+	m.pushSnapshot(nodesPush, version)
 
 	// Phase 2: narrow to the dominant ports/subnets once flow samples land.
 	go m.scheduleNarrow(attackID, flows)
@@ -258,7 +263,7 @@ func (m *InlineMitigator) OnCritical(attackID int, targetIP, decoder, eventType 
 // restart. It records the broad phase but does not push: no Node has attached
 // yet, and version accounting must not advance before this epoch's first
 // per-Node push (see seeded). Reconcile delivers the snapshot on attach.
-func (m *InlineMitigator) Recover(attackID int, targetIP, decoder string,
+func (m *InlineMitigator) Recover(attackID int, targetIP, decoder, eventType string,
 	nodes []string, pps uint64) {
 	if m == nil || !m.cfg.Enabled || attackID <= 0 || targetIP == "" {
 		return
@@ -276,6 +281,7 @@ func (m *InlineMitigator) Recover(attackID int, targetIP, decoder string,
 		AttackID:  attackID,
 		TargetIP:  targetIP,
 		Decoder:   decoder,
+		EventType: eventType,
 		Nodes:     append([]string(nil), nodes...),
 		Phase:     "broad",
 		StartedAt: now,
@@ -335,10 +341,11 @@ func (m *InlineMitigator) scheduleNarrow(attackID int, seedFlows []FlowKey) {
 	mit.NarrowedAt = now
 	m.version++
 	version := m.version
+	nodesPush := append([]string(nil), mit.Nodes...)
 	m.mu.Unlock()
 
 	log.Printf("inline-mitigation: attack=%d NARROW phase → %s", attackID, describeRules(narrow))
-	m.push(mit, version)
+	m.pushSnapshot(nodesPush, version)
 
 	// Watch for survival: if the attack outlives narrowing, re-breadth.
 	go m.scheduleRebreadth(attackID)
@@ -364,10 +371,11 @@ func (m *InlineMitigator) scheduleRebreadth(attackID int) {
 	m.version++
 	version := m.version
 	rebreaths := mit.Rebreadths
+	nodesPush := append([]string(nil), mit.Nodes...)
 	m.mu.Unlock()
 
 	log.Printf("inline-mitigation: attack=%d REBREADTH #%d (attack survived narrow phase)", attackID, rebreaths)
-	m.push(mit, version)
+	m.pushSnapshot(nodesPush, version)
 	go m.scheduleNarrow(attackID, nil)
 }
 
@@ -385,10 +393,11 @@ func (m *InlineMitigator) Withdraw(attackID int) {
 	delete(m.active, attackID)
 	m.version++
 	version := m.version
+	nodesPush := append([]string(nil), mit.Nodes...)
 	m.mu.Unlock()
 
-	log.Printf("inline-mitigation: attack=%d withdrawn (nodes=%v)", attackID, mit.Nodes)
-	m.pushSnapshot(mit.Nodes, version)
+	log.Printf("inline-mitigation: attack=%d withdrawn (nodes=%v)", attackID, nodesPush)
+	m.pushSnapshot(nodesPush, version)
 }
 
 // Reconcile re-pushes the authoritative rule snapshot to a node. Called when
@@ -523,7 +532,7 @@ func (m *InlineMitigator) broadRulesLocked(mit *InlineMitigation, now time.Time)
 		ExpiresUnix:  now.Add(m.cfg.RuleTTL).Unix(),
 		Reason:       fmt.Sprintf("broad:attack=%d:pps=%d", mit.AttackID, mit.PeakPPS),
 	}}
-	if isHandshakeFlood(mit.Decoder) {
+	if isHandshakeFlood(mit.Decoder) || isHandshakeFlood(mit.EventType) {
 		rules = append(rules, InlineRule{
 			ID:           m.newRuleIDLocked(),
 			DstIP:        mit.TargetIP,
@@ -695,11 +704,6 @@ func topSubnets(counts map[string]uint64, total uint64, minShare float64, max in
 // Push plumbing
 // ---------------------------------------------------------------------------
 
-// push sends the given mitigation to its nodes.
-func (m *InlineMitigator) push(mit *InlineMitigation, version uint64) {
-	m.pushSnapshot(mit.Nodes, version)
-}
-
 // pushSnapshot sends the full authoritative snapshot to the given nodes.
 // Sending the whole set (rather than a delta) makes each push idempotent,
 // which is what lets a reconnecting Node recover state safely.
@@ -825,9 +829,12 @@ func (m *InlineMitigator) newRuleIDLocked() uint64 {
 // helpers
 // ---------------------------------------------------------------------------
 
+// isHandshakeFlood reports whether a decoder or event type describes a TCP
+// handshake flood (e.g. "tcp_syn", "syn_flood"). Only SYN floods are mitigated
+// with SYN cookies: ACK/RST/FIN floods never complete a handshake, so a cookie
+// rule would never be answered.
 func isHandshakeFlood(decoder string) bool {
-	d := strings.ToLower(decoder)
-	return strings.Contains(d, "syn") || strings.Contains(d, "tcp")
+	return strings.Contains(strings.ToLower(decoder), "syn")
 }
 
 func prefixLenOf(ip string) int {

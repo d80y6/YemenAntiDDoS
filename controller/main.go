@@ -242,7 +242,7 @@ func main() {
 	// the snapshot through Reconcile when they attach.
 	inlineMitigator := action.NewInlineMitigator(inlineMitigatorConfig(cfg), nil)
 	attackTracker.SetRecoveredCallback(func(a *store.Attack) {
-		inlineMitigator.Recover(a.ID, a.DstIP, a.DecoderFamily,
+		inlineMitigator.Recover(a.ID, a.DstIP, a.DecoderFamily, a.AttackType,
 			a.NodeSources, uint64(a.PeakPPS))
 	})
 	attackTracker.SetInlineMitigatorHook(func(attackID int) {

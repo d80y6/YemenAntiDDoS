@@ -214,6 +214,15 @@ func Load(path string) (*Config, error) {
 	if cfg.Action.FastPathMultiplier < 0 || (cfg.Action.FastPathMultiplier > 0 && cfg.Action.FastPathMultiplier < 1) {
 		return nil, fmt.Errorf("action_engine.fast_path_multiplier must be 0 (disabled) or >= 1, got %v", cfg.Action.FastPathMultiplier)
 	}
+	// Clamp the narrow-phase delay into the documented sub-second window
+	// (500-1000ms). 0 keeps the built-in default.
+	if d := cfg.Action.InlineNarrowDelayMS; d != 0 {
+		if d < 500 {
+			cfg.Action.InlineNarrowDelayMS = 500
+		} else if d > 1000 {
+			cfg.Action.InlineNarrowDelayMS = 1000
+		}
+	}
 	// TLS: fail fast at startup rather than at the first node handshake. A
 	// controller that boots with enabled=true but a missing/unreadable CA
 	// would otherwise accept TCP and reject every node afterwards, which is

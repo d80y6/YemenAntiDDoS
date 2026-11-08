@@ -2,6 +2,7 @@ package action
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -421,5 +422,59 @@ func TestReconcileTickerRefreshesBeforeTTL(t *testing.T) {
 	last := pusher.last("edge-a")
 	if last == nil || len(last.Rules) == 0 {
 		t.Fatalf("ticker pushed %+v, want active rules", last)
+	}
+}
+
+func TestSynCookieOnlyForHandshakeFloods(t *testing.T) {
+	for _, tc := range []struct {
+		decoder string
+		cookie  bool
+	}{
+		{"tcp_syn", true},
+		{"tcp_ack", false},
+		{"tcp", false},
+		{"tcp_rst", false},
+		{"udp", false},
+		{"ip", false},
+	} {
+		t.Run(tc.decoder, func(t *testing.T) {
+			pusher := newRecordingPusher("edge-a")
+			m := NewInlineMitigator(testMitigatorConfig(time.Hour), pusher)
+			m.OnCritical(90, "192.0.2.90", tc.decoder, "burst_emergency",
+				[]string{"edge-a"}, 1000, nil)
+			set := pusher.last("edge-a")
+			if set == nil {
+				t.Fatal("no push")
+			}
+			var cookie bool
+			for _, r := range set.Rules {
+				if r.Action == "syn_cookie" {
+					cookie = true
+				}
+			}
+			if cookie != tc.cookie {
+				t.Errorf("decoder=%s syn_cookie=%v, want %v (rules=%+v)",
+					tc.decoder, cookie, tc.cookie, set.Rules)
+			}
+		})
+	}
+}
+
+func TestConcurrentOnCriticalNodesRace(t *testing.T) {
+	for att := 95; att < 105; att++ {
+		pusher := newRecordingPusher("edge-a")
+		m := NewInlineMitigator(testMitigatorConfig(5*time.Millisecond), pusher)
+		var wg sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func(g int) {
+				defer wg.Done()
+				for i := 0; i < 20; i++ {
+					m.OnCritical(att, "192.0.2.95", "udp", "burst_emergency",
+						[]string{fmt.Sprintf("n%d", g)}, 1000, nil)
+				}
+			}(g)
+		}
+		wg.Wait()
 	}
 }
