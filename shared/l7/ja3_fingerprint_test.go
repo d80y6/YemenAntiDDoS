@@ -170,19 +170,22 @@ func TestJA4Segments(t *testing.T) {
 	h, _ := ParseTLSClientHelloFull(buildFullClientHello())
 	got := h.JA4()
 	parts := strings.Split(got, "_")
-	if len(parts) != 3 {
-		t.Fatalf("JA4 = %q, want three underscore segments", got)
+	if len(parts) != 4 {
+		t.Fatalf("JA4 = %q, want four underscore segments (cipher, ext, sigalgs)", got)
 	}
 	if parts[0] != "t13d0306h2" {
 		t.Fatalf("JA4_a = %q, want t13d0306h2", parts[0])
 	}
-	cs := sha256.Sum256([]byte("4865,4866,49195"))
-	if want := hex.EncodeToString(cs[:])[:12]; parts[1] != want {
-		t.Fatalf("JA4_b = %q, want %s", parts[1], want)
-	}
-	es := sha256.Sum256([]byte("10,11,13,43"))
-	if want := hex.EncodeToString(es[:])[:12]; parts[2] != want {
-		t.Fatalf("JA4_c = %q, want %s", parts[2], want)
+	// 4-char lowercase hex digests over sorted hex-encoded lists.
+	for i, in := range []string{"1301,1302,c02b", "000a,000b,000d,002b", "0403,0804"} {
+		sum := sha256.Sum256([]byte(in))
+		want := hex.EncodeToString(sum[:])[:4]
+		if parts[i+1] != want {
+			t.Errorf("JA4 segment %d = %q, want %q (sha256 of %q)[:4]", i+1, parts[i+1], want, in)
+		}
+		if len(parts[i+1]) != 4 || strings.ToLower(parts[i+1]) != parts[i+1] {
+			t.Errorf("segment %d = %q, want 4-char lowercase hex", i+1, parts[i+1])
+		}
 	}
 }
 
@@ -216,8 +219,8 @@ func TestClientHelloWithoutSNI(t *testing.T) {
 	if !h.SNIMissing || h.SNI != "" {
 		t.Fatalf("sni missing=%v value=%q, want missing", h.SNIMissing, h.SNI)
 	}
-	if !strings.HasPrefix(h.JA4(), "t12r") {
-		t.Fatalf("JA4 = %q, want no-SNI TLS 1.2 marker t12r", h.JA4())
+	if !strings.HasPrefix(h.JA4(), "t12i") {
+		t.Fatalf("JA4 = %q, want no-SNI TLS 1.2 marker t12i", h.JA4())
 	}
 	_ = payload
 }
@@ -253,5 +256,79 @@ func TestGREASEValues(t *testing.T) {
 		if isGREASE(v) {
 			t.Errorf("%#x should not be GREASE", v)
 		}
+	}
+}
+
+func TestJA4KnownAnswerVectors(t *testing.T) {
+	// FoxIO-style known-answer vectors per the project's canonical rules:
+	// 4-char lowercase hex digests over sorted hex ciphers/extensions, a
+	// fourth segment hashing sigalgs in wire order, marker "i" for no-SNI
+	// and IP-literal SNIs, version from supported_versions.
+	full, ok := ParseTLSClientHelloFull(buildFullClientHello())
+	if !ok {
+		t.Fatal("full ClientHello rejected")
+	}
+	if got, want := full.JA4(), "t13d0306h2_5559_0d22_00c1"; got != want {
+		t.Errorf("full hello JA4 = %q, want %q", got, want)
+	}
+
+	// Minimal hello: no extensions, no supported_versions (legacy 0x0303).
+	b := &helloBuilder{}
+	b.u16(0x0303)
+	b.bytes(make([]byte, 32))
+	b.vec8(nil)
+	cs := &helloBuilder{}
+	cs.u16(0x1301)
+	b.vec16(cs.body)
+	b.vec8([]byte{0})
+	b.vec16(nil)
+	hs := &helloBuilder{}
+	hs.u8(0x01)
+	hs.bytes([]byte{0, byte(len(b.body) >> 8), byte(len(b.body))})
+	hs.bytes(b.body)
+	rec := &helloBuilder{}
+	rec.u8(0x16)
+	rec.u16(0x0301)
+	rec.vec16(hs.body)
+	min, ok := ParseTLSClientHelloFull(rec.body)
+	if !ok {
+		t.Fatal("minimal ClientHello rejected")
+	}
+	if got, want := min.JA4(), "t12i010000_0f2c_9af1_e3b0"; got != want {
+		t.Errorf("minimal JA4 = %q, want %q", got, want)
+	}
+
+	// IP-literal SNI must use the "i" marker, not "d".
+	c := &helloBuilder{}
+	c.u16(0x0303)
+	c.bytes(make([]byte, 32))
+	c.vec8(nil)
+	cs2 := &helloBuilder{}
+	cs2.u16(0x1301)
+	c.vec16(cs2.body)
+	c.vec8([]byte{0})
+	ext := &helloBuilder{}
+	ip := "203.0.113.5"
+	sni := &helloBuilder{}
+	sni.vec16(append([]byte{0x00, 0x00, byte(len(ip))}, ip...))
+	ext.extension(0x0000, sni.body)
+	c.vec16(ext.body)
+	hs2 := &helloBuilder{}
+	hs2.u8(0x01)
+	hs2.bytes([]byte{0, byte(len(c.body) >> 8), byte(len(c.body))})
+	hs2.bytes(c.body)
+	rec2 := &helloBuilder{}
+	rec2.u8(0x16)
+	rec2.u16(0x0301)
+	rec2.vec16(hs2.body)
+	ipHello, ok := ParseTLSClientHelloFull(rec2.body)
+	if !ok {
+		t.Fatal("IP-SNI ClientHello rejected")
+	}
+	if ipHello.SNI != ip {
+		t.Fatalf("SNI = %q, want %q", ipHello.SNI, ip)
+	}
+	if got, want := ipHello.JA4(), "t12i010100_0f2c_9af1_e3b0"; got != want {
+		t.Errorf("IP-SNI JA4 = %q, want %q", got, want)
 	}
 }

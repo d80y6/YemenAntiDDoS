@@ -19,6 +19,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+	"net"
+	"sort"
 	"strings"
 )
 
@@ -73,19 +76,28 @@ func (h TLSHandshake) JA3() (string, string) {
 	return s, hex.EncodeToString(sum[:])
 }
 
-// JA4 builds the FoxIO JA4 ClientHello fingerprint:
+// JA4 builds the canonical FoxIO-style JA4 ClientHello fingerprint:
 //
-//	<proto><ver><sni><#ciphers><#exts><alpn>_<cipher-sha256-12>_<ext-sha256-12>
+//	<proto><ver><sni><#ciphers><#exts><alpn>_<ciph>_<ext>_<sigalgs>
 //
-// proto is fixed "t" (TCP) and ver is "13" for TLS 1.3, "12" for 1.2, "0o"
-// for other/unknown. sni is "d" when SNI is present (domain), "i" when the
-// extension exists with an IP, "r" when absent. alpn is the first ALPN char,
-// "00" when none.
+// proto is fixed "t" (TCP). ver comes from supported_versions when present
+// ("13"/"12"/"11"/"10", else "00"). sni is "d" for a domain name and "i"
+// otherwise (absent SNI or an IP literal). Counts are two digits, capped at
+// 99, with GREASE already stripped by the parser. alpn is the first+last
+// character of the first ALPN protocol, "00" when none.
+//
+// The three digests are the first 4 characters of SHA-256 over the comma-
+// joined 4-char lowercase hex values: ciphers sorted, extension types sorted
+// (excluding SNI and ALPN), and signature_algorithms in wire order.
 func (h TLSHandshake) JA4() string {
 	proto := "t"
 
+	verVal := h.Version
+	if h.SupportedVer != 0 {
+		verVal = h.SupportedVer
+	}
 	ver := "00"
-	switch max(h.SupportedVer, h.Version) {
+	switch verVal {
 	case 0x0304:
 		ver = "13"
 	case 0x0303:
@@ -96,15 +108,14 @@ func (h TLSHandshake) JA4() string {
 		ver = "10"
 	}
 
-	sni := "r"
-	if h.SNI != "" {
-		sni = "d"
-	} else if h.SNIMissing {
-		sni = "r"
+	// "d" for a domain SNI; "i" when the SNI is absent or an IP literal.
+	sni := "d"
+	if h.SNI == "" || net.ParseIP(h.SNI) != nil {
+		sni = "i"
 	}
 
 	cipherCount := formatCount(cipherCountCaps(len(h.CipherSuites)))
-	extCount := formatCount(len(h.Extensions))
+	extCount := formatCount(cipherCountCaps(len(h.Extensions)))
 
 	alpn := "00"
 	if len(h.ALPNs) > 0 {
@@ -117,8 +128,11 @@ func (h TLSHandshake) JA4() string {
 		}
 	}
 
-	cipherHash := sha256Hex12(u16Join(h.CipherSuites, ","))
-	// JA4_b excludes SNI (0) and ALPN (16) extensions.
+	ciphers := append([]uint16(nil), h.CipherSuites...)
+	sort.Slice(ciphers, func(i, j int) bool { return ciphers[i] < ciphers[j] })
+	cipherHash := sha256Hex4(hex4Join(ciphers))
+
+	// JA4_c excludes SNI (0) and ALPN (16) extensions.
 	var extsNoSNI []uint16
 	for _, e := range h.Extensions {
 		if e == 0x0000 || e == 0x0010 {
@@ -129,12 +143,17 @@ func (h TLSHandshake) JA4() string {
 	if len(extsNoSNI) == 0 {
 		extsNoSNI = append(extsNoSNI, 0) // canonical "0" when nothing remains
 	}
-	extHash := sha256Hex12(u16Join(extsNoSNI, ","))
+	sort.Slice(extsNoSNI, func(i, j int) bool { return extsNoSNI[i] < extsNoSNI[j] })
+	extHash := sha256Hex4(hex4Join(extsNoSNI))
+
+	// Signature algorithms keep wire order.
+	sigHash := sha256Hex4(hex4Join(h.SigAlgs))
 
 	return strings.Join([]string{
 		proto + ver + sni + cipherCount + extCount + alpn,
 		cipherHash,
 		extHash,
+		sigHash,
 	}, "_")
 }
 
@@ -169,12 +188,13 @@ func trimPadInt(v uint64) string {
 	return string(buf[i:])
 }
 
-func u16Join(vals []uint16, sep string) string {
+// hex4Join renders uint16s as 4-char lowercase hex, comma-joined.
+func hex4Join(vals []uint16) string {
 	parts := make([]string, 0, len(vals))
 	for _, v := range vals {
-		parts = append(parts, u16s(v))
+		parts = append(parts, fmt.Sprintf("%04x", v))
 	}
-	return strings.Join(parts, sep)
+	return strings.Join(parts, ",")
 }
 
 // cipherCountCaps caps the two-digit cipher count at "99" per FoxIO spec.
@@ -192,10 +212,10 @@ func formatCount(n int) string {
 	return trimPadInt(uint64(n))
 }
 
-// sha256Hex12 computes SHA-256 and returns the first 12 hex characters.
-func sha256Hex12(s string) string {
+// sha256Hex4 computes SHA-256 and returns the first 4 lowercase hex characters.
+func sha256Hex4(s string) string {
 	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])[:12]
+	return hex.EncodeToString(sum[:])[:4]
 }
 
 // ParseTLSClientHelloFull extracts the complete TLSHandshake structure from
