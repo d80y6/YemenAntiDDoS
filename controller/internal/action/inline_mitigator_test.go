@@ -545,3 +545,36 @@ func TestPushVersionsSeedEachNodeOnce(t *testing.T) {
 		t.Fatalf("epoch-seed v1 pushed %d times, want exactly 1 (versions=%v)", ones, vers)
 	}
 }
+
+func TestBroadRulesEmitChallengeForHTTPFloods(t *testing.T) {
+	pusher := newRecordingPusher("edge-a")
+	m := NewInlineMitigator(testMitigatorConfig(time.Hour), pusher)
+
+	m.OnCritical(140, "192.0.2.140", "tcp", "http_flood", []string{"edge-a"}, 1000, nil)
+	set := pusher.last("edge-a")
+	if set == nil {
+		t.Fatal("no push")
+	}
+	var challenge *pb.InlineRule
+	for _, r := range set.Rules {
+		if r.Action == "challenge" {
+			challenge = r
+		}
+	}
+	if challenge == nil {
+		t.Fatalf("HTTP flood rules missing the challenge rule: %+v", set.Rules)
+	}
+	if challenge.Protocol != 6 || challenge.DstPort != 80 {
+		t.Fatalf("challenge rule = proto %d dport %d, want tcp/80", challenge.Protocol, challenge.DstPort)
+	}
+
+	// SYN floods must not be funneled into the anti-bot challenge path.
+	m2 := NewInlineMitigator(testMitigatorConfig(time.Hour), pusher)
+	m2.OnCritical(141, "192.0.2.141", "tcp", "syn_flood", []string{"edge-a"}, 1000, nil)
+	set2 := pusher.last("edge-a")
+	for _, r := range set2.Rules {
+		if r.Action == "challenge" {
+			t.Fatalf("SYN flood emitted a challenge rule: %+v", r)
+		}
+	}
+}

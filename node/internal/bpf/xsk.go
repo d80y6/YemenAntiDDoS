@@ -180,7 +180,8 @@ type XSK struct {
 	rxRingSize         uint32
 	rxMap, txMap       []byte
 	fillMap, compMap   []byte
-	pending            []uint64 // UMEM frames awaiting fill-ring space
+	pending            []uint64            // UMEM frames awaiting fill-ring space
+	pendingTX          map[uint64]struct{} // RX slots handed to the TX ring
 
 	rxCount  atomic.Uint64
 	rxDrop   atomic.Uint64
@@ -200,6 +201,9 @@ type XSKFrame struct {
 	SrcPort, DstPort uint16
 	TCPFlags         uint8
 	Payload          []byte // points into the UMEM (zero copy)
+	Seq, Ack         uint32 // TCP sequence numbers (host order)
+	FrameOffset      uint64 // frame start in UMEM (TX replies reuse the slot)
+	EthHdr           []byte // 14-18 L2 bytes incl. ethertype/VLAN (into UMEM)
 }
 
 // SetHandler installs the frame consumer (called from the RX loop).
@@ -245,12 +249,13 @@ func OpenXSK(iface string, queueID uint32, frames, frameSize uint32, zeroCopy bo
 	}
 
 	s := &XSK{
-		fd:       fd,
-		ifindex:  ifi.Index,
-		queueID:  queueID,
-		frameSz:  frameSize,
-		numFrms:  frames,
-		headroom: DefaultHeadroom,
+		fd:        fd,
+		ifindex:   ifi.Index,
+		queueID:   queueID,
+		frameSz:   frameSize,
+		numFrms:   frames,
+		headroom:  DefaultHeadroom,
+		pendingTX: make(map[uint64]struct{}),
 	}
 
 	// ① UMEM: allocate frames and register with the kernel.
@@ -503,7 +508,7 @@ func (s *XSK) drainRX() {
 		}
 		raw := s.umem[frameAddr : frameAddr+uint64(frameLen)]
 
-		if f, ok := parseXSKFrame(raw); ok {
+		if f, ok := parseXSKFrame(raw, frameAddr); ok {
 			s.mu.Lock()
 			h := s.handler
 			s.mu.Unlock()
@@ -513,7 +518,10 @@ func (s *XSK) drainRX() {
 		} else {
 			s.parseErr.Add(1)
 		}
-		s.returnFrame(frameAddr)
+		// A reply handed the slot to the TX ring; the completion returns it.
+		if _, txOwned := s.pendingTX[frameAddr]; !txOwned {
+			s.returnFrame(frameAddr)
+		}
 	}
 }
 
@@ -562,6 +570,7 @@ func (s *XSK) reapComp() {
 		}
 		addr := s.comp.addrs[cons&s.comp.mask]
 		s.comp.storeConsumer(cons + 1)
+		delete(s.pendingTX, addr) // TX finished with the slot; now reclaimable
 		s.returnFrame(addr)
 	}
 	s.flushPending()
@@ -581,6 +590,22 @@ func (s *XSK) SendRawFrame(umemOffset uint64, length uint32) bool {
 	s.tx.storeProducer(idx + 1)
 	s.txCount.Add(1)
 	xskKickTX(s)
+	return true
+}
+
+// SendReplyFrame writes reply into the UMEM frame that carried f (at offset)
+// and queues the slot for TX. The RX path must not reclaim it: the TX
+// completion does. Must run on the socket's Run goroutine (the RX handler).
+func (s *XSK) SendReplyFrame(offset uint64, reply []byte) bool {
+	if len(reply) == 0 || offset+uint64(len(reply)) > uint64(len(s.umem)) {
+		return false
+	}
+	copy(s.umem[offset:], reply)
+	s.pendingTX[offset] = struct{}{}
+	if !s.SendRawFrame(offset, uint32(len(reply))) {
+		delete(s.pendingTX, offset)
+		return false
+	}
 	return true
 }
 
@@ -636,9 +661,10 @@ func (s *XSK) Close() {
 }
 
 // parseXSKFrame extracts L2/L3/L4 + TCP payload from a raw frame.
+// frameOffset is the frame's start in the UMEM so replies can reuse the slot.
 // Returns ok=false for non-TCP-IPv4 frames (UDP is passed for DNS metrics
 // later; L7 inspection is TCP-only today).
-func parseXSKFrame(raw []byte) (XSKFrame, bool) {
+func parseXSKFrame(raw []byte, frameOffset uint64) (XSKFrame, bool) {
 	var f XSKFrame
 	if len(raw) < 14+20 {
 		return f, false
@@ -687,6 +713,10 @@ func parseXSKFrame(raw []byte) (XSKFrame, bool) {
 	f.SrcPort = binary.BigEndian.Uint16(tcp[0:2])
 	f.DstPort = binary.BigEndian.Uint16(tcp[2:4])
 	f.TCPFlags = tcp[13]
+	f.Seq = binary.BigEndian.Uint32(tcp[4:8])
+	f.Ack = binary.BigEndian.Uint32(tcp[8:12])
+	f.FrameOffset = frameOffset
+	f.EthHdr = raw[:l3]
 	payload := tcp[doff:]
 	if len(payload) > 0 {
 		f.Payload = payload

@@ -569,7 +569,31 @@ func (m *InlineMitigator) broadRulesLocked(mit *InlineMitigation, now time.Time)
 			Reason:       fmt.Sprintf("syn_cookie:attack=%d", mit.AttackID),
 		})
 	}
+	// Anti-bot funnel: cleartext HTTP floods are steered to the Node's JS-PoW
+	// challenge responder (nodes without AF_XDP fall through to pass because
+	// the XSK steer map is empty). Cleartext only: TLS cannot be challenged
+	// without termination.
+	if isAntiBotTarget(mit) {
+		rules = append(rules, InlineRule{
+			ID:           m.newRuleIDLocked(),
+			DstIP:        mit.TargetIP,
+			DstPrefixLen: prefixLenOf(mit.TargetIP),
+			Protocol:     6,
+			DstPort:      80,
+			Action:       "challenge",
+			Priority:     15,
+			ExpiresUnix:  now.Add(m.cfg.RuleTTL).Unix(),
+			Reason:       fmt.Sprintf("challenge:attack=%d", mit.AttackID),
+		})
+	}
 	return rules
+}
+
+// isAntiBotTarget reports whether an attack is an HTTP-shaped L7 flood that
+// the JS-PoW challenge path is meant to stop.
+func isAntiBotTarget(mit *InlineMitigation) bool {
+	e := strings.ToLower(mit.EventType + " " + mit.Decoder)
+	return strings.Contains(e, "http") || strings.Contains(e, "slowloris")
 }
 
 // narrowRulesLocked refines the broad rule with dominant destination ports

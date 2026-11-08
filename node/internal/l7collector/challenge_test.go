@@ -1,7 +1,9 @@
 package l7collector
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -174,5 +176,41 @@ func TestRenderChallengePage(t *testing.T) {
 func TestBase64Path(t *testing.T) {
 	if got := base64Path("1.2.3.4"); got != hex.EncodeToString([]byte("1.2.3.4")) {
 		t.Fatalf("base64Path = %q", got)
+	}
+}
+
+func TestPoWAgreesWithJSRepresentation(t *testing.T) {
+	// The challenge page hashes ASCII(token + nonceHex) with WebCrypto; Go
+	// must hash the exact same bytes or no solution ever validates.
+	ci := testIssuer(t, time.Minute, 8)
+	token := "cafebabe00112233"
+	solutions := 0
+	for n := 0; n < 5000; n++ {
+		nonceHex := fmt.Sprintf("%02x", n)
+		sum := sha256.Sum256([]byte(token + nonceHex))
+		jsOK := leadingZeroBits(sum[:]) >= 8
+		goOK := ci.VerifyPoW(token, nonceHex)
+		if jsOK != goOK {
+			t.Fatalf("PoW disagreement at nonce %q: js=%v go=%v (JS hashes ASCII token+nonceHex)",
+				nonceHex, jsOK, goOK)
+		}
+		if jsOK {
+			solutions++
+		}
+	}
+	if solutions == 0 {
+		t.Fatal("no solution found: 8-bit target must hit within 5000 tries")
+	}
+}
+
+func TestChallengePageCarriesToken(t *testing.T) {
+	page := string(RenderChallengePage("deadbeef", 12, "/admin?x=1"))
+	// The solved navigation must resubmit the token; otherwise Validate can
+	// never see it on the follow-up request.
+	if !strings.Contains(page, `'t='+encodeURIComponent(token)`) {
+		t.Fatalf("challenge page navigation drops the token:\n%s", page)
+	}
+	if !strings.Contains(page, `xsight_pow=`) {
+		t.Fatal("challenge page navigation drops the PoW nonce")
 	}
 }

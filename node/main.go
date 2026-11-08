@@ -332,9 +332,11 @@ func main() {
 			window, cfg.L7.HTTPRPS, cfg.L7.TLSHSPS, cfg.L7.SlowlorisConns)
 	}
 
-	// v4.0: anti-bot challenge issuer (HTTP 307 + JS PoW tokens).
+	// v4.0: anti-bot challenge issuer (HTTP 307 + JS PoW tokens). AF_XDP
+	// implies the issuer: FILTER_ACTION_CHALLENGE rules steer frames to the
+	// responder, which must answer them even when L7 metrics are off.
 	challengeIssuer := l7collector.NewChallengeIssuer(l7collector.ChallengeConfig{
-		Enabled: cfg.L7.Enabled,
+		Enabled: cfg.L7.Enabled || cfg.AFXDP.Enabled,
 	})
 
 	// v4.0: AF_XDP zero-copy L7 inspection (optional; ringbuf sampling is

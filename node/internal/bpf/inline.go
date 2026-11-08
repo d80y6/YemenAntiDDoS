@@ -520,6 +520,26 @@ func clearExactMap(m *ebpf.Map) error {
 	return iter.Err()
 }
 
+// ValidatedClientTTLNS mirrors VALIDATED_CLIENT_TTL_NS in xsight.h.
+const ValidatedClientTTLNS = uint64(60) * 1_000_000_000
+
+// AddValidatedClient admits a client that solved the JS-PoW challenge: the
+// data plane waives its CHALLENGE steer for the TTL (IPv4 only; the key layout
+// mirrors the kernel: v4 in the first 4 bytes, the rest zero).
+func (m *Manager) AddValidatedClient(ip net.IP) error {
+	v4 := ip.To4()
+	if v4 == nil {
+		return fmt.Errorf("bpf: validated_clients accepts IPv4 only")
+	}
+	var key [16]byte
+	copy(key[:4], v4)
+	expiry := MonotonicNowNS() + ValidatedClientTTLNS
+	if err := m.Objs.ValidatedClients.Update(&key, &expiry, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("bpf: add validated client: %w", err)
+	}
+	return nil
+}
+
 // ClearValidatedClients evicts every SYN-cookie-validated client (used when
 // the controller rotates the cookie secret).
 func (m *Manager) ClearValidatedClients() error {

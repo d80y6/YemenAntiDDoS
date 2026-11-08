@@ -143,6 +143,9 @@ type XSKFrame struct {
 	SrcPort, DstPort uint16
 	TCPFlags         uint8
 	Payload          []byte
+	Seq, Ack         uint32
+	FrameOffset      uint64
+	EthHdr           []byte
 }
 
 // XSKStats exposes socket health for the posture report.
@@ -157,7 +160,8 @@ type XSKStats struct {
 // XSK is a bound AF_XDP socket (stub).
 type XSK struct{}
 
-func (s *XSK) Stats() XSKStats { return XSKStats{} }
+func (s *XSK) Stats() XSKStats                    { return XSKStats{} }
+func (s *XSK) SendReplyFrame(uint64, []byte) bool { return false }
 
 // XSKManager owns the AF_XDP sockets (stub).
 type XSKManager struct{}
@@ -196,6 +200,7 @@ func (m *Manager) SetCookieSecret(lo, hi uint64) error       { return ErrNotLinu
 func (m *Manager) CookieSecret() (uint64, uint64, error)     { return 0, 0, ErrNotLinux }
 func (m *Manager) SetSynCookieEnabled(on bool) error         { return ErrNotLinux }
 func (m *Manager) ClearValidatedClients() error              { return ErrNotLinux }
+func (m *Manager) AddValidatedClient(net.IP) error           { return ErrNotLinux }
 func (m *Manager) ConfigValue(index uint32) (uint64, error)  { return 0, ErrNotLinux }
 func (m *Manager) InlineCounters() InlineStats               { return InlineStats{} }
 func (m *Manager) DrainAlerts(handle func(BurstAlert)) error { return ErrNotLinux }

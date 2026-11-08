@@ -1665,6 +1665,14 @@ int xdp_inline(struct xdp_md *ctx)
             if (ssub && filter_rule_matches(ssub, l4_proto, dport, sport))
                 filter_consider(&hit, ssub, ssub->action == FILTER_ACTION_SYN_COOKIE, now_ns);
 
+            // A client that solved the JS-PoW challenge is admitted: waive
+            // its CHALLENGE steer so the follow-up connection reaches the
+            // host stack (only the winning rule is affected; cookie/drop
+            // priorities are unchanged).
+            if (hit.hit && hit.rule.action == FILTER_ACTION_CHALLENGE &&
+                client_validated(src16))
+                hit.hit = false;
+
             cookie_requested = hit.hit && hit.is_cookie;
 
             if (hit.hit) {

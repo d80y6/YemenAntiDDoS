@@ -533,20 +533,41 @@ func startAFXDP(cfg *config.Config, mgr *bpf.Manager, l7c *l7collector.Collector
 		frameSize = bpf.DefaultFrameSize
 	}
 
+	// Challenge responder: steered frames are answered from the Run goroutine
+	// (the RX handler), which is where SendReplyFrame's UMEM confinement
+	// requires it to run.
+	var sock atomic.Pointer[bpf.XSK]
+	resp := &challengeResponder{
+		issuer: issuer,
+		admit: func(f bpf.XSKFrame) error {
+			if mgr == nil {
+				return nil
+			}
+			return mgr.AddValidatedClient(f.SrcIP)
+		},
+		send: func(f bpf.XSKFrame, reply []byte) bool {
+			s := sock.Load()
+			if s == nil {
+				return false
+			}
+			return s.SendReplyFrame(f.FrameOffset, reply)
+		},
+	}
+
 	xsk, err := bpf.StartXSK(mgr, iface, cfg.AFXDP.Queue, frames, frameSize,
 		cfg.AFXDP.ZeroCopy, func(f bpf.XSKFrame) {
-			if l7c == nil {
-				return
+			if l7c != nil {
+				l7c.Observe(f.SrcIP, f.DstIP, f.SrcPort, f.DstPort, f.TCPFlags, f.Payload, time.Now())
 			}
-			l7c.Observe(f.SrcIP, f.DstIP, f.SrcPort, f.DstPort, f.TCPFlags, f.Payload, time.Now())
-			if issuer != nil && issuer.Enabled() {
-				// Challenge evaluation happens on the L7 tick, which has the
-				// aggregated view; here we only report the evidence.
-				_ = issuer
-			}
+			resp.handle(f)
 		})
 	if err != nil {
 		return nil, err
+	}
+	// Publish the socket for replies; frames arriving before this store are
+	// answered on the client's retransmission.
+	if s := xsk.Sockets()[cfg.AFXDP.Queue]; s != nil {
+		sock.Store(s)
 	}
 	log.Printf("af_xdp: zero-copy inspection active on %s queue=%d", iface, cfg.AFXDP.Queue)
 	return xsk, nil

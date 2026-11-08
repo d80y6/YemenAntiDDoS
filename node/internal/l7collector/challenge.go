@@ -85,6 +85,22 @@ func NewChallengeIssuer(cfg ChallengeConfig) *ChallengeIssuer {
 // Enabled reports whether challenges are active.
 func (ci *ChallengeIssuer) Enabled() bool { return ci != nil && ci.cfg.Enabled }
 
+// Path is the endpoint the HTTP 307 redirects to (where the page is served).
+func (ci *ChallengeIssuer) Path() string {
+	if ci == nil {
+		return ""
+	}
+	return ci.cfg.RedirectTo
+}
+
+// POWBits is the leading-zero-bit target the challenge page must solve.
+func (ci *ChallengeIssuer) POWBits() int {
+	if ci == nil {
+		return 0
+	}
+	return ci.cfg.POWDiffBits
+}
+
 // Mint creates a signed token binding a client IP to an expiry. Returns the
 // token (hex) and the challenge URL for the 307 Location header.
 func (ci *ChallengeIssuer) Mint(clientIP string, now time.Time) (token, location string) {
@@ -173,16 +189,26 @@ func (ci *ChallengeIssuer) Validate(token, clientIP string, now time.Time) bool 
 }
 
 // VerifyPoW checks a client's proof-of-work solution: sha256(token || nonce)
-// must start with POWDiffBits zero bits.
+// must start with POWDiffBits zero bits, where both parts are hashed as their
+// ASCII text — the exact byte representation the challenge page's WebCrypto
+// digest sees (enc.encode(token+nonce)). The hex decode below is format
+// validation only.
 func (ci *ChallengeIssuer) VerifyPoW(token, nonceHex string) bool {
 	if !ci.Enabled() {
 		return true
 	}
-	nonce, err := hex.DecodeString(nonceHex)
-	if err != nil || len(nonce) == 0 || len(nonce) > 8 {
+	// Format check only: the page's hex(n) can be odd-length ("100"), which
+	// encoding/hex would reject. JS emits lowercase hex; cap at 16 chars (8
+	// bytes) to match the historical bound.
+	if nonceHex == "" || len(nonceHex) > 16 {
 		return false
 	}
-	sum := sha256.Sum256(append([]byte(token), nonce...))
+	for _, ch := range nonceHex {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	sum := sha256.Sum256([]byte(token + nonceHex))
 	return leadingZeroBits(sum[:]) >= ci.cfg.POWDiffBits
 }
 
@@ -234,14 +260,14 @@ func RenderChallengePage(token string, powBits int, next string) []byte {
   const enc=new TextEncoder();
   function zeros(u8){let n=0;for(const b of u8){if(b===0){n+=8;continue;}
     for(let i=7;i>=0;i--){if(b&(1<<i))return n;n++;}}return n;}
-  let n=0;
+    let n=0;
   for(;;n++){
     const nonce=hex(n);
     const data=enc.encode(token+nonce);
     const digest=await crypto.subtle.digest('SHA-256',data);
     if(zeros(new Uint8Array(digest))>=bits){
       const sep=next.includes('?')?'&':'?';
-      location.replace(next+sep+'xsight_pow='+encodeURIComponent(nonce));
+      location.replace(next+sep+'t='+encodeURIComponent(token)+'&xsight_pow='+encodeURIComponent(nonce));
       return;
     }
   }
