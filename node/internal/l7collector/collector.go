@@ -353,61 +353,54 @@ func (c *Collector) Tick(now time.Time) []Event {
 	var out []Event
 	for key, b := range c.buckets {
 		ip := net.ParseIP(key)
-		var counters map[string]uint64
-		ensure := func() map[string]uint64 {
-			if counters == nil {
-				counters = make(map[string]uint64)
-			}
-			return counters
-		}
-		if b.http > 0 {
-			rps := uint64(float64(b.http) / window)
-			if rps >= c.cfg.HTTPRPS {
-				m := ensure()
-				m["http_requests"] = b.http
-				m["http_rps"] = rps
-				m["http_unique_sources"] = uint64(len(b.uniqueSrc))
-				addDetails(m, "http_method:", b.methods)
-				addDetails(m, "http_path:", b.paths)
-			}
-		}
-		if b.tls > 0 {
-			hsps := uint64(float64(b.tls) / window)
-			m := ensure()
-			// v4.0: fingerprint distributions flow to the Controller in every
-			// TLS event so the Console can chart JA3/JA4 without a new stream.
-			addDetails(m, "tls_ja3:", b.ja3s)
-			addDetails(m, "tls_ja4:", b.ja4s)
-			if hsps >= c.cfg.TLSHSPS || b.sniMissing >= c.cfg.TLSHSPS {
-				m["tls_handshakes"] = b.tls
-				m["tls_hsps"] = hsps
-				m["tls_unique_sources"] = uint64(len(b.uniqueSrc))
-				m["tls_sni_missing"] = b.sniMissing
-				addDetails(m, "tls_sni:", b.snis)
-			}
-		}
-		if len(b.uas) > 0 {
-			m := ensure()
-			addDetails(m, "http_ua:", b.uas)
-		}
-		if b.slow > 0 && b.slow >= c.cfg.SlowlorisConns {
-			m := ensure()
-			m["slowloris_conns"] = b.slow
-			m["slowloris_sources"] = uint64(len(b.slowSrcs))
-			for src := range b.slowSrcs {
-				if len(m) > 64 {
-					break
-				}
-				m["src:"+src] = 1
-			}
-		}
-		if counters == nil {
+		rps := uint64(float64(b.http) / window)
+		hsps := uint64(float64(b.tls) / window)
+		httpOK := b.http > 0 && rps >= c.cfg.HTTPRPS
+		tlsOK := b.tls > 0 && (hsps >= c.cfg.TLSHSPS || b.sniMissing >= c.cfg.TLSHSPS)
+		slowOK := b.slow > 0 && b.slow >= c.cfg.SlowlorisConns
+		// Events exist only for threshold crossings: a benign ClientHello or
+		// lone request below threshold must not reach the Controller. The
+		// fingerprint/User-Agent evidence rides along on the event that does
+		// cross, so no stream is needed for the Console charts.
+		if !httpOK && !tlsOK && !slowOK {
 			continue
 		}
+		counters := make(map[string]uint64)
+		if httpOK {
+			counters["http_requests"] = b.http
+			counters["http_rps"] = rps
+			counters["http_unique_sources"] = uint64(len(b.uniqueSrc))
+			addDetails(counters, "http_method:", b.methods)
+			addDetails(counters, "http_path:", b.paths)
+		}
+		if b.tls > 0 {
+			addDetails(counters, "tls_ja3:", b.ja3s)
+			addDetails(counters, "tls_ja4:", b.ja4s)
+		}
+		if tlsOK {
+			counters["tls_handshakes"] = b.tls
+			counters["tls_hsps"] = hsps
+			counters["tls_unique_sources"] = uint64(len(b.uniqueSrc))
+			counters["tls_sni_missing"] = b.sniMissing
+			addDetails(counters, "tls_sni:", b.snis)
+		}
+		if len(b.uas) > 0 {
+			addDetails(counters, "http_ua:", b.uas)
+		}
+		if slowOK {
+			counters["slowloris_conns"] = b.slow
+			counters["slowloris_sources"] = uint64(len(b.slowSrcs))
+			for src := range b.slowSrcs {
+				if len(counters) > 64 {
+					break
+				}
+				counters["src:"+src] = 1
+			}
+		}
 		evType := l7.DecoderHTTPFlood
-		if b.tls > 0 && (uint64(float64(b.tls)/window) >= c.cfg.TLSHSPS || b.sniMissing >= c.cfg.TLSHSPS) {
+		if tlsOK {
 			evType = l7.DecoderTLSAnomaly
-		} else if b.slow > 0 && b.slow >= c.cfg.SlowlorisConns {
+		} else if slowOK {
 			evType = l7.DecoderSlowloris
 		}
 		out = append(out, Event{Type: evType, DstIP: ip, Counters: counters, At: now})

@@ -3,6 +3,7 @@ package l7collector
 import (
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,5 +151,55 @@ func TestDisabledAndBounded(t *testing.T) {
 	}
 	if c.Stats().TrackedDsts > 2 {
 		t.Fatalf("tracked = %d", c.Stats().TrackedDsts)
+	}
+}
+
+func TestTickEmitsOnlyAboveThreshold(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.HTTPRPS = 100
+	cfg.TLSHSPS = 100
+	c := New(cfg)
+	dst := net.ParseIP("203.0.113.40")
+	src := net.ParseIP("198.51.100.12")
+	now := time.Unix(1700000000, 0)
+
+	// A single benign ClientHello below the threshold must not emit.
+	c.Observe(src, dst, 40000, 443, 0x18, clientHello("benign.example"), now)
+	if evs := c.Tick(now.Add(time.Second)); len(evs) != 0 {
+		t.Fatalf("below-threshold ClientHello emitted %d events: %+v", len(evs), evs)
+	}
+
+	// A lone HTTP request below the threshold must not emit either, even
+	// though it carries User-Agent evidence.
+	req := []byte("GET / HTTP/1.1\r\nHost: benign.example\r\nUser-Agent: curl/8.0\r\n\r\n")
+	c.Observe(src, dst, 40001, 80, 0x18, req, now.Add(2*time.Second))
+	if evs := c.Tick(now.Add(3 * time.Second)); len(evs) != 0 {
+		t.Fatalf("below-threshold HTTP request emitted %d events: %+v", len(evs), evs)
+	}
+
+	// A flood above the threshold emits one event carrying the fingerprints.
+	flood := time.Unix(1700000100, 0)
+	hello := clientHello("flood.example")
+	for i := 0; i < 150; i++ {
+		c.Observe(src, dst, 40010, 443, 0x18, hello, flood)
+	}
+	evs := c.Tick(flood.Add(time.Second))
+	if len(evs) != 1 {
+		t.Fatalf("flood events = %d, want 1: %+v", len(evs), evs)
+	}
+	if evs[0].Type != l7.DecoderTLSAnomaly {
+		t.Fatalf("type = %q, want %q", evs[0].Type, l7.DecoderTLSAnomaly)
+	}
+	hasFingerprint := false
+	for k := range evs[0].Counters {
+		if strings.HasPrefix(k, "tls_ja3:") || strings.HasPrefix(k, "tls_ja4:") {
+			hasFingerprint = true
+		}
+	}
+	if !hasFingerprint {
+		t.Fatalf("flood event missing JA3/JA4 details: %v", evs[0].Counters)
+	}
+	if evs[0].Counters["tls_handshakes"] != 150 {
+		t.Fatalf("tls_handshakes = %d, counters = %v", evs[0].Counters["tls_handshakes"], evs[0].Counters)
 	}
 }
