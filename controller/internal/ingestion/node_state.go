@@ -23,6 +23,9 @@ type NodePosture struct {
 	SYNDropped       uint64    `json:"syn_cookies_dropped"`
 	EmergencyDrops   uint64    `json:"emergency_drops"`
 	BurstAlerts      uint64    `json:"burst_alerts"`
+	RedirectOk       uint64    `json:"redirect_ok"`
+	RedirectErr      uint64    `json:"redirect_err"`
+	CPUUtil          []float64 `json:"cpu_util,omitempty"`
 	AFXDPActive      bool      `json:"af_xdp_active"`
 	AFXDPUmemDrops   uint64    `json:"af_xdp_umem_drops"`
 	AFXDPRX          uint64    `json:"af_xdp_rx"`
@@ -129,10 +132,13 @@ func (ns *NodeState) UpdatePosture(nodeID string, p *pb.NodePosture) {
 		SYNDropped:       p.GetSynCookiesDropped(),
 		EmergencyDrops:   p.GetEmergencyDrops(),
 		BurstAlerts:      p.GetBurstAlerts(),
+		RedirectOk:       p.GetRedirectOk(),
+		RedirectErr:      p.GetRedirectErr(),
 		AFXDPActive:      p.GetAfXdpActive(),
 		AFXDPUmemDrops:   p.GetAfXdpUmemDrops(),
 		AFXDPRX:          p.GetAfXdpRx(),
 		CPUPins:          append([]int64(nil), p.GetCpuPins()...),
+		CPUUtil:          append([]float64(nil), p.GetCpuUtil()...),
 		CleanpipeEgress:  p.GetCleanpipeEgress(),
 		UpdatedAt:        time.Now(),
 	}

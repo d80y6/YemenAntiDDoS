@@ -307,6 +307,9 @@ message NodePosture {
   uint64 af_xdp_rx = 12;           // frames inspected via AF_XDP
   repeated int64 cpu_pins = 13;    // cores pinned by the node
   string cleanpipe_egress = 14;    // egress ifname used for clean-pipe redirect ("" = none)
+  uint64 redirect_ok = 15;         // successful clean-pipe XDP_REDIRECT verdicts
+  uint64 redirect_err = 16;        // redirect failures that fell back to XDP_DROP
+  repeated double cpu_util = 17;   // per-core CPU utilisation (%) since previous report
 }
 
 // v3.0: Flow listener + source config pushed to Flow Nodes

@@ -1203,6 +1203,7 @@ export default {
     emergency: "Emergency",
     validated: "{n} validated",
     alerts: "{n} burst alerts",
+    redirect: "redirect {ok}/{err}",
     umemDrops: "UMEM drops {n}",
     cpuPins: "CPU pins",
     updated: "Updated",

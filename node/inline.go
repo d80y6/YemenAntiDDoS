@@ -194,10 +194,10 @@ type inlinePosture struct {
 	pins    []int
 	xsk     *bpf.XSKManager
 	enabled bool
-	// burstAlerts counts ringbuf alerts drained to userspace. NodePosture
-	// carries it as burst_alerts; redirect/CPU detail has no wire field yet
-	// and is reported in the periodic posture log instead.
+	// burstAlerts counts ringbuf alerts drained to userspace; lastCPU is the
+	// previous /proc/stat sample used to derive per-core utilisation deltas.
 	burstAlerts atomic.Uint64
+	lastCPU     []cpuTimes
 }
 
 func (p *inlinePosture) snapshot() *pb.NodePosture {
@@ -215,7 +215,10 @@ func (p *inlinePosture) snapshot() *pb.NodePosture {
 		SynCookiesDropped:   st.CookieDropped,
 		EmergencyDrops:      st.EmergencyDrops,
 		BurstAlerts:         p.burstAlerts.Load(),
+		RedirectOk:          st.RedirectOK,
+		RedirectErr:         st.RedirectErr,
 		CleanpipeEgress:     p.egress,
+		CpuUtil:             p.cpuUtilDelta(),
 	}
 	for _, c := range p.pins {
 		posture.CpuPins = append(posture.CpuPins, int64(c))
@@ -229,6 +232,20 @@ func (p *inlinePosture) snapshot() *pb.NodePosture {
 		}
 	}
 	return posture
+}
+
+// cpuUtilDelta computes per-core utilisation since the previous snapshot and
+// stores the new sample. Callers report posture from one goroutine.
+func (p *inlinePosture) cpuUtilDelta() []float64 {
+	cur, err := readCPUTimes()
+	if err != nil || len(cur) == 0 {
+		return nil
+	}
+	defer func() { p.lastCPU = cur }()
+	if len(p.lastCPU) == 0 {
+		return nil
+	}
+	return cpuUtilPercent(p.lastCPU, cur)
 }
 
 // streamBurstAlerts drains the kernel burst ringbuf and pushes each alert

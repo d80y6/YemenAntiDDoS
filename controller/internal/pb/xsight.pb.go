@@ -2028,6 +2028,9 @@ type NodePosture struct {
 	AfXdpRx             uint64                 `protobuf:"varint,12,opt,name=af_xdp_rx,json=afXdpRx,proto3" json:"af_xdp_rx,omitempty"`                                    // frames inspected via AF_XDP
 	CpuPins             []int64                `protobuf:"varint,13,rep,packed,name=cpu_pins,json=cpuPins,proto3" json:"cpu_pins,omitempty"`                               // cores pinned by the node
 	CleanpipeEgress     string                 `protobuf:"bytes,14,opt,name=cleanpipe_egress,json=cleanpipeEgress,proto3" json:"cleanpipe_egress,omitempty"`               // egress ifname used for clean-pipe redirect ("" = none)
+	RedirectOk          uint64                 `protobuf:"varint,15,opt,name=redirect_ok,json=redirectOk,proto3" json:"redirect_ok,omitempty"`                             // successful clean-pipe XDP_REDIRECT verdicts
+	RedirectErr         uint64                 `protobuf:"varint,16,opt,name=redirect_err,json=redirectErr,proto3" json:"redirect_err,omitempty"`                          // redirect failures that fell back to XDP_DROP
+	CpuUtil             []float64              `protobuf:"fixed64,17,rep,packed,name=cpu_util,json=cpuUtil,proto3" json:"cpu_util,omitempty"`                              // per-core CPU utilisation (%) since previous report
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -2158,6 +2161,27 @@ func (x *NodePosture) GetCleanpipeEgress() string {
 		return x.CleanpipeEgress
 	}
 	return ""
+}
+
+func (x *NodePosture) GetRedirectOk() uint64 {
+	if x != nil {
+		return x.RedirectOk
+	}
+	return 0
+}
+
+func (x *NodePosture) GetRedirectErr() uint64 {
+	if x != nil {
+		return x.RedirectErr
+	}
+	return 0
+}
+
+func (x *NodePosture) GetCpuUtil() []float64 {
+	if x != nil {
+		return x.CpuUtil
+	}
+	return nil
 }
 
 // v3.0: Flow listener + source config pushed to Flow Nodes
@@ -2632,7 +2656,7 @@ const file_xsight_proto_rawDesc = "" +
 	"afXdpQueue\x12'\n" +
 	"\x10af_xdp_zero_copy\x18\x04 \x01(\bR\rafXdpZeroCopy\x12\"\n" +
 	"\raf_xdp_frames\x18\x05 \x01(\rR\vafXdpFrames\x12\x19\n" +
-	"\bcpu_pins\x18\x06 \x03(\x03R\acpuPins\"\xac\x04\n" +
+	"\bcpu_pins\x18\x06 \x03(\x03R\acpuPins\"\x8b\x05\n" +
 	"\vNodePosture\x12\x19\n" +
 	"\bxdp_mode\x18\x01 \x01(\tR\axdpMode\x12%\n" +
 	"\x0einline_enabled\x18\x02 \x01(\bR\rinlineEnabled\x12!\n" +
@@ -2648,7 +2672,11 @@ const file_xsight_proto_rawDesc = "" +
 	"\x11af_xdp_umem_drops\x18\v \x01(\x04R\x0eafXdpUmemDrops\x12\x1a\n" +
 	"\taf_xdp_rx\x18\f \x01(\x04R\aafXdpRx\x12\x19\n" +
 	"\bcpu_pins\x18\r \x03(\x03R\acpuPins\x12)\n" +
-	"\x10cleanpipe_egress\x18\x0e \x01(\tR\x0fcleanpipeEgress\"\xae\x01\n" +
+	"\x10cleanpipe_egress\x18\x0e \x01(\tR\x0fcleanpipeEgress\x12\x1f\n" +
+	"\vredirect_ok\x18\x0f \x01(\x04R\n" +
+	"redirectOk\x12!\n" +
+	"\fredirect_err\x18\x10 \x01(\x04R\vredirectErr\x12\x19\n" +
+	"\bcpu_util\x18\x11 \x03(\x01R\acpuUtil\"\xae\x01\n" +
 	"\x12FlowListenerConfig\x12%\n" +
 	"\x0elisten_address\x18\x01 \x01(\tR\rlistenAddress\x12#\n" +
 	"\rprotocol_mode\x18\x02 \x01(\tR\fprotocolMode\x122\n" +
@@ -2675,7 +2703,7 @@ const file_xsight_proto_rawDesc = "" +
 	"\vStatsStream\x12\x13.xsight.StatsReport\x1a\x16.google.protobuf.Empty(\x01\x12=\n" +
 	"\fSampleStream\x12\x13.xsight.SampleBatch\x1a\x16.google.protobuf.Empty(\x01\x12F\n" +
 	"\x13CriticalEventStream\x12\x15.xsight.CriticalEvent\x1a\x16.google.protobuf.Empty(\x01\x12C\n" +
-	"\rControlStream\x12\x16.xsight.ControlMessage\x1a\x16.xsight.ControlMessage(\x010\x01B-Z+github.com/d80y6/YemenDDoS/node/internal/pbb\x06proto3"
+	"\rControlStream\x12\x16.xsight.ControlMessage\x1a\x16.xsight.ControlMessage(\x010\x01B-Z+github.com/d80y6/YemenDDoS/controller/internal/pbb\x06proto3"
 
 var (
 	file_xsight_proto_rawDescOnce sync.Once

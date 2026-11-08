@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, onMounted, onUnmounted, computed, type ShallowRef, type ComputedRef } from 'vue'
+import { ref, shallowRef, onMounted, onUnmounted, watch, computed, type ShallowRef, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { request } from '../../api/client'
 import { usePoll } from '../../composables/usePoll'
@@ -7,6 +7,7 @@ import { thousands, fullDateTime, dateTime } from '../../format'
 import XKpi from '../../components/XKpi.vue'
 import XTip from '../../components/XTip.vue'
 import XEmpty from '../../components/XEmpty.vue'
+import XPill from '../../components/XPill.vue'
 
 const { t } = useI18n()
 
@@ -97,10 +98,11 @@ function typeLabel(evType: string) {
   if (evType === 'l7_slowloris') return t('l7.type.slowloris')
   return evType
 }
-function typeTone(evType: string) {
-  if (evType === 'l7_http_flood') return 'http'
-  if (evType === 'l7_tls_anomaly') return 'tls'
-  return 'slowloris'
+function typeTone(evType: string): 'ok' | 'warn' | 'crit' | 'neutral' {
+  if (evType === 'l7_http_flood') return 'warn'
+  if (evType === 'l7_tls_anomaly') return 'crit'
+  if (evType === 'l7_slowloris') return 'crit'
+  return 'neutral'
 }
 
 function formatDetail(d: L7Event['detail']) {
@@ -123,6 +125,29 @@ function formatDetail(d: L7Event['detail']) {
 }
 
 const chartWidth = ref(0), chartHeight = 200
+const chartHost = ref<HTMLElement | null>(null)
+// Measure the chart container with a ResizeObserver so the SVG width tracks
+// layout instead of staying at the initial 0 (which collapsed the plot). The
+// host only appears once data loads, hence the watcher over the template ref.
+let chartRO: ResizeObserver | undefined
+function observeChart(el: HTMLElement | null) {
+  chartRO?.disconnect()
+  chartRO = undefined
+  if (!el || typeof ResizeObserver === 'undefined') {
+    chartWidth.value = 0
+    return
+  }
+  const apply = (w: number) => { if (w > 0) chartWidth.value = Math.round(w) }
+  apply(el.clientWidth)
+  chartRO = new ResizeObserver(entries => {
+    const w = entries[0]?.contentRect.width
+    if (w) apply(w)
+  })
+  chartRO.observe(el)
+}
+watch(chartHost, el => observeChart(el))
+onMounted(() => observeChart(chartHost.value))
+onUnmounted(() => chartRO?.disconnect())
 const hover = ref<number | null>(null)
 
 const maxVal = computed(() => {

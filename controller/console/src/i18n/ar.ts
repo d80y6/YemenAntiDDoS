@@ -1274,6 +1274,7 @@ export default {
     "emergency": "طارئ",
     "validated": "{n} مُتحقَّق",
     "alerts": "{n} تنبيه اندفاع",
+    "redirect": "إعادة التوجيه {ok}/{err}",
     "umemDrops": "إسقاط UMEM {n}",
     "cpuPins": "تثبيت المعالجات",
     "updated": "آخر تحديث",

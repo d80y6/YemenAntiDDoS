@@ -60,6 +60,9 @@ interface Posture {
   syn_cookies_dropped: number
   emergency_drops: number
   burst_alerts: number
+  redirect_ok: number
+  redirect_err: number
+  cpu_util?: number[] | null
   af_xdp_active: boolean
   af_xdp_umem_drops: number
   af_xdp_rx: number
@@ -93,6 +96,9 @@ usePoll(() => Promise.all([fetchMitigations(), fetchPosture()]), 5000,
   () => { loading.value = false })
 
 const nodes = computed(() => Object.entries(posture.value).map(([id, p]) => ({ id, ...p })))
+
+// cpuLabel renders the per-core utilisation sample as "12% 3%".
+const cpuLabel = (util: number[]) => util.map(v => `${Math.round(v)}%`).join(' ')
 const inlineNodes = computed(() => nodes.value.filter(n => n.inline_enabled).length)
 const totalRules = computed(() => nodes.value.reduce((sum, n) => sum + (n.filter_rules || 0), 0))
 const totalEmergency = computed(() => nodes.value.reduce((sum, n) => sum + (n.emergency_drops || 0), 0))
@@ -225,6 +231,7 @@ function phaseClass(phase: string) {
               </td>
               <td class="num">{{ thousands(n.emergency_drops) }}
                 <div class="sub num">{{ t('inline.alerts', { n: thousands(n.burst_alerts) }) }}</div>
+                <div class="sub num">{{ t('inline.redirect', { ok: thousands(n.redirect_ok ?? 0), err: thousands(n.redirect_err ?? 0) }) }}</div>
               </td>
               <td>
                 <span class="dot" :class="n.af_xdp_active ? 'ok' : 'neutral'" />
@@ -233,7 +240,9 @@ function phaseClass(phase: string) {
                   {{ t('inline.umemDrops', { n: thousands(n.af_xdp_umem_drops) }) }}
                 </div>
               </td>
-              <td class="mono sub">{{ (n.cpu_pins || []).join(',') || '—' }}</td>
+              <td class="mono sub">{{ (n.cpu_pins || []).join(',') || '—' }}
+                <div v-if="n.cpu_util?.length" class="sub num">{{ cpuLabel(n.cpu_util) }}</div>
+              </td>
               <td class="num sub">{{ n.updated_at ? fullDateTime(n.updated_at) : '—' }}</td>
             </tr>
           </tbody>
