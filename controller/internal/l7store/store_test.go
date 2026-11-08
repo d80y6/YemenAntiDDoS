@@ -117,3 +117,25 @@ func TestCounterKeysAlignWithCollectorWire(t *testing.T) {
 		t.Errorf("UniqueSources = 0, want %d (key %q)", 12, l7.KeySlowlorisSources)
 	}
 }
+
+func TestNonL7EventsAreNotStored(t *testing.T) {
+	s := New(10)
+	now := time.Now()
+
+	// L3/L4 critical events share the stream with L7 events but must not be
+	// stored as L7 records (polluting totals, targets and the recent list).
+	s.Observe("node-1", now, "burst_emergency", "198.51.100.7", map[string]uint64{"current_pps": 1488000})
+	s.Observe("node-1", now, "hard_threshold_exceeded", "198.51.100.7", nil)
+	s.Observe("node-1", now, "syn_flood", "198.51.100.7", nil)
+
+	snap := s.Snapshot(15*time.Minute, now)
+	if len(snap.Recent) != 0 {
+		t.Errorf("L3 events stored as L7 records: %+v", snap.Recent)
+	}
+	if len(snap.Targets) != 0 {
+		t.Errorf("L3 events created L7 targets: %+v", snap.Targets)
+	}
+	if len(snap.Totals) != 0 {
+		t.Errorf("L3 events created L7 totals: %+v", snap.Totals)
+	}
+}

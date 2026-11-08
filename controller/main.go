@@ -381,7 +381,9 @@ func main() {
 	onCritical := func(nodeID string, event *pb.CriticalEvent) {
 		log.Printf("critical: node=%s type=%s dst=%v",
 			nodeID, event.EventType, net.IP(event.DstIp))
-		l7Store.Observe(nodeID, unixTime(event.Timestamp), event.EventType, net.IP(event.DstIp).String(), event.Counters)
+		if l7store.IsL7Type(event.EventType) {
+			l7Store.Observe(nodeID, unixTime(event.Timestamp), event.EventType, net.IP(event.DstIp).String(), event.Counters)
+		}
 
 		// v4.0 sub-second autonomous path: escalate to Active immediately and
 		// push the broad inline rule set (<200ms) without waiting for the next

@@ -144,6 +144,14 @@ const (
 	KindSlowloris  = "l7_slowloris"
 )
 
+// IsL7Type reports whether a critical-event type belongs in the L7 store.
+// L3/L4 events (burst_emergency, hard_threshold_exceeded, syn_flood, ...)
+// share the stream but must never be stored as L7 records.
+func IsL7Type(eventType string) bool {
+	t := strings.ToLower(eventType)
+	return strings.Contains(t, "slowloris") || strings.Contains(t, "tls") || strings.Contains(t, "http")
+}
+
 func kindOf(eventType string) string {
 	t := strings.ToLower(eventType)
 	switch {
@@ -207,9 +215,10 @@ func parseDetail(counters map[string]uint64) Detail {
 	return d
 }
 
-// Observe records a Node-reported L7 event. Nil/empty events are ignored.
+// Observe records a Node-reported L7 event. Nil/empty and non-L7 events are
+// ignored so L3 critical events cannot pollute the L7 read model.
 func (s *Store) Observe(nodeID string, at time.Time, eventType, dstIP string, counters map[string]uint64) {
-	if eventType == "" {
+	if eventType == "" || !IsL7Type(eventType) {
 		return
 	}
 	if at.IsZero() {
