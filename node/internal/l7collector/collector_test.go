@@ -203,3 +203,38 @@ func TestTickEmitsOnlyAboveThreshold(t *testing.T) {
 		t.Fatalf("tls_handshakes = %d, counters = %v", evs[0].Counters["tls_handshakes"], evs[0].Counters)
 	}
 }
+
+func TestSlowlorisByteDripAndReflag(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SlowlorisConns = 1
+	cfg.MaxOpenFragments = 2
+	c := New(cfg)
+	dst := net.ParseIP("203.0.113.50")
+	src := net.ParseIP("198.51.100.21")
+	now := time.Unix(1700000000, 0)
+
+	// Byte-drip: fragments that never form a request line. Each byte is its
+	// own TCP payload, so the parse-based counter never sees a "request".
+	drip := func(at time.Time) {
+		for _, payload := range [][]byte{{'G'}, {'E'}, {'T'}, {' '}} {
+			c.Observe(src, dst, 52000, 80, 0x18, payload, at)
+		}
+	}
+	drip(now)
+	evs := c.Tick(now.Add(time.Second))
+	if len(evs) != 1 || evs[0].Type != l7.DecoderSlowloris {
+		t.Fatalf("byte-drip events = %+v, want one slowloris", evs)
+	}
+	if evs[0].Counters["slowloris_conns"] != 1 {
+		t.Fatalf("slowloris counters = %v", evs[0].Counters)
+	}
+
+	// The attack continues in the next window: it must re-flag, not stay
+	// silent because the connection was flagged once already.
+	at2 := now.Add(5 * time.Second)
+	drip(at2)
+	evs2 := c.Tick(at2.Add(time.Second))
+	if len(evs2) != 1 || evs2[0].Type != l7.DecoderSlowloris {
+		t.Fatalf("second-window events = %+v, want the sustained attack re-flagged", evs2)
+	}
+}

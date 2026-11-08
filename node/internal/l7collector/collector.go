@@ -223,7 +223,9 @@ func (c *Collector) Observe(srcIP, dstIP net.IP, srcPort, dstPort uint16, tcpFla
 	if isTLS {
 		hello, helloOK = l7.ParseTLSClientHelloFull(payload)
 	}
-	if !reqOK && !helloOK {
+	// A byte-drip fragment never parses as a request line; slowloris
+	// detection must still accumulate it (raw bytes per 5-tuple).
+	if !reqOK && !helloOK && !isHTTP {
 		return
 	}
 
@@ -242,15 +244,17 @@ func (c *Collector) Observe(srcIP, dstIP net.IP, srcPort, dstPort uint16, tcpFla
 	b.uniqueSrc[src] = struct{}{}
 	c.samples.Add(1)
 
+	if isHTTP {
+		// Complete requests mark the state completed; incomplete and
+		// unparseable fragments accumulate toward the slowloris flag.
+		c.observeSlow(src, key, dstPort, payload, at, b)
+	}
 	if reqOK {
 		b.http++
 		c.httpCount.Add(1)
 		bump(b.methods, req.Method, 8)
 		bump(b.paths, req.Path, 8)
 		bump(b.uas, userAgent, 16)
-		if !req.HeaderComplete {
-			c.observeSlow(src, key, dstPort, payload, at, b)
-		}
 	}
 	if helloOK {
 		b.tls++
@@ -411,7 +415,11 @@ func (c *Collector) Tick(now time.Time) []Event {
 	for k, e := range c.slow {
 		if now.Sub(e.lastSeen) > 30*time.Second {
 			delete(c.slow, k)
+			continue
 		}
+		// A sustained attack re-raises in every window instead of staying
+		// silent after its first flag.
+		e.flagged = false
 	}
 	return out
 }
