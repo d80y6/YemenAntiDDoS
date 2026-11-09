@@ -50,7 +50,7 @@ perf:
   xdp_mode: driver               # driver | generic | offload
 
 af_xdp:
-  enabled: true                  # zero-copy L7 inspection
+  enabled: true                  # zero-copy L7 inspection + JS-PoW challenge responder
   queue: 0                       # RX queue steered into the XSK map
   frames: 4096                   # UMEM frames (power of two)
   frame_size: 4096
@@ -87,8 +87,10 @@ point-to-point at L2. GENEVE is declared on the wire but not implemented; the
 node rejects `encap: "geneve"` at install time.
 
 The controller's `default_action` is enforced by installing a lowest-priority
-all-zero catch-all rule when it is `"drop"`; the rule is removed by the next
-snapshot with `"pass"` (including an empty withdraw push). Specific rules,
+all-zero catch-all rule when it is `"drop"`. Like the SYN-cookie switch it is
+tri-state: an explicit `"pass"` (every snapshot and withdraw the Controller
+sends one) removes the catch-all, while an empty field preserves the previous
+policy rather than silently resetting a drop default to pass. Specific rules,
 including `pass`, override the catch-all.
 
 ---
@@ -110,18 +112,36 @@ its BPF maps from scratch.
 ### Rule lifecycle (narrow-then-rebreadth)
 
 1. **Broad (immediate).** A per-target `rate_limit` rule caps the destination at
-   `inline_broad_rate_pps`. For TCP attacks a `syn_cookie` rule is added so
-   spoofed handshakes are answered statelessly.
+   `inline_broad_rate_pps`. SYN floods (decoder/event `*syn*` — never ACK/RST/FIN
+   floods, which cannot complete a handshake) additionally get a `syn_cookie`
+   rule. HTTP-shaped floods get a `challenge` rule (TCP port 80, priority 15)
+   steering clients to the JS-PoW anti-bot responder on Nodes with AF_XDP;
+   Nodes without an XSK bound fall through to normal handling.
 2. **Narrow (~750 ms).** Flow evidence narrows the rule set: dominant
-   destination ports (at least 25 % share, at most 4) become `drop` rules with a
-   residual `rate_limit` for the rest of the traffic. Optionally the top source
-   /24 subnets are dropped too.
+   destination ports (at least 25 % share, at most 4) become `drop` rules for
+   the flood's dominant L4 protocol (a UDP flood narrows to UDP, not TCP) with a
+   residual `rate_limit` for the rest of the traffic. The top source /24
+   subnets get their own `drop` rules as well. A second Node reporting the same
+   attack immediately receives the merged node snapshot.
 3. **Rebreadth.** If the flood continues after narrowing (new ports, rotating
-   sources), the mitigator re-applies the broad cap. Every re-broadening is
-   counted in the mitigation's `Rebreadths`.
+   sources), the mitigator re-applies the broad cap and schedules another
+   narrow attempt. Every re-broadening is counted in the mitigation's
+   `Rebreadths`.
 
-When the attack ends, the Controller pushes an empty rule set (withdraw) and the
-Node's filter maps return to pass-all.
+When the attack ends (including eviction under the active-attack cap) the
+Controller pushes an empty rule set (withdraw) and the Node's filter maps return
+to pass-all.
+
+### Snapshot versions and refresh
+
+Snapshots carry a monotonically increasing `version`. The first push to each
+Node after a Controller start is **v1**, which resets the Node's applied-version
+counters (the restarted Controller numbers from scratch below whatever the Node
+already applied); later pushes are the global generation and must increase.
+Every attach pushes immediately, and the snapshot is re-pushed every 5 minutes —
+half the kernel `expires_ns` TTL — so a mitigation can never lapse between
+pushes. Startup recovery rebuilds mitigations from the active attacks in the
+database before any Node attaches.
 
 ---
 
@@ -143,7 +163,10 @@ Key BPF maps (`node/bpf/xsight.h`):
 | `xsight_xsk` | AF_XDP socket map |
 
 Actions map to `XDP_PASS`, `XDP_DROP`, `XDP_TX` (SYN-ACK / clean-pipe on the
-same interface) and `XDP_REDIRECT` (clean-pipe egress). Rules carry an expiry
+same interface), `XDP_REDIRECT` (clean-pipe egress), `rate_limit`, `syn_cookie`
+and `challenge` (AF_XDP steer for the JS-PoW responder; a client in
+`validated_clients` is waived from the steer and reaches the host stack — the
+same map also bypasses emergency drops). Rules carry an expiry
 (the controller's `expires_unix` is converted to a monotonic kernel deadline,
 `expires_ns`, at install) so a lost Controller connection does not leave
 permanent drops.
@@ -163,9 +186,12 @@ The BPF program rewrites the SYN into a SYN-ACK and returns it with `XDP_TX`;
 the final ACK validates the cookie and records the client in
 `validated_clients`. Cookies are emitted only for destinations covered by a
 rule whose action is `syn_cookie`. The siphash key lives in the single-entry
-`cookie_secret` array value (`lo`+`hi` written in one update), so hourly
-rotation is atomic; rotation runs whenever inline mode is active, and enabling
-cookies while the key is still all-zero is refused. `shared/cookie` implements
+`cookie_secret` array value (`lo`+`hi` written in one update), so a rotation
+lands as one atomic map update — the data plane never sees a mixed key.
+Rotation runs hourly whenever inline mode is active; handshakes that began
+under the previous key fail validation (fail closed) and the client retries
+under the new key. Enabling cookies while the key is still all-zero is
+refused. `shared/cookie` implements
 the same formula in Go (including the 40-byte SipHash length block); the test
 suite pins both a known answer and the standard SipHash-2-4 vectors, so any
 drift between the C and Go sides fails CI.
@@ -200,8 +226,9 @@ emission, expiry and the DB record are identical to the threshold detector.
 The console adds an **Inline Scrubbing** page under Monitoring with KPI cards,
 the mitigation table (attack, target, phase, rules, nodes) and the per-Node
 posture table (XDP mode, filter rules, validated clients, SYN-cookie
-replied/validated/dropped, emergency drops, burst alerts, AF_XDP health, CPU
-pins). The L7 page now also lists top JA3 / JA4 fingerprints and User-Agents.
+replied/validated/dropped, emergency drops, burst alerts, clean-pipe redirect
+ok/err, AF_XDP health, CPU pins and per-core utilisation). The L7 page now also
+lists top JA3 / JA4 fingerprints and User-Agents.
 
 ---
 
