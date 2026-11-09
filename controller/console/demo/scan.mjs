@@ -142,7 +142,7 @@ export function scanArtifacts(prod, demo, buildVersion = process.env.XSIGHT_VERS
 }
 export function scanData(server = createServer()) {
   const routes = backendRoutes().filter(r => r.method === 'GET'), failures = []
-  if (routes.length !== 54) throw Error('GET route count must be 54; got ' + routes.length)
+  if (routes.length !== 57) throw Error('GET route count must be 57; got ' + routes.length)
   for (const route of routes) {
     const path = samplePath(route.path), reply = server(path)
     if (reply.status !== 200) failures.push({ path, status: reply.status })
