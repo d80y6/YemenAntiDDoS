@@ -9,14 +9,29 @@
 # Build:  docker build -f deploy/docker/Dockerfile.node -t yemenantiddos/node .
 
 FROM golang:1.24-bookworm AS build
+# The XDP program's combined verifier stack sits close to the 512-byte limit.
+# Bookworm's default clang-14 spills ~200 bytes more than the LLVM 18 toolchain
+# the code is developed and CI-verified with, and the load is rejected
+# ("combined stack size of 3 calls is 544"). Pin LLVM 18 and put it on PATH as
+# `clang` for the bpf2go directive (-cc clang).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends clang llvm libbpf-dev bpftool \
+ && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+      libbpf-dev bpftool \
+ && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+      | gpg --dearmor --yes -o /usr/share/keyrings/llvm.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-18 main" \
+      > /etc/apt/sources.list.d/llvm-18.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends clang-18 llvm-18 \
+ && ln -sf /usr/bin/clang-18 /usr/local/bin/clang \
+ && ln -sf /usr/bin/llvm-strip-18 /usr/local/bin/llvm-strip \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY shared/ shared/
 COPY node/ node/
 WORKDIR /src/node
-RUN go generate ./internal/bpf/ \
+RUN clang --version | head -1 \
+ && go generate ./internal/bpf/ \
  && test -f internal/bpf/xsight_x86_bpfel.o \
  && CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /out/xsight-node .
 
