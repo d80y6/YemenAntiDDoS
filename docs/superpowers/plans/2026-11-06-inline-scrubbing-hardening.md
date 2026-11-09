@@ -793,3 +793,25 @@ rx/tx and `xskUmemDescSize=8` for fill/comp.
 - Spec coverage: every "Confirmed defect inventory" item maps to a task above (Pillar 1 → 1.1–1.9; Pillar 2 → 2.1–2.8; Pillar 3 → 3.1–3.9; Pillar 4 → 4.1–4.10; Pillar 5 → 5.1–5.7; harness → 0.1–0.4).
 - Out-of-scope items (GENEVE tunnel, IPv6 SYN cookies, offload-safe ELF split, traffic generator) are explicitly excluded, matching the spec.
 - Type/name consistency: `filter_rule.expires_ns`, `active_filter_subnets_dst/_src`, `filter_hit`, `readBurstAlert`, `ValidAck(cookie, ackNum)` are used consistently across tasks.
+
+## Execution status (final)
+
+All phases complete and merged to `main` (fast-forward d6573ec → 1a5bd7e):
+
+- Phases 0–5 implemented; every verification box above executed and green
+  (node sudo full suite + `make -B bpf` stack 344 B ≤ 480; controller full
+  suite; shared; action/tracker/ingestion `-race`; console build; docs
+  updated in `be1ecf0`).
+- Phase 5 post-review fixes in `3ac75c8`: TCP seq-continuity for the
+  challenge funnel, XSS hardening (JSON-escaped page + hex/relative-path
+  validation), challenge rules gated to AF_XDP-active nodes and IPv4
+  targets, PoW 12→16 bits, deterministic token eviction with 32/IP quota,
+  UMEM frame clamping, reply-before-consume, `make proto` grpc pin.
+- Follow-up in `1a5bd7e`: eviction tie-break by mint sequence; the
+  rebreath test withdraws its mitigation (fixed a real test-leak data race
+  the `-race` gate caught).
+- Console suite carries 788 pre-existing failures verified identical at
+  the HEAD baseline (worktree comparison); tracked separately.
+- Deferred from the review (intentional, documented in INLINE.md/L7.md):
+  separate validated_clients scope for challenge admissions vs cookie
+  validations, and reducer fall-through past a waived CHALLENGE hit.

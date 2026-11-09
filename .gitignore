@@ -10,6 +10,8 @@ vendor/
 # Node.js
 node_modules/
 
+superpowers/
+
 # IDE
 .idea/
 .vscode/

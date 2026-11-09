@@ -23,7 +23,7 @@ bpf: $(BPF_OBJ)
 
 $(BPF_OBJ): $(BPF_SRC) $(BPF_HDR)
 	$(CLANG) $(BPF_CFLAGS) -c $(BPF_SRC) -o $@
-	@if [ -n "$(STRIP)" ]; then $(STRIP) -g $@; else echo "note: no llvm-strip; leaving debug info"; fi
+	@if [ -n "$(STRIP)" ]; then $(STRIP) -g $@; else echo "note: no llvm-strip; $(STRIP) leaving debug info"; fi
 
 ## Generate — bpf2go (produces type-safe Go bindings)
 generate:
