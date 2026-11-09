@@ -340,20 +340,31 @@ func TestRebreathReNarrows(t *testing.T) {
 
 	// Narrow and rebreath oscillate on short timers; poll instead of sampling
 	// a single point in the cycle.
+	observed := false
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for {
 		mit := m.ActiveMitigations()
 		if len(mit) != 1 {
+			m.Withdraw(61)
 			t.Fatalf("mitigations = %d, want 1", len(mit))
 		}
 		if mit[0].Phase == "narrow" && mit[0].Rebreadths >= 1 {
-			return
+			observed = true
+			break
 		}
 		if time.Now().After(deadline) {
+			m.Withdraw(61)
 			t.Fatalf("phase = %q rebreadths = %d after rebreath, want narrow with rebreadths >= 1",
 				mit[0].Phase, mit[0].Rebreadths)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	// Stop the narrow/rebreath oscillation before returning: without a
+	// Withdraw the mitigation keeps logging on short timers for the rest of
+	// the binary, racing tests that capture the global logger.
+	m.Withdraw(61)
+	if !observed {
+		t.Fatal("narrow-with-rebreadth state never observed")
 	}
 }
 

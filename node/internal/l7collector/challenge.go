@@ -69,10 +69,13 @@ func (c ChallengeConfig) normalize() ChallengeConfig {
 // other client (including NAT users sharing that IP).
 const maxTokensPerIP = 32
 
-// issuedToken is one live, single-use token: when it expires and who holds it.
+// issuedToken is one live, single-use token: when it expires, who holds it,
+// and its mint sequence (tie-breaker so equal expiries evict oldest-first
+// instead of whatever map iteration finds first).
 type issuedToken struct {
 	exp time.Time
 	ip  string
+	seq uint64
 }
 
 // ChallengeIssuer mints and validates PoW challenge tokens.
@@ -83,6 +86,7 @@ type ChallengeIssuer struct {
 	issued  map[string]issuedToken // token → expiry + source (single-use tracking)
 	perIP   map[string]int         // source IP → live token count
 	maxLive int
+	nextSeq uint64 // mint sequence for eviction tie-breaking
 }
 
 // NewChallengeIssuer builds an issuer. A zero config enables defaults.
@@ -159,7 +163,8 @@ func (ci *ChallengeIssuer) track(token, clientIP string, now time.Time) {
 		}
 		ci.removeLocked(victim)
 	}
-	ci.issued[token] = issuedToken{exp: now.Add(ci.cfg.TokenTTL), ip: clientIP}
+	ci.nextSeq++
+	ci.issued[token] = issuedToken{exp: now.Add(ci.cfg.TokenTTL), ip: clientIP, seq: ci.nextSeq}
 	ci.perIP[clientIP]++
 }
 
@@ -175,26 +180,36 @@ func (ci *ChallengeIssuer) pickVictim(clientIP string, now time.Time) string {
 		return ci.soonestFor(clientIP)
 	}
 	if len(ci.issued) >= ci.maxLive {
-		victim, best := "", time.Time{}
-		for t, e := range ci.issued {
-			if victim == "" || e.exp.Before(best) {
-				victim, best = t, e.exp
-			}
-		}
-		return victim
+		return ci.soonest()
 	}
 	return ""
 }
 
+// soonest returns the globally soonest-expiring token, breaking expiry ties
+// by mint order (oldest inserted evicts first).
+func (ci *ChallengeIssuer) soonest() string {
+	var victim string
+	var best issuedToken
+	for t, e := range ci.issued {
+		if victim == "" || e.exp.Before(best.exp) ||
+			(e.exp.Equal(best.exp) && e.seq < best.seq) {
+			victim, best = t, e
+		}
+	}
+	return victim
+}
+
 // soonestFor returns the soonest-expiring token held by ip ("" when none).
 func (ci *ChallengeIssuer) soonestFor(ip string) string {
-	victim, best := "", time.Time{}
+	var victim string
+	var best issuedToken
 	for t, e := range ci.issued {
 		if e.ip != ip {
 			continue
 		}
-		if victim == "" || e.exp.Before(best) {
-			victim, best = t, e.exp
+		if victim == "" || e.exp.Before(best.exp) ||
+			(e.exp.Equal(best.exp) && e.seq < best.seq) {
+			victim, best = t, e
 		}
 	}
 	return victim
