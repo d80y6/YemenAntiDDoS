@@ -179,6 +179,54 @@ func TestBase64Path(t *testing.T) {
 	}
 }
 
+// TestTrackEvictionOrder pins the bounded-map behavior under Mint floods:
+// a single source can never hold more than maxTokensPerIP live slots, the
+// soonest-expiring token goes first when the table is full (never a random
+// one), and the most recently minted token always survives — a client that
+// was just challenged must not lose its token before it can solve.
+func TestTrackEvictionOrder(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	// Per-IP cap: one IP minting far more than its quota keeps exactly the
+	// cap live, and its freshest token survives.
+	perIP := testIssuer(t, time.Hour, 8)
+	perIP.maxLive = 4 * maxTokensPerIP
+	var lastTok string
+	for i := 0; i < maxTokensPerIP+10; i++ {
+		lastTok, _ = perIP.Mint("203.0.113.5", now)
+	}
+	if len(perIP.issued) != maxTokensPerIP {
+		t.Fatalf("live tokens = %d, want per-IP cap %d", len(perIP.issued), maxTokensPerIP)
+	}
+	if _, ok := perIP.issued[lastTok]; !ok {
+		t.Fatal("most recently minted token was evicted")
+	}
+
+	// Global cap: a second IP squeezes the table down to maxLive, evicting
+	// the soonest-expiring tokens first until the newcomer's oldest tokens
+	// are all that is left.
+	global := testIssuer(t, time.Hour, 8)
+	global.maxLive = 4
+	for i := 0; i < 5; i++ {
+		global.Mint("203.0.113.5", now)
+	}
+	for i := 0; i < 5; i++ {
+		lastTok, _ = global.Mint("198.51.100.9", now)
+	}
+	if len(global.issued) > global.maxLive {
+		t.Fatalf("live tokens = %d, exceed maxLive %d", len(global.issued), global.maxLive)
+	}
+	if _, ok := global.issued[lastTok]; !ok {
+		t.Fatal("fresh token evicted despite free capacity accounting")
+	}
+	if got := global.perIP["198.51.100.9"]; got != 4 {
+		t.Fatalf("second IP holds %d live tokens, want the full table", got)
+	}
+	if got := global.perIP["203.0.113.5"]; got != 0 {
+		t.Fatalf("first IP retains %d live tokens after being fully evicted", got)
+	}
+}
+
 func TestPoWAgreesWithJSRepresentation(t *testing.T) {
 	// The challenge page hashes ASCII(token + nonceHex) with WebCrypto; Go
 	// must hash the exact same bytes or no solution ever validates.

@@ -16,6 +16,9 @@ type recordingPusher struct {
 	byNode map[string][]*pb.InlineRuleSet
 	nodes  []string
 	fail   bool
+	// noXSK marks nodes whose posture reports no AF_XDP socket; challenge
+	// rules must be withheld from them at push time.
+	noXSK map[string]bool
 }
 
 func newRecordingPusher(nodes ...string) *recordingPusher {
@@ -36,6 +39,12 @@ func (p *recordingPusher) ConnectedInlineNodes() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.nodes...)
+}
+
+func (p *recordingPusher) AFXDPActive(nodeID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.noXSK[nodeID]
 }
 
 func (p *recordingPusher) last(nodeID string) *pb.InlineRuleSet {
@@ -576,5 +585,65 @@ func TestBroadRulesEmitChallengeForHTTPFloods(t *testing.T) {
 		if r.Action == "challenge" {
 			t.Fatalf("SYN flood emitted a challenge rule: %+v", r)
 		}
+	}
+}
+
+// TestChallengeRuleWithheldWithoutAFXDP: a node whose posture shows no AF_XDP
+// socket must not receive the challenge rule — a steer it cannot answer would
+// win the best-match reducer over its rate_limit and leave it unprotected.
+func TestChallengeRuleWithheldWithoutAFXDP(t *testing.T) {
+	pusher := newRecordingPusher("edge-a")
+	pusher.noXSK = map[string]bool{"edge-a": true}
+	m := NewInlineMitigator(testMitigatorConfig(time.Hour), pusher)
+
+	m.OnCritical(142, "192.0.2.142", "tcp", "http_flood", []string{"edge-a"}, 1000, nil)
+	set := pusher.last("edge-a")
+	if set == nil {
+		t.Fatal("no push")
+	}
+	hasRate, hasChallenge := false, false
+	for _, r := range set.Rules {
+		switch r.Action {
+		case "rate_limit":
+			hasRate = true
+		case "challenge":
+			hasChallenge = true
+		}
+	}
+	if hasChallenge {
+		t.Fatalf("challenge rule pushed to a node without AF_XDP: %+v", set.Rules)
+	}
+	if !hasRate {
+		t.Fatalf("rate cap lost when the challenge rule is withheld: %+v", set.Rules)
+	}
+}
+
+// TestChallengeRuleIPv4Only: the responder and validated_clients are v4-only,
+// so an IPv6 target must get no challenge rule (it would blackhole the
+// traffic — steered frames are consumed by a v4-only parser and never
+// answered).
+func TestChallengeRuleIPv4Only(t *testing.T) {
+	pusher := newRecordingPusher("edge-a")
+	m := NewInlineMitigator(testMitigatorConfig(time.Hour), pusher)
+
+	m.OnCritical(143, "2001:db8::1", "tcp", "http_flood", []string{"edge-a"}, 1000, nil)
+	set := pusher.last("edge-a")
+	if set == nil {
+		t.Fatal("no push")
+	}
+	hasRate, hasChallenge := false, false
+	for _, r := range set.Rules {
+		switch r.Action {
+		case "rate_limit":
+			hasRate = true
+		case "challenge":
+			hasChallenge = true
+		}
+	}
+	if hasChallenge {
+		t.Fatalf("IPv6 target emitted a challenge rule: %+v", set.Rules)
+	}
+	if !hasRate {
+		t.Fatalf("IPv6 target lost its rate cap: %+v", set.Rules)
 	}
 }

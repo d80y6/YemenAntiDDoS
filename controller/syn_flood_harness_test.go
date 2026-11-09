@@ -31,6 +31,7 @@ func (p *fakeInlinePusher) PushInlineRules(nodeID string, rules *pb.InlineRuleSe
 	return nil
 }
 func (p *fakeInlinePusher) ConnectedInlineNodes() []string { return p.nodes }
+func (p *fakeInlinePusher) AFXDPActive(nodeID string) bool { return false }
 
 // --- minimal store (same pattern as tracker's dao6Store) -------------------
 

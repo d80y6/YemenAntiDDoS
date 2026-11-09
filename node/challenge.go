@@ -87,35 +87,53 @@ func (r *challengeResponder) handle(f bpf.XSKFrame) {
 	if !ok {
 		return
 	}
-	// First data segment: their ISN is seq-1 (HTTP is the first payload).
-	theirISN := f.Seq - uint32(len(f.Payload))
+	// Bound everything the client controls that gets echoed back (307
+	// Location, page `next`): a raw AF_XDP reply cannot fragment, so an
+	// oversized request line would produce a frame no client accepts.
+	if len(target) > maxChallengeTarget {
+		target = "/"
+	}
+	// First data segment: the client's ISN is seq-1 (any ordinary request
+	// fits one segment; TFO SYNs carrying data also land here with the same
+	// arithmetic). A request split across segments cannot be answered — the
+	// reply would sit outside the client's window — and the client stalls
+	// until it reconnects.
+	theirISN := f.Seq - 1
 	ourSeq := challengeISN(f, theirISN) + 1
 	ack := f.Seq + uint32(len(f.Payload))
 
 	path, query := splitTarget(target)
 	if path == r.issuer.Path() {
-		// Serve the PoW page; `n` carries the original request target.
-		next := query.Get("n")
-		if next == "" {
-			next = "/"
+		// Serve the PoW page; `n` carries the original request target. The
+		// token is echoed only when it has the shape of a minted token —
+		// anything else is attacker input and gets re-issued instead.
+		next := sanitizeNext(query.Get("n"))
+		if tok := query.Get("t"); isHexToken(tok) {
+			page := l7collector.RenderChallengePage(tok, r.issuer.POWBits(), next)
+			r.reply(f, ourSeq, ack, tcpFlagFIN|tcpFlagACK, page)
+			return
 		}
-		page := l7collector.RenderChallengePage(query.Get("t"), r.issuer.POWBits(), next)
-		r.reply(f, ourSeq, ack, tcpFlagFIN|tcpFlagACK, page)
-		return
+		target = next
 	}
 
 	if tok := query.Get("t"); tok != "" {
 		pow := query.Get("xsight_pow")
-		if r.issuer.VerifyPoW(tok, pow) && r.issuer.Validate(tok, f.SrcIP.String(), now) {
-			// Solved: admit the client, then send it on to the original
-			// location (follow-up connections pass the data plane).
-			if r.admit != nil {
-				if err := r.admit(f); err != nil {
-					log.Printf("challenge: admit %s: %v", f.SrcIP, err)
-				}
-			}
+		if r.issuer.VerifyPoW(tok, pow) {
+			// Send the reply before consuming the token: a failed TX must
+			// not burn the client's solve — it retransmits the request and
+			// we retry. A replayed solve gets the same 307 but no admission
+			// (single-use Validate), and the data plane re-steers it.
 			r.reply(f, ourSeq, ack, tcpFlagFIN|tcpFlagACK,
 				l7collector.RenderChallenge307(challengeNext(path, query)))
+			if r.issuer.Validate(tok, f.SrcIP.String(), now) {
+				// Solved: admit the client so its follow-up connections
+				// pass the data plane to the host stack.
+				if r.admit != nil {
+					if err := r.admit(f); err != nil {
+						log.Printf("challenge: admit %s: %v", f.SrcIP, err)
+					}
+				}
+			}
 			return
 		}
 	}
@@ -127,6 +145,36 @@ func (r *challengeResponder) handle(f bpf.XSKFrame) {
 	}
 	loc += "&n=" + url.QueryEscape(target)
 	r.reply(f, ourSeq, ack, tcpFlagFIN|tcpFlagACK, l7collector.RenderChallenge307(loc))
+}
+
+// maxChallengeTarget bounds the echoed request target (see handle).
+const maxChallengeTarget = 512
+
+// sanitizeNext validates the `n` (original target) parameter that the
+// challenge page navigates to after solving: it must be a relative path —
+// never an absolute URL or protocol-relative "//host" (open redirect) — and
+// bounded in length.
+func sanitizeNext(next string) string {
+	if next == "" || len(next) > maxChallengeTarget ||
+		!strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		return "/"
+	}
+	return next
+}
+
+// isHexToken checks that tok has the shape of a minted token (hex of at
+// least the 28-byte expiry+nonce+signature payload) before it is embedded in
+// the challenge page. Malformed tokens are never reflected.
+func isHexToken(tok string) bool {
+	if len(tok) < 56 || len(tok)%2 != 0 {
+		return false
+	}
+	for _, ch := range tok {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *challengeResponder) reply(f bpf.XSKFrame, seq, ack uint32, flags uint8, payload []byte) {
@@ -190,6 +238,8 @@ func buildTCPReply(f bpf.XSKFrame, seq, ack uint32, flags uint8, payload []byte)
 	src := f.SrcIP.To4()
 	dst := f.DstIP.To4()
 	eth := f.EthHdr
+	// Single-tag VLAN (14-18 B) is handled; QinQ frames are not replied to
+	// (niche — those clients stall and reconnect).
 	if len(eth) < 14 || len(eth) > 18 || src == nil || dst == nil {
 		return nil
 	}

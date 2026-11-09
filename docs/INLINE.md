@@ -115,8 +115,10 @@ its BPF maps from scratch.
    `inline_broad_rate_pps`. SYN floods (decoder/event `*syn*` — never ACK/RST/FIN
    floods, which cannot complete a handshake) additionally get a `syn_cookie`
    rule. HTTP-shaped floods get a `challenge` rule (TCP port 80, priority 15)
-   steering clients to the JS-PoW anti-bot responder on Nodes with AF_XDP;
-   Nodes without an XSK bound fall through to normal handling.
+   steering clients to the JS-PoW anti-bot responder — emitted only for IPv4
+   targets and pushed only to Nodes whose posture reports an AF_XDP socket
+   bound (a Node that cannot serve the funnel keeps its rate cap instead;
+   otherwise the steer would win the best-match lookup and answer nothing).
 2. **Narrow (~750 ms).** Flow evidence narrows the rule set: dominant
    destination ports (at least 25 % share, at most 4) become `drop` rules for
    the flood's dominant L4 protocol (a UDP flood narrows to UDP, not TCP) with a
@@ -166,7 +168,10 @@ Actions map to `XDP_PASS`, `XDP_DROP`, `XDP_TX` (SYN-ACK / clean-pipe on the
 same interface), `XDP_REDIRECT` (clean-pipe egress), `rate_limit`, `syn_cookie`
 and `challenge` (AF_XDP steer for the JS-PoW responder; a client in
 `validated_clients` is waived from the steer and reaches the host stack — the
-same map also bypasses emergency drops). Rules carry an expiry
+same map also bypasses emergency drops, so a challenge admission buys the
+holder one 60 s, per-IP window of that exemption; the PoW target is 16 bits
+by default, making one solve cost real work rather than milliseconds).
+Rules carry an expiry
 (the controller's `expires_unix` is converted to a monotonic kernel deadline,
 `expires_ns`, at install) so a lost Controller connection does not leave
 permanent drops.

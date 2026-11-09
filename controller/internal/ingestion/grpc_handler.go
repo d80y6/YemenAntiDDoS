@@ -656,6 +656,15 @@ func (h *GRPCHandler) ConnectedInlineNodes() []string {
 	return h.nodeState.ConnectedNodes()
 }
 
+// AFXDPActive reports whether the node's last data-plane posture shows an
+// AF_XDP socket bound. It satisfies action.InlinePusher and gates challenge
+// rules at push time: no posture yet, or no XSK bound, means the node keeps
+// its rate cap instead of a challenge steer it could not answer.
+func (h *GRPCHandler) AFXDPActive(nodeID string) bool {
+	p, ok := h.nodeState.GetPosture(nodeID)
+	return ok && p.AFXDPActive
+}
+
 // SendConfigPush sends a ConfigPush to a specific node via its ControlStream.
 func (h *GRPCHandler) SendConfigPush(nodeID string, config *pb.WatchConfig, version uint64) error {
 	return h.nodeState.SendControlMessage(nodeID, &pb.ControlMessage{

@@ -597,8 +597,18 @@ func (s *XSK) SendRawFrame(umemOffset uint64, length uint32) bool {
 // and queues the slot for TX. The RX path must not reclaim it: the TX
 // completion does. Must run on the socket's Run goroutine (the RX handler).
 func (s *XSK) SendReplyFrame(offset uint64, reply []byte) bool {
-	if len(reply) == 0 || offset+uint64(len(reply)) > uint64(len(s.umem)) {
+	if len(reply) == 0 {
 		return false
+	}
+	// Stay inside the frame that carried f: a reply larger than the UMEM
+	// chunk would overwrite the adjacent frame, and a write past the UMEM
+	// end hits unmapped memory.
+	if offset%uint64(s.frameSz)+uint64(len(reply)) > uint64(s.frameSz) ||
+		offset >= uint64(len(s.umem)) {
+		return false
+	}
+	if _, dup := s.pendingTX[offset]; dup {
+		return false // already in flight; a second claim would double-return the slot
 	}
 	copy(s.umem[offset:], reply)
 	s.pendingTX[offset] = struct{}{}

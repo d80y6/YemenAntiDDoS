@@ -150,8 +150,9 @@ func TestChallengeRedirectsUnsolvedRequest(t *testing.T) {
 
 func TestChallengeServesPageWithToken(t *testing.T) {
 	r, _, got, _ := newTestResponder(t)
+	tok := strings.Repeat("ab", 28) // minted tokens are ≥56 hex chars
 	f := challengeFrame(0x18, 2000, 6000,
-		"GET /.xsight-challenge?t=deadbeef&n=/admin HTTP/1.1\r\nHost: example.com\r\n\r\n")
+		"GET /.xsight-challenge?t="+tok+"&n=/admin HTTP/1.1\r\nHost: example.com\r\n\r\n")
 	r.handle(f)
 	if len(*got) != 1 {
 		t.Fatalf("replies = %d, want 1", len(*got))
@@ -160,11 +161,83 @@ func TestChallengeServesPageWithToken(t *testing.T) {
 	if !strings.HasPrefix(body, "HTTP/1.1 200") {
 		t.Fatalf("page reply = %q, want 200", firstLine(body))
 	}
-	if !strings.Contains(body, "deadbeef") || !strings.Contains(body, "xsight_pow=") {
+	if !strings.Contains(body, tok) || !strings.Contains(body, "xsight_pow=") {
 		t.Fatalf("page must carry the token and PoW submit: %s", body)
 	}
 	if !strings.Contains(body, "'t='+encodeURIComponent(token)") {
 		t.Fatalf("page navigation drops the token: %s", body)
+	}
+}
+
+// TestChallengeSeqContinuity pins the reply-side sequence arithmetic: the
+// data-segment reply must continue the SYN-ACK's sequence space (reply seq =
+// SYN-ACK seq + 1), or real clients drop it as out-of-window and the funnel
+// can never complete.
+func TestChallengeSeqContinuity(t *testing.T) {
+	r, _, got, _ := newTestResponder(t)
+	const clientISN = 0x11223344
+
+	syn := challengeFrame(0x02, clientISN, 0, "")
+	r.handle(syn)
+	if len(*got) != 1 {
+		t.Fatalf("replies = %d, want 1 (SYN-ACK)", len(*got))
+	}
+	_, synSeq, _, _ := parseReply(t, (*got)[0].data)
+
+	f := challengeFrame(0x18, clientISN+1, synSeq+1,
+		"GET /admin?x=1 HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	r.handle(f)
+	if len(*got) != 2 {
+		t.Fatalf("replies = %d, want 2 (SYN-ACK + data reply)", len(*got))
+	}
+	_, dataSeq, dataAck, _ := parseReply(t, (*got)[1].data)
+	if dataSeq != synSeq+1 {
+		t.Fatalf("data reply seq = %#x, want SYN-ACK seq %#x + 1 (client would drop it as out-of-window)",
+			dataSeq, synSeq)
+	}
+	if want := uint32(clientISN+1) + uint32(len("GET /admin?x=1 HTTP/1.1\r\nHost: example.com\r\n\r\n")); dataAck != want {
+		t.Fatalf("data reply ack = %#x, want %#x (must cover the request bytes)", dataAck, want)
+	}
+}
+
+// TestChallengeNeverEchoesForeignToken: a page request whose token is not
+// hex-of-sufficient-length is attacker input; it must be re-issued a fresh
+// challenge (307), never reflected into the page.
+func TestChallengeNeverEchoesForeignToken(t *testing.T) {
+	r, _, got, _ := newTestResponder(t)
+	r.handle(challengeFrame(0x18, 2100, 6100,
+		"GET /.xsight-challenge?t=<script>alert(1)</script>&n=/admin HTTP/1.1\r\nHost: x\r\n\r\n"))
+	if len(*got) != 1 {
+		t.Fatalf("replies = %d, want 1 (fresh challenge)", len(*got))
+	}
+	_, _, _, body := parseReply(t, (*got)[0].data)
+	if !strings.HasPrefix(body, "HTTP/1.1 307") {
+		t.Fatalf("reply = %q, want a fresh 307 (token must not be echoed)", firstLine(body))
+	}
+	if strings.Contains(body, "<script>") {
+		t.Fatalf("attacker token reflected back: %q", body)
+	}
+}
+
+// TestChallengeSanitizesNext: the `n` parameter navigates the client after
+// the solve, so it must be a relative path — absolute and protocol-relative
+// URLs (open redirect) are reset to "/".
+func TestChallengeSanitizesNext(t *testing.T) {
+	r, _, got, _ := newTestResponder(t)
+	tok := strings.Repeat("cd", 28)
+	for _, bad := range []string{"https://evil.example/", "//evil.example/", "%2F%2Fevil.example%2F"} {
+		req := "GET /.xsight-challenge?t=" + tok + "&n=" + bad + " HTTP/1.1\r\nHost: x\r\n\r\n"
+		r.handle(challengeFrame(0x18, 2200, 6200, req))
+		if len(*got) == 0 {
+			t.Fatalf("%s: no reply", bad)
+		}
+		_, _, _, body := parseReply(t, (*got)[len(*got)-1].data)
+		if !strings.Contains(body, `next="/";`) {
+			t.Fatalf("n=%s not sanitized to / in %q", bad, body)
+		}
+		if strings.Contains(body, "evil.example") {
+			t.Fatalf("open-redirect target leaked into the page: %q", body)
+		}
 	}
 }
 

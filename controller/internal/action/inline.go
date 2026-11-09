@@ -38,6 +38,11 @@ type InlinePusher interface {
 	PushInlineRules(nodeID string, rules *pb.InlineRuleSet) error
 	// ConnectedInlineNodes lists nodes currently attached via ControlStream.
 	ConnectedInlineNodes() []string
+	// AFXDPActive reports whether the node's last data-plane posture shows
+	// an AF_XDP socket bound — the challenge responder needs one. Unknown
+	// nodes report false: the challenge rule is withheld until the node
+	// proves it can serve it (its rate cap keeps applying meanwhile).
+	AFXDPActive(nodeID string) bool
 }
 
 // InlineRule is the mitigator's internal rule representation.
@@ -457,7 +462,7 @@ func (m *InlineMitigator) Reconcile(nodeID string) error {
 
 	set := &pb.InlineRuleSet{
 		Version:          version,
-		Rules:            rules,
+		Rules:            rulesForNode(pusher, nodeID, rules),
 		DefaultAction:    "pass",
 		SynCookieEnabled: true,
 		CookieTargets:    cookies,
@@ -570,10 +575,13 @@ func (m *InlineMitigator) broadRulesLocked(mit *InlineMitigation, now time.Time)
 		})
 	}
 	// Anti-bot funnel: cleartext HTTP floods are steered to the Node's JS-PoW
-	// challenge responder (nodes without AF_XDP fall through to pass because
-	// the XSK steer map is empty). Cleartext only: TLS cannot be challenged
-	// without termination.
-	if isAntiBotTarget(mit) {
+	// challenge responder (nodes without AF_XDP keep their rate cap instead:
+	// sendVersioned withholds this rule when the node's posture shows no XSK
+	// bound, because a steer it cannot answer would bypass the cap entirely).
+	// Cleartext only: TLS cannot be challenged without termination. IPv4
+	// only: the responder and validated_clients are v4-only, so a v6 steer
+	// would blackhole the traffic.
+	if isAntiBotTarget(mit) && net.ParseIP(mit.TargetIP).To4() != nil {
 		rules = append(rules, InlineRule{
 			ID:           m.newRuleIDLocked(),
 			DstIP:        mit.TargetIP,
@@ -782,9 +790,12 @@ func (m *InlineMitigator) sendVersioned(nodeID string, pusher InlinePusher,
 	}
 	m.mu.Unlock()
 
+	// Nodes without a bound AF_XDP socket cannot serve the challenge funnel;
+	// withholding the rule keeps their rate_limit as the best match instead
+	// of a steer that would consume the packet and answer nothing.
 	set := &pb.InlineRuleSet{
 		Version:          version,
-		Rules:            rules,
+		Rules:            rulesForNode(pusher, nodeID, rules),
 		DefaultAction:    "pass",
 		SynCookieEnabled: true,
 		CookieTargets:    cookies,
@@ -800,6 +811,23 @@ func (m *InlineMitigator) sendVersioned(nodeID string, pusher InlinePusher,
 	m.seeded[nodeID] = true
 	m.mu.Unlock()
 	return nil
+}
+
+// rulesForNode filters the authoritative rule set for one node: challenge
+// rules are withheld from nodes whose posture shows no AF_XDP socket, since
+// a steer they cannot answer would consume packets and bypass the rate cap.
+func rulesForNode(pusher InlinePusher, nodeID string, rules []*pb.InlineRule) []*pb.InlineRule {
+	if pusher.AFXDPActive(nodeID) {
+		return rules
+	}
+	out := make([]*pb.InlineRule, 0, len(rules))
+	for _, r := range rules {
+		if r.Action == "challenge" {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // pushSnapshot sends the full authoritative snapshot to the given nodes.

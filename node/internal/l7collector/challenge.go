@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -30,7 +31,7 @@ type ChallengeConfig struct {
 	Secret      []byte        // HMAC seed (defaults to a random per-boot key)
 	TokenTTL    time.Duration // default 10m
 	RedirectTo  string        // challenge endpoint path, default "/.xsight-challenge"
-	POWDiffBits int           // leading zero bits required, default 12
+	POWDiffBits int           // leading zero bits required, default 16
 }
 
 // DefaultChallengeConfig returns production-safe defaults.
@@ -42,7 +43,7 @@ func DefaultChallengeConfig() ChallengeConfig {
 		Secret:      secret,
 		TokenTTL:    10 * time.Minute,
 		RedirectTo:  "/.xsight-challenge",
-		POWDiffBits: 12,
+		POWDiffBits: 16,
 	}
 }
 
@@ -63,12 +64,24 @@ func (c ChallengeConfig) normalize() ChallengeConfig {
 	return c
 }
 
+// maxTokensPerIP bounds the live tokens a single source can hold: a Mint
+// flood from one IP evicts its own oldest tokens instead of starving every
+// other client (including NAT users sharing that IP).
+const maxTokensPerIP = 32
+
+// issuedToken is one live, single-use token: when it expires and who holds it.
+type issuedToken struct {
+	exp time.Time
+	ip  string
+}
+
 // ChallengeIssuer mints and validates PoW challenge tokens.
 type ChallengeIssuer struct {
 	cfg ChallengeConfig
 
 	mu      sync.Mutex
-	issued  map[string]time.Time // token → expiry (single-use tracking)
+	issued  map[string]issuedToken // token → expiry + source (single-use tracking)
+	perIP   map[string]int         // source IP → live token count
 	maxLive int
 }
 
@@ -77,7 +90,8 @@ func NewChallengeIssuer(cfg ChallengeConfig) *ChallengeIssuer {
 	cfg = cfg.normalize()
 	return &ChallengeIssuer{
 		cfg:     cfg,
-		issued:  make(map[string]time.Time),
+		issued:  make(map[string]issuedToken),
+		perIP:   make(map[string]int),
 		maxLive: 65536,
 	}
 }
@@ -124,33 +138,79 @@ func (ci *ChallengeIssuer) Mint(clientIP string, now time.Time) (token, location
 
 	raw := append(payload, sig...)
 	token = hex.EncodeToString(raw)
-	ci.track(token, now)
+	ci.track(token, clientIP, now)
 	location = fmt.Sprintf("%s?t=%s&r=%s", ci.cfg.RedirectTo, url.QueryEscape(token),
 		url.QueryEscape(base64Path(clientIP)))
 	return token, location
 }
 
 // track records issued tokens for single-use enforcement with a bounded map.
-func (ci *ChallengeIssuer) track(token string, now time.Time) {
+// Eviction priority: expired entries first, then the caller's own
+// soonest-expiring token once it is over its per-IP quota, then — when the
+// table is full — the soonest-expiring token overall. Never random: the
+// newest tokens (the clients actively solving right now) survive.
+func (ci *ChallengeIssuer) track(token, clientIP string, now time.Time) {
 	ci.mu.Lock()
 	defer ci.mu.Unlock()
-	if len(ci.issued) >= ci.maxLive {
-		// Evict expired entries first, then oldest by expiry.
-		for t, exp := range ci.issued {
-			if exp.Before(now) {
-				delete(ci.issued, t)
-			}
+	for {
+		victim := ci.pickVictim(clientIP, now)
+		if victim == "" {
+			break
+		}
+		ci.removeLocked(victim)
+	}
+	ci.issued[token] = issuedToken{exp: now.Add(ci.cfg.TokenTTL), ip: clientIP}
+	ci.perIP[clientIP]++
+}
+
+// pickVictim returns the token to evict before inserting another one for
+// clientIP, or "" when nothing needs evicting.
+func (ci *ChallengeIssuer) pickVictim(clientIP string, now time.Time) string {
+	for t, e := range ci.issued {
+		if !e.exp.After(now) {
+			return t // expired: always evictable
 		}
 	}
+	if ci.perIP[clientIP] >= maxTokensPerIP {
+		return ci.soonestFor(clientIP)
+	}
 	if len(ci.issued) >= ci.maxLive {
-		for t := range ci.issued {
-			delete(ci.issued, t)
-			if len(ci.issued) < ci.maxLive {
-				break
+		victim, best := "", time.Time{}
+		for t, e := range ci.issued {
+			if victim == "" || e.exp.Before(best) {
+				victim, best = t, e.exp
 			}
 		}
+		return victim
 	}
-	ci.issued[token] = now.Add(ci.cfg.TokenTTL)
+	return ""
+}
+
+// soonestFor returns the soonest-expiring token held by ip ("" when none).
+func (ci *ChallengeIssuer) soonestFor(ip string) string {
+	victim, best := "", time.Time{}
+	for t, e := range ci.issued {
+		if e.ip != ip {
+			continue
+		}
+		if victim == "" || e.exp.Before(best) {
+			victim, best = t, e.exp
+		}
+	}
+	return victim
+}
+
+// removeLocked deletes a token and its per-IP accounting.
+func (ci *ChallengeIssuer) removeLocked(token string) {
+	if e, ok := ci.issued[token]; ok {
+		delete(ci.issued, token)
+		if ci.perIP[e.ip] > 0 {
+			ci.perIP[e.ip]--
+		}
+		if ci.perIP[e.ip] == 0 {
+			delete(ci.perIP, e.ip)
+		}
+	}
 }
 
 // Validate checks a presented token: signature, freshness, single-use.
@@ -180,11 +240,11 @@ func (ci *ChallengeIssuer) Validate(token, clientIP string, now time.Time) bool 
 
 	ci.mu.Lock()
 	defer ci.mu.Unlock()
-	expAt, ok := ci.issued[token]
-	if !ok || expAt.Before(now) {
+	e, ok := ci.issued[token]
+	if !ok || !e.exp.After(now) {
 		return false // never issued by us, or already consumed/expired
 	}
-	delete(ci.issued, token) // single use
+	ci.removeLocked(token) // single use
 	return true
 }
 
@@ -244,6 +304,11 @@ func RenderChallenge307(location string) []byte {
 
 // RenderChallengePage builds the JS proof-of-work challenge page served at
 // the redirect target. Solving recomputes the original request automatically.
+//
+// token and next are embedded via encoding/json, whose default HTML escaping
+// (\u003c, \u003e, \u0026) keeps a literal "</script>" inside the string from
+// closing the script element — the values echo client input, so this is the
+// injection boundary. Callers should still pre-validate (the responder does).
 func RenderChallengePage(token string, powBits int, next string) []byte {
 	var b strings.Builder
 	b.WriteString("HTTP/1.1 200 OK\r\n")
@@ -251,12 +316,14 @@ func RenderChallengePage(token string, powBits int, next string) []byte {
 	b.WriteString("Cache-Control: no-store\r\n")
 	b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 	b.WriteString("Connection: close\r\n")
+	tokJS, _ := json.Marshal(token)
+	nextJS, _ := json.Marshal(next)
 	body := fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Checking your browser</title></head>
 <body><p>Verifying you are human. This may take a moment.</p>
 <script>
 (async function(){
-  const token=%q, bits=%d, next=%q;
+  const token=%s, bits=%d, next=%s;
   const enc=new TextEncoder();
   function zeros(u8){let n=0;for(const b of u8){if(b===0){n+=8;continue;}
     for(let i=7;i>=0;i--){if(b&(1<<i))return n;n++;}}return n;}
@@ -273,7 +340,7 @@ func RenderChallengePage(token string, powBits int, next string) []byte {
   }
   function hex(v){return v.toString(16).padStart(2,'0');}
 })();
-</script></body></html>`, token, powBits, next)
+</script></body></html>`, tokJS, powBits, nextJS)
 	fmt.Fprintf(&b, "Content-Length: %d\r\n\r\n", len(body))
 	b.WriteString(body)
 	return []byte(b.String())
