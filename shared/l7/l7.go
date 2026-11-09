@@ -197,20 +197,19 @@ type SlowlorisState struct {
 	LastPayload int
 }
 
-// Observe records one payload fragment. It reports true when the connection
-// has sent more than maxOpen fragments without ever completing a header block,
-// which is the Slowloris pattern.
+// Observe records one payload fragment. Every fragment counts — byte-drip
+// attacks never form a request line, so parseable-lines-only counting made
+// them invisible. It reports true while the connection has sent more than
+// maxOpen fragments without ever showing an end-of-headers marker.
 func (s *SlowlorisState) Observe(payload []byte, maxOpen int) bool {
 	if maxOpen <= 0 {
 		maxOpen = 20
 	}
-	if _, ok := ParseHTTPRequest(payload); ok {
-		s.Opened++
-		if bytes.Contains(payload, []byte("\r\n\r\n")) {
-			s.Completed++
-		}
-	}
+	s.Opened++
 	s.LastPayload = len(payload)
+	if bytes.Contains(payload, []byte("\r\n\r\n")) {
+		s.Completed++
+	}
 	return s.Completed == 0 && s.Opened > maxOpen
 }
 

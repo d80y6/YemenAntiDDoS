@@ -28,7 +28,7 @@ func dao6MainSource() string {
 }
 func TestDao6_S2g_QueueWiring(t *testing.T) {
 	p := dao6MainSource()
-	for _, pattern := range []string{`tracker.New(.*actionEngine.Enqueue)`, `SetRebreachCallback(actionEngine.EnqueueRebreach)`, `tracker.New(`} {
+	for _, pattern := range []string{`tracker.New(.*actionEngine.EnqueueNonBlocking)`, `SetRebreachCallback(actionEngine.EnqueueRebreachNonBlocking)`, `tracker.New(`} {
 		if got := strings.TrimSpace(dao6Grep(t, "-c", pattern, p)); got != "1" {
 			t.Errorf("grep %q count=%s want 1", pattern, got)
 		}
@@ -63,7 +63,10 @@ func TestDao6_S1g_TrackerCallerFiles(t *testing.T) {
 	pattern := `\.(SetRebreachCallback|Feed|ForceExpire|NotifyExpired|ActiveTimers|UpgradeType|RecoverFromDB|ActiveDstIPs|ActiveCount|tick|transitionToActive|transitionToExpired|countActive|findLowestActive|lowestActivePPS|evictAttack)\(`
 	args := append([]string{"-l", "-E", pattern}, dao6ProductionFiles(t)...)
 	got := strings.Fields(dao6Grep(t, args...))
-	want := []string{"internal/api/attacks.go", "internal/metrics/metrics.go", "internal/tracker/tracker.go", "main.go"}
+	// v4.0 adds internal/tracker/fastpath.go as a deliberate tracker mutation
+	// caller: the CriticalEventStream sub-second escalation path invokes
+	// transitionToActive directly, bypassing the 1s confirmation window.
+	want := []string{"internal/api/attacks.go", "internal/metrics/metrics.go", "internal/tracker/fastpath.go", "internal/tracker/tracker.go", "main.go"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("tracker caller files=%v want HEAD set=%v", got, want)
 	}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, onMounted, onUnmounted, computed, type ShallowRef, type ComputedRef } from 'vue'
+import { ref, shallowRef, onMounted, onUnmounted, watch, computed, type ShallowRef, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { request } from '../../api/client'
 import { usePoll } from '../../composables/usePoll'
@@ -7,6 +7,7 @@ import { thousands, fullDateTime, dateTime } from '../../format'
 import XKpi from '../../components/XKpi.vue'
 import XTip from '../../components/XTip.vue'
 import XEmpty from '../../components/XEmpty.vue'
+import XPill from '../../components/XPill.vue'
 
 const { t } = useI18n()
 
@@ -35,13 +36,17 @@ interface L7Summary {
   targets: { dst_ip: string; http: number; tls: number; slowloris: number; total: number; last_at: string }[]
   sources: { label: string; count: number }[]
   nodes: { label: string; count: number }[]
+  ja3?: { label: string; count: number }[]
+  ja4?: { label: string; count: number }[]
+  user_agents?: { label: string; count: number }[]
   recent: L7Event[]
   dropped: number
 }
 
 const summary: ShallowRef<L7Summary> = shallowRef({
   enabled: false, generated_at: '', window_minutes: 15, bucket_seconds: 60,
-  totals: {}, rates_per_second: {}, series: [], targets: [], sources: [], nodes: [], recent: [], dropped: 0
+  totals: {}, rates_per_second: {}, series: [], targets: [], sources: [], nodes: [], ja3: [], ja4: [],
+  user_agents: [], recent: [], dropped: 0
 })
 const events = shallowRef<L7Event[]>([])
 const loading = ref(true)
@@ -80,6 +85,10 @@ const series: ComputedRef<L7Summary['series']> = computed(() => summary.value.se
 const targets: ComputedRef<L7Summary['targets']> = computed(() => summary.value.targets ?? [])
 const sources: ComputedRef<L7Summary['sources']> = computed(() => summary.value.sources ?? [])
 const nodes: ComputedRef<L7Summary['nodes']> = computed(() => summary.value.nodes ?? [])
+const ja3: ComputedRef<NonNullable<L7Summary['ja3']>> = computed(() => summary.value.ja3 ?? [])
+const ja4: ComputedRef<NonNullable<L7Summary['ja4']>> = computed(() => summary.value.ja4 ?? [])
+const userAgents: ComputedRef<NonNullable<L7Summary['user_agents']>> =
+  computed(() => summary.value.user_agents ?? [])
 const recent: ComputedRef<L7Event[]> = computed(() => summary.value.recent ?? [])
 const dropped: ComputedRef<number> = computed(() => summary.value.dropped ?? 0)
 
@@ -89,10 +98,11 @@ function typeLabel(evType: string) {
   if (evType === 'l7_slowloris') return t('l7.type.slowloris')
   return evType
 }
-function typeTone(evType: string) {
-  if (evType === 'l7_http_flood') return 'http'
-  if (evType === 'l7_tls_anomaly') return 'tls'
-  return 'slowloris'
+function typeTone(evType: string): 'ok' | 'warn' | 'crit' | 'neutral' {
+  if (evType === 'l7_http_flood') return 'warn'
+  if (evType === 'l7_tls_anomaly') return 'crit'
+  if (evType === 'l7_slowloris') return 'crit'
+  return 'neutral'
 }
 
 function formatDetail(d: L7Event['detail']) {
@@ -115,6 +125,29 @@ function formatDetail(d: L7Event['detail']) {
 }
 
 const chartWidth = ref(0), chartHeight = 200
+const chartHost = ref<HTMLElement | null>(null)
+// Measure the chart container with a ResizeObserver so the SVG width tracks
+// layout instead of staying at the initial 0 (which collapsed the plot). The
+// host only appears once data loads, hence the watcher over the template ref.
+let chartRO: ResizeObserver | undefined
+function observeChart(el: HTMLElement | null) {
+  chartRO?.disconnect()
+  chartRO = undefined
+  if (!el || typeof ResizeObserver === 'undefined') {
+    chartWidth.value = 0
+    return
+  }
+  const apply = (w: number) => { if (w > 0) chartWidth.value = Math.round(w) }
+  apply(el.clientWidth)
+  chartRO = new ResizeObserver(entries => {
+    const w = entries[0]?.contentRect.width
+    if (w) apply(w)
+  })
+  chartRO.observe(el)
+}
+watch(chartHost, el => observeChart(el))
+onMounted(() => observeChart(chartHost.value))
+onUnmounted(() => chartRO?.disconnect())
 const hover = ref<number | null>(null)
 
 const maxVal = computed(() => {
@@ -306,6 +339,37 @@ const LIMIT_3 = (arr?: string[]) => arr ? (arr.length > 3 ? arr.slice(0, 3).join
       </section>
 
       <section class="panel">
+        <div class="panel-head"><h2>{{ t('l7.fingerprints.title') }}</h2>
+          <XTip :text="t('l7.fingerprints.tip')" wide /></div>
+        <div class="fp-grid">
+          <div>
+            <h3 class="sub">JA3</h3>
+            <ul class="kv-list">
+              <li v-for="f in ja3" :key="f.label"><code>{{ f.label }}</code>
+                <span class="num">{{ thousands(f.count) }}</span></li>
+            </ul>
+            <XEmpty v-if="!ja3.length" :label="t('l7.empty')" />
+          </div>
+          <div>
+            <h3 class="sub">JA4</h3>
+            <ul class="kv-list">
+              <li v-for="f in ja4" :key="f.label"><code>{{ f.label }}</code>
+                <span class="num">{{ thousands(f.count) }}</span></li>
+            </ul>
+            <XEmpty v-if="!ja4.length" :label="t('l7.empty')" />
+          </div>
+          <div>
+            <h3 class="sub">{{ t('l7.fingerprints.userAgents') }}</h3>
+            <ul class="kv-list">
+              <li v-for="f in userAgents" :key="f.label"><code>{{ f.label }}</code>
+                <span class="num">{{ thousands(f.count) }}</span></li>
+            </ul>
+            <XEmpty v-if="!userAgents.length" :label="t('l7.empty')" />
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
         <div class="panel-head"><h2>{{ t('l7.recent.title') }}</h2></div>
         <div class="tbl-wrap">
           <table><thead><tr>
@@ -330,6 +394,9 @@ const LIMIT_3 = (arr?: string[]) => arr ? (arr.length > 3 ? arr.slice(0, 3).join
 .window-selector select { margin-left: 8px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--text); }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .chart-panel { position: relative; }
+.fp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.fp-grid h3 { margin-bottom: 6px; }
+.fp-grid code { word-break: break-all; }
 .chart-wrap { position: relative; min-height: 220px; }
 .chart-svg { width: 100%; height: 200px; }
 .bar { rx: 2; transition: opacity 0.1s; }

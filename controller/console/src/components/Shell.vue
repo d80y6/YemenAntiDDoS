@@ -14,7 +14,7 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const groups = [
-  { name: 'monitoring', items: ['overview', 'traffic', 'attacks', 'mitigations', 'l7', 'nodes'] },
+  { name: 'monitoring', items: ['overview', 'traffic', 'attacks', 'mitigations', 'l7', 'inline', 'nodes'] },
   { name: 'detection', items: ['prefixes', 'thresholds', 'baseline', 'flow'] },
   { name: 'response', items: ['responses', 'connectors'] },
   { name: 'system', items: ['users', 'audit'] },

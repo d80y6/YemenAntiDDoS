@@ -90,7 +90,16 @@ type AuthConfig struct {
 }
 
 type ActionConfig struct {
-	Mode                  string `yaml:"mode"` // observe | auto
+	Mode string `yaml:"mode"` // observe | auto
+
+	// v4.0 inline scrubbing action plane (xdp_inline Nodes).
+	// InlineEnabled turns on the narrow-then-rebreadth inline mitigator.
+	InlineEnabled bool `yaml:"inline_enabled"`
+	// InlineBroadRatePPS is the phase-1 broad rate cap pushed on detection.
+	InlineBroadRatePPS uint64 `yaml:"inline_broad_rate_pps"`
+	// InlineNarrowDelayMS delays phase 2 (dominant-port narrowing); the
+	// target is 500-1000ms after the broad rule lands.
+	InlineNarrowDelayMS   int    `yaml:"inline_narrow_delay_ms"`
 	XDropAPI              string `yaml:"xdrop_api"`
 	XDropAPIKey           string `yaml:"xdrop_api_key"`
 	XDropNarrowPct        int    `yaml:"xdrop_narrow_pct"`
@@ -152,6 +161,7 @@ func Load(path string) (*Config, error) {
 		},
 		Action: ActionConfig{
 			Mode:                  "observe",
+			InlineEnabled:         true,
 			XDropNarrowPct:        80,
 			XDropMinSamplePackets: 1000,
 			XDropTopKPct:          80,
@@ -203,6 +213,15 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Action.FastPathMultiplier < 0 || (cfg.Action.FastPathMultiplier > 0 && cfg.Action.FastPathMultiplier < 1) {
 		return nil, fmt.Errorf("action_engine.fast_path_multiplier must be 0 (disabled) or >= 1, got %v", cfg.Action.FastPathMultiplier)
+	}
+	// Clamp the narrow-phase delay into the documented sub-second window
+	// (500-1000ms). 0 keeps the built-in default.
+	if d := cfg.Action.InlineNarrowDelayMS; d != 0 {
+		if d < 500 {
+			cfg.Action.InlineNarrowDelayMS = 500
+		} else if d > 1000 {
+			cfg.Action.InlineNarrowDelayMS = 1000
+		}
 	}
 	// TLS: fail fast at startup rather than at the first node handshake. A
 	// controller that boots with enabled=true but a missing/unreadable CA

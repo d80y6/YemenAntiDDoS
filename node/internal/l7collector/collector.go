@@ -8,9 +8,11 @@
 package l7collector
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,6 +102,11 @@ type bucket struct {
 	snis            map[string]uint64
 	sniMissing      uint64
 	slowSrcs        map[string]struct{}
+
+	// v4.0 anti-bot evidence: fingerprint + User-Agent distributions.
+	ja3s map[string]uint64
+	ja4s map[string]uint64
+	uas  map[string]uint64
 }
 
 type slowEntry struct {
@@ -147,6 +154,9 @@ func newBucket() *bucket {
 		paths:     make(map[string]uint64),
 		snis:      make(map[string]uint64),
 		slowSrcs:  make(map[string]struct{}),
+		ja3s:      make(map[string]uint64),
+		ja4s:      make(map[string]uint64),
+		uas:       make(map[string]uint64),
 	}
 }
 
@@ -203,15 +213,19 @@ func (c *Collector) Observe(srcIP, dstIP net.IP, srcPort, dstPort uint16, tcpFla
 
 	var req l7.HTTPRequest
 	var reqOK bool
+	var userAgent string
 	if isHTTP {
 		req, reqOK = l7.ParseHTTPRequest(payload)
+		userAgent = extractUserAgent(payload)
 	}
-	var hello l7.TLSClientHello
+	var hello l7.TLSHandshake
 	var helloOK bool
 	if isTLS {
-		hello, helloOK = l7.ParseTLSClientHello(payload)
+		hello, helloOK = l7.ParseTLSClientHelloFull(payload)
 	}
-	if !reqOK && !helloOK {
+	// A byte-drip fragment never parses as a request line; slowloris
+	// detection must still accumulate it (raw bytes per 5-tuple).
+	if !reqOK && !helloOK && !isHTTP {
 		return
 	}
 
@@ -230,24 +244,48 @@ func (c *Collector) Observe(srcIP, dstIP net.IP, srcPort, dstPort uint16, tcpFla
 	b.uniqueSrc[src] = struct{}{}
 	c.samples.Add(1)
 
+	if isHTTP {
+		// Complete requests mark the state completed; incomplete and
+		// unparseable fragments accumulate toward the slowloris flag.
+		c.observeSlow(src, key, dstPort, payload, at, b)
+	}
 	if reqOK {
 		b.http++
 		c.httpCount.Add(1)
 		bump(b.methods, req.Method, 8)
 		bump(b.paths, req.Path, 8)
-		if !req.HeaderComplete {
-			c.observeSlow(src, key, dstPort, payload, at, b)
-		}
+		bump(b.uas, userAgent, 16)
 	}
 	if helloOK {
 		b.tls++
 		c.tlsCount.Add(1)
+		if _, ja3 := hello.JA3(); ja3 != "" {
+			bump(b.ja3s, ja3, 16)
+		}
+		if ja4 := hello.JA4(); ja4 != "" {
+			bump(b.ja4s, ja4, 16)
+		}
 		if hello.SNI == "" {
 			b.sniMissing++
 		} else {
 			bump(b.snis, hello.SNI, 8)
 		}
 	}
+}
+
+// extractUserAgent pulls the User-Agent header value from an HTTP request
+// prefix. Returns "" when absent or the header is incomplete.
+func extractUserAgent(payload []byte) string {
+	head := payload
+	if i := bytes.Index(head, []byte("\r\n\r\n")); i >= 0 {
+		head = head[:i]
+	}
+	for _, line := range strings.Split(string(head), "\r\n") {
+		if len(line) > 12 && strings.EqualFold(line[:11], "user-agent:") {
+			return strings.TrimSpace(line[11:])
+		}
+	}
+	return ""
 }
 
 // observeSlow must be called with c.mu held.
@@ -319,53 +357,54 @@ func (c *Collector) Tick(now time.Time) []Event {
 	var out []Event
 	for key, b := range c.buckets {
 		ip := net.ParseIP(key)
-		var counters map[string]uint64
-		ensure := func() map[string]uint64 {
-			if counters == nil {
-				counters = make(map[string]uint64)
-			}
-			return counters
-		}
-		if b.http > 0 {
-			rps := uint64(float64(b.http) / window)
-			if rps >= c.cfg.HTTPRPS {
-				m := ensure()
-				m["http_requests"] = b.http
-				m["http_rps"] = rps
-				m["http_unique_sources"] = uint64(len(b.uniqueSrc))
-				addDetails(m, "http_method:", b.methods)
-				addDetails(m, "http_path:", b.paths)
-			}
-		}
-		if b.tls > 0 {
-			hsps := uint64(float64(b.tls) / window)
-			if hsps >= c.cfg.TLSHSPS || b.sniMissing >= c.cfg.TLSHSPS {
-				m := ensure()
-				m["tls_handshakes"] = b.tls
-				m["tls_hsps"] = hsps
-				m["tls_unique_sources"] = uint64(len(b.uniqueSrc))
-				m["tls_sni_missing"] = b.sniMissing
-				addDetails(m, "tls_sni:", b.snis)
-			}
-		}
-		if b.slow > 0 && b.slow >= c.cfg.SlowlorisConns {
-			m := ensure()
-			m["slowloris_conns"] = b.slow
-			m["slowloris_sources"] = uint64(len(b.slowSrcs))
-			for src := range b.slowSrcs {
-				if len(m) > 64 {
-					break
-				}
-				m["src:"+src] = 1
-			}
-		}
-		if counters == nil {
+		rps := uint64(float64(b.http) / window)
+		hsps := uint64(float64(b.tls) / window)
+		httpOK := b.http > 0 && rps >= c.cfg.HTTPRPS
+		tlsOK := b.tls > 0 && (hsps >= c.cfg.TLSHSPS || b.sniMissing >= c.cfg.TLSHSPS)
+		slowOK := b.slow > 0 && b.slow >= c.cfg.SlowlorisConns
+		// Events exist only for threshold crossings: a benign ClientHello or
+		// lone request below threshold must not reach the Controller. The
+		// fingerprint/User-Agent evidence rides along on the event that does
+		// cross, so no stream is needed for the Console charts.
+		if !httpOK && !tlsOK && !slowOK {
 			continue
 		}
+		counters := make(map[string]uint64)
+		if httpOK {
+			counters[l7.KeyHTTPRequests] = b.http
+			counters[l7.KeyHTTPRPS] = rps
+			counters[l7.KeyUniqueSources] = uint64(len(b.uniqueSrc))
+			addDetails(counters, "http_method:", b.methods)
+			addDetails(counters, "http_path:", b.paths)
+		}
+		if b.tls > 0 {
+			addDetails(counters, "tls_ja3:", b.ja3s)
+			addDetails(counters, "tls_ja4:", b.ja4s)
+		}
+		if tlsOK {
+			counters[l7.KeyHandshakes] = b.tls
+			counters[l7.KeyHSPS] = hsps
+			counters[l7.KeyUniqueSources] = uint64(len(b.uniqueSrc))
+			counters[l7.KeyMissingSNI] = b.sniMissing
+			addDetails(counters, "tls_sni:", b.snis)
+		}
+		if len(b.uas) > 0 {
+			addDetails(counters, "http_ua:", b.uas)
+		}
+		if slowOK {
+			counters[l7.KeySlowlorisConns] = b.slow
+			counters[l7.KeySlowlorisSources] = uint64(len(b.slowSrcs))
+			for src := range b.slowSrcs {
+				if len(counters) > 64 {
+					break
+				}
+				counters["src:"+src] = 1
+			}
+		}
 		evType := l7.DecoderHTTPFlood
-		if b.tls > 0 && (uint64(float64(b.tls)/window) >= c.cfg.TLSHSPS || b.sniMissing >= c.cfg.TLSHSPS) {
+		if tlsOK {
 			evType = l7.DecoderTLSAnomaly
-		} else if b.slow > 0 && b.slow >= c.cfg.SlowlorisConns {
+		} else if slowOK {
 			evType = l7.DecoderSlowloris
 		}
 		out = append(out, Event{Type: evType, DstIP: ip, Counters: counters, At: now})
@@ -376,7 +415,11 @@ func (c *Collector) Tick(now time.Time) []Event {
 	for k, e := range c.slow {
 		if now.Sub(e.lastSeen) > 30*time.Second {
 			delete(c.slow, k)
+			continue
 		}
+		// A sustained attack re-raises in every window instead of staying
+		// silent after its first flag.
+		e.flagged = false
 	}
 	return out
 }

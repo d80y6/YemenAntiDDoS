@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/d80y6/YemenDDoS/shared/l7"
 )
 
 // Event is one aggregated L7 observation window from a Node.
@@ -71,8 +73,13 @@ type Snapshot struct {
 	Targets       []Target           `json:"targets"`
 	Sources       []Counter          `json:"sources"`
 	Nodes         []Counter          `json:"nodes"`
-	Recent        []Event            `json:"recent"`
-	Dropped       uint64             `json:"dropped"`
+	// v4.0 anti-bot fingerprints: TLS JA3/JA4 digests and HTTP User-Agents
+	// observed across the window, highest-count first.
+	JA3        []Counter `json:"ja3"`
+	JA4        []Counter `json:"ja4"`
+	UserAgents []Counter `json:"user_agents"`
+	Recent     []Event   `json:"recent"`
+	Dropped    uint64    `json:"dropped"`
 }
 
 // Counter is a generic label/value pair used for top-N lists.
@@ -101,6 +108,9 @@ type Store struct {
 	targets map[string]*Target
 	sources map[string]uint64
 	nodes   map[string]uint64
+	ja3     map[string]uint64
+	ja4     map[string]uint64
+	uas     map[string]uint64
 	series  []bucket
 	dropped uint64
 }
@@ -120,6 +130,9 @@ func New(maxEvents int) *Store {
 		targets:     make(map[string]*Target),
 		sources:     make(map[string]uint64),
 		nodes:       make(map[string]uint64),
+		ja3:         make(map[string]uint64),
+		ja4:         make(map[string]uint64),
+		uas:         make(map[string]uint64),
 	}
 }
 
@@ -130,6 +143,14 @@ const (
 	KindTLSAnomaly = "l7_tls_anomaly"
 	KindSlowloris  = "l7_slowloris"
 )
+
+// IsL7Type reports whether a critical-event type belongs in the L7 store.
+// L3/L4 events (burst_emergency, hard_threshold_exceeded, syn_flood, ...)
+// share the stream but must never be stored as L7 records.
+func IsL7Type(eventType string) bool {
+	t := strings.ToLower(eventType)
+	return strings.Contains(t, "slowloris") || strings.Contains(t, "tls") || strings.Contains(t, "http")
+}
 
 func kindOf(eventType string) string {
 	t := strings.ToLower(eventType)
@@ -149,6 +170,7 @@ func kindOf(eventType string) string {
 // "src:203.0.113.9") back into structured detail.
 func parseDetail(counters map[string]uint64) Detail {
 	var d Detail
+	var uniqueSources, slowSources uint64
 	for k, v := range counters {
 		switch {
 		case strings.HasPrefix(k, "http_method:"):
@@ -161,22 +183,30 @@ func parseDetail(counters map[string]uint64) Detail {
 			d.SampleSources = append(d.SampleSources, strings.TrimPrefix(k, "src:"))
 		default:
 			switch k {
-			case "http_requests":
+			case l7.KeyHTTPRequests:
 				d.Requests = v
-			case "tls_handshakes":
+			case l7.KeyHandshakes:
 				d.Handshakes = v
-			case "tls_missing_sni":
+			case l7.KeyMissingSNI:
 				d.MissingSNI = v
-			case "slowloris_connections":
+			case l7.KeySlowlorisConns:
 				d.Connections = v
-			case "unique_sources":
-				d.UniqueSources = v
-			case "window_seconds":
+			case l7.KeyUniqueSources:
+				uniqueSources = v
+			case l7.KeySlowlorisSources:
+				slowSources = v
+			case l7.KeyWindowSeconds:
 				d.WindowSeconds = int(v)
-			case "alert_threshold":
+			case l7.KeyAlertThreshold:
 				d.AlertThreshold = v
 			}
 		}
+	}
+	// Resolve unique sources deterministically: the destination-wide bucket
+	// count when present, otherwise the slowloris event's slow-flow sources.
+	d.UniqueSources = uniqueSources
+	if d.UniqueSources == 0 {
+		d.UniqueSources = slowSources
 	}
 	sort.Strings(d.Methods)
 	sort.Strings(d.Paths)
@@ -185,9 +215,10 @@ func parseDetail(counters map[string]uint64) Detail {
 	return d
 }
 
-// Observe records a Node-reported L7 event. Nil/empty events are ignored.
+// Observe records a Node-reported L7 event. Nil/empty and non-L7 events are
+// ignored so L3 critical events cannot pollute the L7 read model.
 func (s *Store) Observe(nodeID string, at time.Time, eventType, dstIP string, counters map[string]uint64) {
-	if eventType == "" {
+	if eventType == "" || !IsL7Type(eventType) {
 		return
 	}
 	if at.IsZero() {
@@ -247,6 +278,16 @@ func (s *Store) Observe(nodeID string, at time.Time, eventType, dstIP string, co
 	}
 	if nodeID != "" {
 		s.nodes[nodeID]++
+	}
+	for k, v := range counters {
+		switch {
+		case strings.HasPrefix(k, "tls_ja3:"):
+			s.ja3[strings.TrimPrefix(k, "tls_ja3:")] += v
+		case strings.HasPrefix(k, "tls_ja4:"):
+			s.ja4[strings.TrimPrefix(k, "tls_ja4:")] += v
+		case strings.HasPrefix(k, "http_ua:"):
+			s.uas[strings.TrimPrefix(k, "http_ua:")] += v
+		}
 	}
 	s.appendSeriesLocked(at, kind)
 }
@@ -372,6 +413,9 @@ func (s *Store) Snapshot(window time.Duration, now time.Time) Snapshot {
 
 	snap.Sources = topCounters(s.sources, 25)
 	snap.Nodes = topCounters(s.nodes, 25)
+	snap.JA3 = topCounters(s.ja3, 15)
+	snap.JA4 = topCounters(s.ja4, 15)
+	snap.UserAgents = topCounters(s.uas, 15)
 	return snap
 }
 

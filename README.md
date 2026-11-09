@@ -56,12 +56,22 @@ The system has two components:
 
 ## Key Features
 
-### Dual Capture Mode
+### Three Capture Modes
 
 | Mode | How it works | Use case |
 |------|-------------|----------|
 | **XDP** | BPF program on mirror/ERSPAN port counts packets at wire speed | High-accuracy, per-packet visibility |
+| **XDP inline** | Node sits in the traffic path; XDP passes, drops, redirects, or answers (SYN cookies) at line rate | Autonomous in-line scrubbing and clean-pipe return |
 | **Flow** | sFlow, NetFlow v5/v9, IPFIX receiver with multi-source support | Router/switch integration, no kernel dependency |
+
+### Inline Scrubbing Engine (v4.0)
+- **Line-rate data plane** — `active_filter_rules` keyed by destination IP / protocol / port / source subnet with `XDP_PASS`, `XDP_DROP`, `XDP_TX`, and `XDP_REDIRECT`; bidirectional so egress floods are covered too.
+- **Clean-pipe return** — redirect scrubbed traffic to an egress interface via `XDP_TX`, or GRE/Geneve-encapsulate it to a scrubbing center.
+- **Stateless SYN cookies** — `siphash-2-4` over the 5-tuple plus a rotating secret; the SYN-ACK is built in place and replayed with `XDP_TX`, validated clients land in a bounded LRU, and UDP/DNS reflection floods are rate-limited without per-source state. The same formula is mirrored in Go (`shared/cookie`) for tests and tooling.
+- **Sub-second autonomous detection** — per-destination PPS/BPS counters at 100 ms granularity; crossing the burst threshold arms a 2-second emergency micro-drop and emits an urgent ringbuf event that skips the 1 s stats batch. The Controller confirms the attack in under 200 ms.
+- **Narrow-then-rebreadth** — phase 1 applies a broad per-target rate cap immediately; phase 2 narrows to the dominant ports/subnets after ~750 ms; if the narrowed rules do not stop the flood, the broad rule is restored automatically.
+- **Layer 7 anti-bot** — AF_XDP zero-copy inspection, JA3/JA4 fingerprints and User-Agent tracking, HTTP flood / Slowloris detection, and an HTTP 307 + JavaScript proof-of-work challenge for suspicious clients.
+- **Hardware acceleration** — AF_XDP UMEM zero-copy, `xdp_mode: driver | generic | offload` (SmartNIC offload with a driver-mode fallback for ringbuf features), and CPU pinning for the hot goroutines. See [docs/INLINE.md](docs/INLINE.md).
 
 ### Detection Engine
 - **Hard threshold detection** — per-decoder limits (PPS + BPS). Built-in decoders: TCP, TCP SYN, UDP, ICMP, fragment, TCP ACK/RST/FIN, GRE, ESP, IGMP, `ip_other`, `bad_fragment`, `invalid` — 14 total, expandable to 16
@@ -184,7 +194,7 @@ cp controller/config.example.yaml controller/config.yaml
 
 # Node
 cp node/config.example.yaml node/config.yaml
-# Edit: node_id, capture mode (xdp/flow), interface, controller gRPC address,
+# Edit: node_id, capture mode (xdp/xdp_inline/flow), interface, controller gRPC address,
 #       auth.node_api_key
 ```
 

@@ -63,6 +63,15 @@ action_engine:
   # hard_threshold_confirm_seconds. Only affects attack confirmation; xDrop is
   # still gated by mode=auto. Must be 0 (disabled) or >= 1 (startup rejects 0<x<1).
   fast_path_multiplier: 5.0
+  # v4.0 inline scrubbing (Nodes running mode: xdp_inline). Detection events are
+  # pushed as active_filter_rules over the ControlStream with a
+  # narrow-then-rebreadth schedule:
+  #   phase 1 (broad)   : per-target rate cap lands immediately (<500ms)
+  #   phase 2 (narrow)  : dominant ports/ASNs only, after inline_narrow_delay_ms
+  #   rebreath          : if the narrow rules do not stop the flood, re-broaden
+  inline_enabled: true
+  inline_broad_rate_pps: 20000      # phase-1 rate cap per target (0 = default 20000)
+  inline_narrow_delay_ms: 750       # phase-2 delay; keep in 500-1000ms (0 = default 750)
   # Legacy keys xdrop_api / xdrop_api_key are parsed but have no effect — the
   # xDrop v3 endpoint is configured per action/connector in the Web UI.
 

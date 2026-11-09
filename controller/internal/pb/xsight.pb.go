@@ -33,7 +33,7 @@ type NodeHandshake struct {
 	Interfaces             []string               `protobuf:"bytes,3,rep,name=interfaces,proto3" json:"interfaces,omitempty"`
 	AgentVersion           string                 `protobuf:"bytes,4,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
 	DeliveryVersionApplied uint64                 `protobuf:"varint,5,opt,name=delivery_version_applied,json=deliveryVersionApplied,proto3" json:"delivery_version_applied,omitempty"` // local snapshot version, 0 = none
-	Mode                   string                 `protobuf:"bytes,6,opt,name=mode,proto3" json:"mode,omitempty"`                                                                      // "xdp" (default) | "flow" — v3.0
+	Mode                   string                 `protobuf:"bytes,6,opt,name=mode,proto3" json:"mode,omitempty"`                                                                      // "xdp" (default) | "flow" | "xdp_inline" — v4.0
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -199,8 +199,10 @@ type StatsReport struct {
 	SrcPrefixStats      []*PrefixStatsMsg `protobuf:"bytes,31,rep,name=src_prefix_stats,json=srcPrefixStats,proto3" json:"src_prefix_stats,omitempty"`
 	SrcIpStatsTruncated bool              `protobuf:"varint,32,opt,name=src_ip_stats_truncated,json=srcIpStatsTruncated,proto3" json:"src_ip_stats_truncated,omitempty"`
 	TotalActiveSrcIps   uint32            `protobuf:"varint,33,opt,name=total_active_src_ips,json=totalActiveSrcIps,proto3" json:"total_active_src_ips,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// v4.0: inline scrubbing data-plane health (nil for legacy nodes)
+	Posture       *NodePosture `protobuf:"bytes,40,opt,name=posture,proto3" json:"posture,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StatsReport) Reset() {
@@ -357,6 +359,13 @@ func (x *StatsReport) GetTotalActiveSrcIps() uint32 {
 		return x.TotalActiveSrcIps
 	}
 	return 0
+}
+
+func (x *StatsReport) GetPosture() *NodePosture {
+	if x != nil {
+		return x.Posture
+	}
+	return nil
 }
 
 // FlowSample is a single aggregated flow (5-tuple) from one tick.
@@ -1243,8 +1252,21 @@ type CriticalEvent struct {
 	DstIp         []byte                 `protobuf:"bytes,4,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`
 	EventType     string                 `protobuf:"bytes,5,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"`                                                         // e.g. "hard_threshold_exceeded"
 	Counters      map[string]uint64      `protobuf:"bytes,6,rep,name=counters,proto3" json:"counters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // snapshot at trigger time
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// v4.0 inline scrubbing extensions (fields 20+; additive, backward compatible).
+	// A Node emits these enriched events on the same stream when the local XDP
+	// fast path detects a burst, a SYN-flood signature, or an L7 anomaly and
+	// wants the Controller to escalate without waiting for the next 1s
+	// StatsStream tick. Nodes running older firmware simply leave them unset.
+	TimestampNs    int64         `protobuf:"varint,20,opt,name=timestamp_ns,json=timestampNs,proto3" json:"timestamp_ns,omitempty"`          // monotonic event time (unix nanos)
+	TargetIp       []byte        `protobuf:"bytes,21,opt,name=target_ip,json=targetIp,proto3" json:"target_ip,omitempty"`                    // attacked destination (4 or 16 bytes); falls back to dst_ip
+	Decoder        string        `protobuf:"bytes,22,opt,name=decoder,proto3" json:"decoder,omitempty"`                                      // decoder family: tcp_syn, udp, dns_amplification, http_flood, ...
+	CurrentPps     uint64        `protobuf:"varint,23,opt,name=current_pps,json=currentPps,proto3" json:"current_pps,omitempty"`             // per-destination packets/sec at trigger time
+	CurrentBps     uint64        `protobuf:"varint,24,opt,name=current_bps,json=currentBps,proto3" json:"current_bps,omitempty"`             // per-destination bits/sec at trigger time
+	AttackType     string        `protobuf:"bytes,25,opt,name=attack_type,json=attackType,proto3" json:"attack_type,omitempty"`              // e.g. "syn_flood" (see controller decoderToAttackType)
+	TopFlows       []*FlowSample `protobuf:"bytes,26,rep,name=top_flows,json=topFlows,proto3" json:"top_flows,omitempty"`                    // dominant flows at trigger time (narrow-then-rebreadth input)
+	LocalMitigated bool          `protobuf:"varint,27,opt,name=local_mitigated,json=localMitigated,proto3" json:"local_mitigated,omitempty"` // true when the Node already applied an emergency micro-drop
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CriticalEvent) Reset() {
@@ -1317,6 +1339,62 @@ func (x *CriticalEvent) GetCounters() map[string]uint64 {
 		return x.Counters
 	}
 	return nil
+}
+
+func (x *CriticalEvent) GetTimestampNs() int64 {
+	if x != nil {
+		return x.TimestampNs
+	}
+	return 0
+}
+
+func (x *CriticalEvent) GetTargetIp() []byte {
+	if x != nil {
+		return x.TargetIp
+	}
+	return nil
+}
+
+func (x *CriticalEvent) GetDecoder() string {
+	if x != nil {
+		return x.Decoder
+	}
+	return ""
+}
+
+func (x *CriticalEvent) GetCurrentPps() uint64 {
+	if x != nil {
+		return x.CurrentPps
+	}
+	return 0
+}
+
+func (x *CriticalEvent) GetCurrentBps() uint64 {
+	if x != nil {
+		return x.CurrentBps
+	}
+	return 0
+}
+
+func (x *CriticalEvent) GetAttackType() string {
+	if x != nil {
+		return x.AttackType
+	}
+	return ""
+}
+
+func (x *CriticalEvent) GetTopFlows() []*FlowSample {
+	if x != nil {
+		return x.TopFlows
+	}
+	return nil
+}
+
+func (x *CriticalEvent) GetLocalMitigated() bool {
+	if x != nil {
+		return x.LocalMitigated
+	}
+	return false
 }
 
 type ControlMessage struct {
@@ -1519,6 +1597,11 @@ type WatchConfig struct {
 	HardThresholds *HardThresholds        `protobuf:"bytes,2,opt,name=hard_thresholds,json=hardThresholds,proto3" json:"hard_thresholds,omitempty"`
 	// v3.0: flow mode config (ignored by xdp nodes, protobuf backward compatible)
 	FlowListeners []*FlowListenerConfig `protobuf:"bytes,3,rep,name=flow_listeners,json=flowListeners,proto3" json:"flow_listeners,omitempty"`
+	// v4.0: inline scrubbing packet filter tables (xdp_inline nodes).
+	// nil = unchanged (node keeps its current rule set); empty rules = clear all.
+	InlineRules *InlineRuleSet `protobuf:"bytes,4,opt,name=inline_rules,json=inlineRules,proto3" json:"inline_rules,omitempty"`
+	// v4.0: node posture / hardware acceleration config. nil = unchanged.
+	Posture       *NodePostureConfig `protobuf:"bytes,5,opt,name=posture,proto3" json:"posture,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1574,6 +1657,533 @@ func (x *WatchConfig) GetFlowListeners() []*FlowListenerConfig {
 	return nil
 }
 
+func (x *WatchConfig) GetInlineRules() *InlineRuleSet {
+	if x != nil {
+		return x.InlineRules
+	}
+	return nil
+}
+
+func (x *WatchConfig) GetPosture() *NodePostureConfig {
+	if x != nil {
+		return x.Posture
+	}
+	return nil
+}
+
+// InlineRuleSet is a full snapshot of the packet filters a Node must enforce
+// in the XDP data plane. Delivery is idempotent: each push replaces the
+// previous set entirely (rules are matched by id during reconciliation).
+type InlineRuleSet struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Version          uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"` // monotonically increasing push version
+	Rules            []*InlineRule          `protobuf:"bytes,2,rep,name=rules,proto3" json:"rules,omitempty"`
+	DefaultAction    string                 `protobuf:"bytes,3,opt,name=default_action,json=defaultAction,proto3" json:"default_action,omitempty"`             // "pass" (default) | "drop" — action for traffic that matches no rule
+	SynCookieEnabled bool                   `protobuf:"varint,4,opt,name=syn_cookie_enabled,json=synCookieEnabled,proto3" json:"syn_cookie_enabled,omitempty"` // kernel SYN-cookie engine master switch
+	CookieTargets    []string               `protobuf:"bytes,5,rep,name=cookie_targets,json=cookieTargets,proto3" json:"cookie_targets,omitempty"`             // CIDR prefixes protected by SYN cookies
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *InlineRuleSet) Reset() {
+	*x = InlineRuleSet{}
+	mi := &file_xsight_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InlineRuleSet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InlineRuleSet) ProtoMessage() {}
+
+func (x *InlineRuleSet) ProtoReflect() protoreflect.Message {
+	mi := &file_xsight_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InlineRuleSet.ProtoReflect.Descriptor instead.
+func (*InlineRuleSet) Descriptor() ([]byte, []int) {
+	return file_xsight_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *InlineRuleSet) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *InlineRuleSet) GetRules() []*InlineRule {
+	if x != nil {
+		return x.Rules
+	}
+	return nil
+}
+
+func (x *InlineRuleSet) GetDefaultAction() string {
+	if x != nil {
+		return x.DefaultAction
+	}
+	return ""
+}
+
+func (x *InlineRuleSet) GetSynCookieEnabled() bool {
+	if x != nil {
+		return x.SynCookieEnabled
+	}
+	return false
+}
+
+func (x *InlineRuleSet) GetCookieTargets() []string {
+	if x != nil {
+		return x.CookieTargets
+	}
+	return nil
+}
+
+// InlineRule is one surgical packet filter entry.
+// Matching is longest-prefix on addresses, then exact on protocol/ports.
+// A zero protocol or port matches any; a zero src address matches any source.
+type InlineRule struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	DstIp         []byte                 `protobuf:"bytes,2,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`                         // 4 or 16 bytes; empty = any destination
+	DstPrefixLen  uint32                 `protobuf:"varint,3,opt,name=dst_prefix_len,json=dstPrefixLen,proto3" json:"dst_prefix_len,omitempty"` // 0 = host match on dst_ip, or wildcard when dst_ip empty
+	SrcIp         []byte                 `protobuf:"bytes,4,opt,name=src_ip,json=srcIp,proto3" json:"src_ip,omitempty"`                         // source subnet (clean-pipe / ACL rules)
+	SrcPrefixLen  uint32                 `protobuf:"varint,5,opt,name=src_prefix_len,json=srcPrefixLen,proto3" json:"src_prefix_len,omitempty"`
+	Protocol      uint32                 `protobuf:"varint,6,opt,name=protocol,proto3" json:"protocol,omitempty"`                                 // IANA number; 0 = any
+	DstPort       uint32                 `protobuf:"varint,7,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`                    // 0 = any
+	SrcPort       uint32                 `protobuf:"varint,8,opt,name=src_port,json=srcPort,proto3" json:"src_port,omitempty"`                    // 0 = any
+	Action        string                 `protobuf:"bytes,9,opt,name=action,proto3" json:"action,omitempty"`                                      // "pass" | "drop" | "tx" | "redirect" | "syn_cookie" | "rate_limit" | "challenge"
+	RateLimitPps  uint64                 `protobuf:"varint,10,opt,name=rate_limit_pps,json=rateLimitPps,proto3" json:"rate_limit_pps,omitempty"`  // for action "rate_limit" (0 = unlimited)
+	Priority      uint32                 `protobuf:"varint,11,opt,name=priority,proto3" json:"priority,omitempty"`                                // lower wins on overlapping exact keys
+	ExpiresUnix   int64                  `protobuf:"varint,12,opt,name=expires_unix,json=expiresUnix,proto3" json:"expires_unix,omitempty"`       // 0 = until withdrawn
+	AttackId      uint64                 `protobuf:"varint,13,opt,name=attack_id,json=attackId,proto3" json:"attack_id,omitempty"`                // owning attack (narrow-then-rebreadth bookkeeping)
+	Reason        string                 `protobuf:"bytes,14,opt,name=reason,proto3" json:"reason,omitempty"`                                     // audit label, e.g. "narrow:tcp/443"
+	EgressIfindex uint32                 `protobuf:"varint,15,opt,name=egress_ifindex,json=egressIfindex,proto3" json:"egress_ifindex,omitempty"` // for action "redirect"/"tx": clean-pipe egress interface
+	Encap         string                 `protobuf:"bytes,16,opt,name=encap,proto3" json:"encap,omitempty"`                                       // "" | "gre" | "geneve" — clean-pipe return tunnel encap
+	EncapDaddr    string                 `protobuf:"bytes,17,opt,name=encap_daddr,json=encapDaddr,proto3" json:"encap_daddr,omitempty"`           // tunnel remote address for GRE/Geneve encap
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InlineRule) Reset() {
+	*x = InlineRule{}
+	mi := &file_xsight_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InlineRule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InlineRule) ProtoMessage() {}
+
+func (x *InlineRule) ProtoReflect() protoreflect.Message {
+	mi := &file_xsight_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InlineRule.ProtoReflect.Descriptor instead.
+func (*InlineRule) Descriptor() ([]byte, []int) {
+	return file_xsight_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *InlineRule) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *InlineRule) GetDstIp() []byte {
+	if x != nil {
+		return x.DstIp
+	}
+	return nil
+}
+
+func (x *InlineRule) GetDstPrefixLen() uint32 {
+	if x != nil {
+		return x.DstPrefixLen
+	}
+	return 0
+}
+
+func (x *InlineRule) GetSrcIp() []byte {
+	if x != nil {
+		return x.SrcIp
+	}
+	return nil
+}
+
+func (x *InlineRule) GetSrcPrefixLen() uint32 {
+	if x != nil {
+		return x.SrcPrefixLen
+	}
+	return 0
+}
+
+func (x *InlineRule) GetProtocol() uint32 {
+	if x != nil {
+		return x.Protocol
+	}
+	return 0
+}
+
+func (x *InlineRule) GetDstPort() uint32 {
+	if x != nil {
+		return x.DstPort
+	}
+	return 0
+}
+
+func (x *InlineRule) GetSrcPort() uint32 {
+	if x != nil {
+		return x.SrcPort
+	}
+	return 0
+}
+
+func (x *InlineRule) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *InlineRule) GetRateLimitPps() uint64 {
+	if x != nil {
+		return x.RateLimitPps
+	}
+	return 0
+}
+
+func (x *InlineRule) GetPriority() uint32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *InlineRule) GetExpiresUnix() int64 {
+	if x != nil {
+		return x.ExpiresUnix
+	}
+	return 0
+}
+
+func (x *InlineRule) GetAttackId() uint64 {
+	if x != nil {
+		return x.AttackId
+	}
+	return 0
+}
+
+func (x *InlineRule) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *InlineRule) GetEgressIfindex() uint32 {
+	if x != nil {
+		return x.EgressIfindex
+	}
+	return 0
+}
+
+func (x *InlineRule) GetEncap() string {
+	if x != nil {
+		return x.Encap
+	}
+	return ""
+}
+
+func (x *InlineRule) GetEncapDaddr() string {
+	if x != nil {
+		return x.EncapDaddr
+	}
+	return ""
+}
+
+// NodePostureConfig carries hardware-acceleration settings to inline nodes.
+type NodePostureConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	XdpMode       string                 `protobuf:"bytes,1,opt,name=xdp_mode,json=xdpMode,proto3" json:"xdp_mode,omitempty"`                        // "driver" (default) | "generic" | "offload"
+	AfXdpEnabled  bool                   `protobuf:"varint,2,opt,name=af_xdp_enabled,json=afXdpEnabled,proto3" json:"af_xdp_enabled,omitempty"`      // enable AF_XDP zero-copy L7 inspection sockets
+	AfXdpQueue    uint32                 `protobuf:"varint,3,opt,name=af_xdp_queue,json=afXdpQueue,proto3" json:"af_xdp_queue,omitempty"`            // NIC RX queue steered into the XSK map
+	AfXdpZeroCopy bool                   `protobuf:"varint,4,opt,name=af_xdp_zero_copy,json=afXdpZeroCopy,proto3" json:"af_xdp_zero_copy,omitempty"` // request XDP_ZEROCOPY UMEM binding
+	AfXdpFrames   uint32                 `protobuf:"varint,5,opt,name=af_xdp_frames,json=afXdpFrames,proto3" json:"af_xdp_frames,omitempty"`         // UMEM frame count (power of two, default 4096)
+	CpuPins       []int64                `protobuf:"varint,6,rep,packed,name=cpu_pins,json=cpuPins,proto3" json:"cpu_pins,omitempty"`                // pin parse/inspect goroutines to these cores (-1 = any)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodePostureConfig) Reset() {
+	*x = NodePostureConfig{}
+	mi := &file_xsight_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodePostureConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodePostureConfig) ProtoMessage() {}
+
+func (x *NodePostureConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_xsight_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodePostureConfig.ProtoReflect.Descriptor instead.
+func (*NodePostureConfig) Descriptor() ([]byte, []int) {
+	return file_xsight_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *NodePostureConfig) GetXdpMode() string {
+	if x != nil {
+		return x.XdpMode
+	}
+	return ""
+}
+
+func (x *NodePostureConfig) GetAfXdpEnabled() bool {
+	if x != nil {
+		return x.AfXdpEnabled
+	}
+	return false
+}
+
+func (x *NodePostureConfig) GetAfXdpQueue() uint32 {
+	if x != nil {
+		return x.AfXdpQueue
+	}
+	return 0
+}
+
+func (x *NodePostureConfig) GetAfXdpZeroCopy() bool {
+	if x != nil {
+		return x.AfXdpZeroCopy
+	}
+	return false
+}
+
+func (x *NodePostureConfig) GetAfXdpFrames() uint32 {
+	if x != nil {
+		return x.AfXdpFrames
+	}
+	return 0
+}
+
+func (x *NodePostureConfig) GetCpuPins() []int64 {
+	if x != nil {
+		return x.CpuPins
+	}
+	return nil
+}
+
+// NodePosture is the Node's report of its data-plane health, included in every
+// StatsReport so the Console can render the Hardware Posture panel.
+type NodePosture struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	XdpMode             string                 `protobuf:"bytes,1,opt,name=xdp_mode,json=xdpMode,proto3" json:"xdp_mode,omitempty"` // "driver" | "generic" | "offload" | "flow" | "inline"
+	InlineEnabled       bool                   `protobuf:"varint,2,opt,name=inline_enabled,json=inlineEnabled,proto3" json:"inline_enabled,omitempty"`
+	FilterRules         uint64                 `protobuf:"varint,3,opt,name=filter_rules,json=filterRules,proto3" json:"filter_rules,omitempty"`                           // active active_filter_rules entries
+	ValidatedClients    uint64                 `protobuf:"varint,4,opt,name=validated_clients,json=validatedClients,proto3" json:"validated_clients,omitempty"`            // SYN-cookie validated client entries
+	SynCookiesReply     uint64                 `protobuf:"varint,5,opt,name=syn_cookies_reply,json=synCookiesReply,proto3" json:"syn_cookies_reply,omitempty"`             // SYN-ACKs emitted by the kernel engine
+	SynCookiesValidated uint64                 `protobuf:"varint,6,opt,name=syn_cookies_validated,json=synCookiesValidated,proto3" json:"syn_cookies_validated,omitempty"` // client ACKs that validated
+	SynCookiesDropped   uint64                 `protobuf:"varint,7,opt,name=syn_cookies_dropped,json=synCookiesDropped,proto3" json:"syn_cookies_dropped,omitempty"`       // ACKs that failed cookie validation
+	EmergencyDrops      uint64                 `protobuf:"varint,8,opt,name=emergency_drops,json=emergencyDrops,proto3" json:"emergency_drops,omitempty"`                  // micro-burst emergency drops
+	BurstAlerts         uint64                 `protobuf:"varint,9,opt,name=burst_alerts,json=burstAlerts,proto3" json:"burst_alerts,omitempty"`                           // ringbuf alerts pushed to userspace
+	AfXdpActive         bool                   `protobuf:"varint,10,opt,name=af_xdp_active,json=afXdpActive,proto3" json:"af_xdp_active,omitempty"`                        // AF_XDP socket up
+	AfXdpUmemDrops      uint64                 `protobuf:"varint,11,opt,name=af_xdp_umem_drops,json=afXdpUmemDrops,proto3" json:"af_xdp_umem_drops,omitempty"`             // frames dropped for lack of UMEM buffers
+	AfXdpRx             uint64                 `protobuf:"varint,12,opt,name=af_xdp_rx,json=afXdpRx,proto3" json:"af_xdp_rx,omitempty"`                                    // frames inspected via AF_XDP
+	CpuPins             []int64                `protobuf:"varint,13,rep,packed,name=cpu_pins,json=cpuPins,proto3" json:"cpu_pins,omitempty"`                               // cores pinned by the node
+	CleanpipeEgress     string                 `protobuf:"bytes,14,opt,name=cleanpipe_egress,json=cleanpipeEgress,proto3" json:"cleanpipe_egress,omitempty"`               // egress ifname used for clean-pipe redirect ("" = none)
+	RedirectOk          uint64                 `protobuf:"varint,15,opt,name=redirect_ok,json=redirectOk,proto3" json:"redirect_ok,omitempty"`                             // successful clean-pipe XDP_REDIRECT verdicts
+	RedirectErr         uint64                 `protobuf:"varint,16,opt,name=redirect_err,json=redirectErr,proto3" json:"redirect_err,omitempty"`                          // redirect failures that fell back to XDP_DROP
+	CpuUtil             []float64              `protobuf:"fixed64,17,rep,packed,name=cpu_util,json=cpuUtil,proto3" json:"cpu_util,omitempty"`                              // per-core CPU utilisation (%) since previous report
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *NodePosture) Reset() {
+	*x = NodePosture{}
+	mi := &file_xsight_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodePosture) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodePosture) ProtoMessage() {}
+
+func (x *NodePosture) ProtoReflect() protoreflect.Message {
+	mi := &file_xsight_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodePosture.ProtoReflect.Descriptor instead.
+func (*NodePosture) Descriptor() ([]byte, []int) {
+	return file_xsight_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *NodePosture) GetXdpMode() string {
+	if x != nil {
+		return x.XdpMode
+	}
+	return ""
+}
+
+func (x *NodePosture) GetInlineEnabled() bool {
+	if x != nil {
+		return x.InlineEnabled
+	}
+	return false
+}
+
+func (x *NodePosture) GetFilterRules() uint64 {
+	if x != nil {
+		return x.FilterRules
+	}
+	return 0
+}
+
+func (x *NodePosture) GetValidatedClients() uint64 {
+	if x != nil {
+		return x.ValidatedClients
+	}
+	return 0
+}
+
+func (x *NodePosture) GetSynCookiesReply() uint64 {
+	if x != nil {
+		return x.SynCookiesReply
+	}
+	return 0
+}
+
+func (x *NodePosture) GetSynCookiesValidated() uint64 {
+	if x != nil {
+		return x.SynCookiesValidated
+	}
+	return 0
+}
+
+func (x *NodePosture) GetSynCookiesDropped() uint64 {
+	if x != nil {
+		return x.SynCookiesDropped
+	}
+	return 0
+}
+
+func (x *NodePosture) GetEmergencyDrops() uint64 {
+	if x != nil {
+		return x.EmergencyDrops
+	}
+	return 0
+}
+
+func (x *NodePosture) GetBurstAlerts() uint64 {
+	if x != nil {
+		return x.BurstAlerts
+	}
+	return 0
+}
+
+func (x *NodePosture) GetAfXdpActive() bool {
+	if x != nil {
+		return x.AfXdpActive
+	}
+	return false
+}
+
+func (x *NodePosture) GetAfXdpUmemDrops() uint64 {
+	if x != nil {
+		return x.AfXdpUmemDrops
+	}
+	return 0
+}
+
+func (x *NodePosture) GetAfXdpRx() uint64 {
+	if x != nil {
+		return x.AfXdpRx
+	}
+	return 0
+}
+
+func (x *NodePosture) GetCpuPins() []int64 {
+	if x != nil {
+		return x.CpuPins
+	}
+	return nil
+}
+
+func (x *NodePosture) GetCleanpipeEgress() string {
+	if x != nil {
+		return x.CleanpipeEgress
+	}
+	return ""
+}
+
+func (x *NodePosture) GetRedirectOk() uint64 {
+	if x != nil {
+		return x.RedirectOk
+	}
+	return 0
+}
+
+func (x *NodePosture) GetRedirectErr() uint64 {
+	if x != nil {
+		return x.RedirectErr
+	}
+	return 0
+}
+
+func (x *NodePosture) GetCpuUtil() []float64 {
+	if x != nil {
+		return x.CpuUtil
+	}
+	return nil
+}
+
 // v3.0: Flow listener + source config pushed to Flow Nodes
 type FlowListenerConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1587,7 +2197,7 @@ type FlowListenerConfig struct {
 
 func (x *FlowListenerConfig) Reset() {
 	*x = FlowListenerConfig{}
-	mi := &file_xsight_proto_msgTypes[16]
+	mi := &file_xsight_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1599,7 +2209,7 @@ func (x *FlowListenerConfig) String() string {
 func (*FlowListenerConfig) ProtoMessage() {}
 
 func (x *FlowListenerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_xsight_proto_msgTypes[16]
+	mi := &file_xsight_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1612,7 +2222,7 @@ func (x *FlowListenerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlowListenerConfig.ProtoReflect.Descriptor instead.
 func (*FlowListenerConfig) Descriptor() ([]byte, []int) {
-	return file_xsight_proto_rawDescGZIP(), []int{16}
+	return file_xsight_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *FlowListenerConfig) GetListenAddress() string {
@@ -1656,7 +2266,7 @@ type FlowSourceConfig struct {
 
 func (x *FlowSourceConfig) Reset() {
 	*x = FlowSourceConfig{}
-	mi := &file_xsight_proto_msgTypes[17]
+	mi := &file_xsight_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1668,7 +2278,7 @@ func (x *FlowSourceConfig) String() string {
 func (*FlowSourceConfig) ProtoMessage() {}
 
 func (x *FlowSourceConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_xsight_proto_msgTypes[17]
+	mi := &file_xsight_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1681,7 +2291,7 @@ func (x *FlowSourceConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlowSourceConfig.ProtoReflect.Descriptor instead.
 func (*FlowSourceConfig) Descriptor() ([]byte, []int) {
-	return file_xsight_proto_rawDescGZIP(), []int{17}
+	return file_xsight_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *FlowSourceConfig) GetDeviceIp() string {
@@ -1730,7 +2340,7 @@ type WatchPrefix struct {
 
 func (x *WatchPrefix) Reset() {
 	*x = WatchPrefix{}
-	mi := &file_xsight_proto_msgTypes[18]
+	mi := &file_xsight_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1742,7 +2352,7 @@ func (x *WatchPrefix) String() string {
 func (*WatchPrefix) ProtoMessage() {}
 
 func (x *WatchPrefix) ProtoReflect() protoreflect.Message {
-	mi := &file_xsight_proto_msgTypes[18]
+	mi := &file_xsight_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1755,7 +2365,7 @@ func (x *WatchPrefix) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchPrefix.ProtoReflect.Descriptor instead.
 func (*WatchPrefix) Descriptor() ([]byte, []int) {
-	return file_xsight_proto_rawDescGZIP(), []int{18}
+	return file_xsight_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *WatchPrefix) GetPrefix() []byte {
@@ -1789,7 +2399,7 @@ type HardThresholds struct {
 
 func (x *HardThresholds) Reset() {
 	*x = HardThresholds{}
-	mi := &file_xsight_proto_msgTypes[19]
+	mi := &file_xsight_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1801,7 +2411,7 @@ func (x *HardThresholds) String() string {
 func (*HardThresholds) ProtoMessage() {}
 
 func (x *HardThresholds) ProtoReflect() protoreflect.Message {
-	mi := &file_xsight_proto_msgTypes[19]
+	mi := &file_xsight_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1814,7 +2424,7 @@ func (x *HardThresholds) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HardThresholds.ProtoReflect.Descriptor instead.
 func (*HardThresholds) Descriptor() ([]byte, []int) {
-	return file_xsight_proto_rawDescGZIP(), []int{19}
+	return file_xsight_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *HardThresholds) GetPps() uint64 {
@@ -1849,7 +2459,7 @@ const file_xsight_proto_rawDesc = "" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12#\n" +
 	"\rreject_reason\x18\x02 \x01(\tR\frejectReason\x126\n" +
 	"\fwatch_config\x18\x03 \x01(\v2\x13.xsight.WatchConfigR\vwatchConfig\x128\n" +
-	"\x18delivery_version_current\x18\x04 \x01(\x04R\x16deliveryVersionCurrent\"\xe0\x06\n" +
+	"\x18delivery_version_current\x18\x04 \x01(\x04R\x16deliveryVersionCurrent\"\x8f\a\n" +
 	"\vStatsReport\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12%\n" +
 	"\x0einterface_name\x18\x02 \x01(\tR\rinterfaceName\x120\n" +
@@ -1871,7 +2481,8 @@ const file_xsight_proto_rawDesc = "" +
 	"srcIpStats\x12@\n" +
 	"\x10src_prefix_stats\x18\x1f \x03(\v2\x16.xsight.PrefixStatsMsgR\x0esrcPrefixStats\x123\n" +
 	"\x16src_ip_stats_truncated\x18  \x01(\bR\x13srcIpStatsTruncated\x12/\n" +
-	"\x14total_active_src_ips\x18! \x01(\rR\x11totalActiveSrcIps\"\xe4\x01\n" +
+	"\x14total_active_src_ips\x18! \x01(\rR\x11totalActiveSrcIps\x12-\n" +
+	"\aposture\x18( \x01(\v2\x13.xsight.NodePostureR\aposture\"\xe4\x01\n" +
 	"\n" +
 	"FlowSample\x12\x15\n" +
 	"\x06src_ip\x18\x01 \x01(\fR\x05srcIp\x12\x15\n" +
@@ -1968,7 +2579,7 @@ const file_xsight_proto_rawDesc = "" +
 	"\x0ffragment_offset\x18\n" +
 	" \x01(\rR\x0efragmentOffset\x12\x1b\n" +
 	"\ticmp_type\x18\v \x01(\rR\bicmpType\x12\x1b\n" +
-	"\ticmp_code\x18\f \x01(\rR\bicmpCode\"\xa1\x02\n" +
+	"\ticmp_code\x18\f \x01(\rR\bicmpCode\"\xb8\x04\n" +
 	"\rCriticalEvent\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12%\n" +
 	"\x0einterface_name\x18\x02 \x01(\tR\rinterfaceName\x12\x1c\n" +
@@ -1976,7 +2587,18 @@ const file_xsight_proto_rawDesc = "" +
 	"\x06dst_ip\x18\x04 \x01(\fR\x05dstIp\x12\x1d\n" +
 	"\n" +
 	"event_type\x18\x05 \x01(\tR\teventType\x12?\n" +
-	"\bcounters\x18\x06 \x03(\v2#.xsight.CriticalEvent.CountersEntryR\bcounters\x1a;\n" +
+	"\bcounters\x18\x06 \x03(\v2#.xsight.CriticalEvent.CountersEntryR\bcounters\x12!\n" +
+	"\ftimestamp_ns\x18\x14 \x01(\x03R\vtimestampNs\x12\x1b\n" +
+	"\ttarget_ip\x18\x15 \x01(\fR\btargetIp\x12\x18\n" +
+	"\adecoder\x18\x16 \x01(\tR\adecoder\x12\x1f\n" +
+	"\vcurrent_pps\x18\x17 \x01(\x04R\n" +
+	"currentPps\x12\x1f\n" +
+	"\vcurrent_bps\x18\x18 \x01(\x04R\n" +
+	"currentBps\x12\x1f\n" +
+	"\vattack_type\x18\x19 \x01(\tR\n" +
+	"attackType\x12/\n" +
+	"\ttop_flows\x18\x1a \x03(\v2\x12.xsight.FlowSampleR\btopFlows\x12'\n" +
+	"\x0flocal_mitigated\x18\x1b \x01(\bR\x0elocalMitigated\x1a;\n" +
 	"\rCountersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\x86\x01\n" +
@@ -1993,11 +2615,68 @@ const file_xsight_proto_rawDesc = "" +
 	"\tConfigAck\x128\n" +
 	"\x18delivery_version_applied\x18\x01 \x01(\x04R\x16deliveryVersionApplied\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12#\n" +
-	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\"\xc2\x01\n" +
+	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\"\xb1\x02\n" +
 	"\vWatchConfig\x12/\n" +
 	"\bprefixes\x18\x01 \x03(\v2\x13.xsight.WatchPrefixR\bprefixes\x12?\n" +
 	"\x0fhard_thresholds\x18\x02 \x01(\v2\x16.xsight.HardThresholdsR\x0ehardThresholds\x12A\n" +
-	"\x0eflow_listeners\x18\x03 \x03(\v2\x1a.xsight.FlowListenerConfigR\rflowListeners\"\xae\x01\n" +
+	"\x0eflow_listeners\x18\x03 \x03(\v2\x1a.xsight.FlowListenerConfigR\rflowListeners\x128\n" +
+	"\finline_rules\x18\x04 \x01(\v2\x15.xsight.InlineRuleSetR\vinlineRules\x123\n" +
+	"\aposture\x18\x05 \x01(\v2\x19.xsight.NodePostureConfigR\aposture\"\xcf\x01\n" +
+	"\rInlineRuleSet\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x04R\aversion\x12(\n" +
+	"\x05rules\x18\x02 \x03(\v2\x12.xsight.InlineRuleR\x05rules\x12%\n" +
+	"\x0edefault_action\x18\x03 \x01(\tR\rdefaultAction\x12,\n" +
+	"\x12syn_cookie_enabled\x18\x04 \x01(\bR\x10synCookieEnabled\x12%\n" +
+	"\x0ecookie_targets\x18\x05 \x03(\tR\rcookieTargets\"\xf8\x03\n" +
+	"\n" +
+	"InlineRule\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x15\n" +
+	"\x06dst_ip\x18\x02 \x01(\fR\x05dstIp\x12$\n" +
+	"\x0edst_prefix_len\x18\x03 \x01(\rR\fdstPrefixLen\x12\x15\n" +
+	"\x06src_ip\x18\x04 \x01(\fR\x05srcIp\x12$\n" +
+	"\x0esrc_prefix_len\x18\x05 \x01(\rR\fsrcPrefixLen\x12\x1a\n" +
+	"\bprotocol\x18\x06 \x01(\rR\bprotocol\x12\x19\n" +
+	"\bdst_port\x18\a \x01(\rR\adstPort\x12\x19\n" +
+	"\bsrc_port\x18\b \x01(\rR\asrcPort\x12\x16\n" +
+	"\x06action\x18\t \x01(\tR\x06action\x12$\n" +
+	"\x0erate_limit_pps\x18\n" +
+	" \x01(\x04R\frateLimitPps\x12\x1a\n" +
+	"\bpriority\x18\v \x01(\rR\bpriority\x12!\n" +
+	"\fexpires_unix\x18\f \x01(\x03R\vexpiresUnix\x12\x1b\n" +
+	"\tattack_id\x18\r \x01(\x04R\battackId\x12\x16\n" +
+	"\x06reason\x18\x0e \x01(\tR\x06reason\x12%\n" +
+	"\x0eegress_ifindex\x18\x0f \x01(\rR\regressIfindex\x12\x14\n" +
+	"\x05encap\x18\x10 \x01(\tR\x05encap\x12\x1f\n" +
+	"\vencap_daddr\x18\x11 \x01(\tR\n" +
+	"encapDaddr\"\xde\x01\n" +
+	"\x11NodePostureConfig\x12\x19\n" +
+	"\bxdp_mode\x18\x01 \x01(\tR\axdpMode\x12$\n" +
+	"\x0eaf_xdp_enabled\x18\x02 \x01(\bR\fafXdpEnabled\x12 \n" +
+	"\faf_xdp_queue\x18\x03 \x01(\rR\n" +
+	"afXdpQueue\x12'\n" +
+	"\x10af_xdp_zero_copy\x18\x04 \x01(\bR\rafXdpZeroCopy\x12\"\n" +
+	"\raf_xdp_frames\x18\x05 \x01(\rR\vafXdpFrames\x12\x19\n" +
+	"\bcpu_pins\x18\x06 \x03(\x03R\acpuPins\"\x8b\x05\n" +
+	"\vNodePosture\x12\x19\n" +
+	"\bxdp_mode\x18\x01 \x01(\tR\axdpMode\x12%\n" +
+	"\x0einline_enabled\x18\x02 \x01(\bR\rinlineEnabled\x12!\n" +
+	"\ffilter_rules\x18\x03 \x01(\x04R\vfilterRules\x12+\n" +
+	"\x11validated_clients\x18\x04 \x01(\x04R\x10validatedClients\x12*\n" +
+	"\x11syn_cookies_reply\x18\x05 \x01(\x04R\x0fsynCookiesReply\x122\n" +
+	"\x15syn_cookies_validated\x18\x06 \x01(\x04R\x13synCookiesValidated\x12.\n" +
+	"\x13syn_cookies_dropped\x18\a \x01(\x04R\x11synCookiesDropped\x12'\n" +
+	"\x0femergency_drops\x18\b \x01(\x04R\x0eemergencyDrops\x12!\n" +
+	"\fburst_alerts\x18\t \x01(\x04R\vburstAlerts\x12\"\n" +
+	"\raf_xdp_active\x18\n" +
+	" \x01(\bR\vafXdpActive\x12)\n" +
+	"\x11af_xdp_umem_drops\x18\v \x01(\x04R\x0eafXdpUmemDrops\x12\x1a\n" +
+	"\taf_xdp_rx\x18\f \x01(\x04R\aafXdpRx\x12\x19\n" +
+	"\bcpu_pins\x18\r \x03(\x03R\acpuPins\x12)\n" +
+	"\x10cleanpipe_egress\x18\x0e \x01(\tR\x0fcleanpipeEgress\x12\x1f\n" +
+	"\vredirect_ok\x18\x0f \x01(\x04R\n" +
+	"redirectOk\x12!\n" +
+	"\fredirect_err\x18\x10 \x01(\x04R\vredirectErr\x12\x19\n" +
+	"\bcpu_util\x18\x11 \x03(\x01R\acpuUtil\"\xae\x01\n" +
 	"\x12FlowListenerConfig\x12%\n" +
 	"\x0elisten_address\x18\x01 \x01(\tR\rlistenAddress\x12#\n" +
 	"\rprotocol_mode\x18\x02 \x01(\tR\fprotocolMode\x122\n" +
@@ -2038,7 +2717,7 @@ func file_xsight_proto_rawDescGZIP() []byte {
 	return file_xsight_proto_rawDescData
 }
 
-var file_xsight_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_xsight_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_xsight_proto_goTypes = []any{
 	(*NodeHandshake)(nil),      // 0: xsight.NodeHandshake
 	(*HandshakeResponse)(nil),  // 1: xsight.HandshakeResponse
@@ -2056,12 +2735,16 @@ var file_xsight_proto_goTypes = []any{
 	(*ConfigPush)(nil),         // 13: xsight.ConfigPush
 	(*ConfigAck)(nil),          // 14: xsight.ConfigAck
 	(*WatchConfig)(nil),        // 15: xsight.WatchConfig
-	(*FlowListenerConfig)(nil), // 16: xsight.FlowListenerConfig
-	(*FlowSourceConfig)(nil),   // 17: xsight.FlowSourceConfig
-	(*WatchPrefix)(nil),        // 18: xsight.WatchPrefix
-	(*HardThresholds)(nil),     // 19: xsight.HardThresholds
-	nil,                        // 20: xsight.CriticalEvent.CountersEntry
-	(*emptypb.Empty)(nil),      // 21: google.protobuf.Empty
+	(*InlineRuleSet)(nil),      // 16: xsight.InlineRuleSet
+	(*InlineRule)(nil),         // 17: xsight.InlineRule
+	(*NodePostureConfig)(nil),  // 18: xsight.NodePostureConfig
+	(*NodePosture)(nil),        // 19: xsight.NodePosture
+	(*FlowListenerConfig)(nil), // 20: xsight.FlowListenerConfig
+	(*FlowSourceConfig)(nil),   // 21: xsight.FlowSourceConfig
+	(*WatchPrefix)(nil),        // 22: xsight.WatchPrefix
+	(*HardThresholds)(nil),     // 23: xsight.HardThresholds
+	nil,                        // 24: xsight.CriticalEvent.CountersEntry
+	(*emptypb.Empty)(nil),      // 25: google.protobuf.Empty
 }
 var file_xsight_proto_depIdxs = []int32{
 	15, // 0: xsight.HandshakeResponse.watch_config:type_name -> xsight.WatchConfig
@@ -2073,30 +2756,35 @@ var file_xsight_proto_depIdxs = []int32{
 	3,  // 6: xsight.StatsReport.top_flows:type_name -> xsight.FlowSample
 	4,  // 7: xsight.StatsReport.src_ip_stats:type_name -> xsight.IPStats
 	5,  // 8: xsight.StatsReport.src_prefix_stats:type_name -> xsight.PrefixStatsMsg
-	10, // 9: xsight.SampleBatch.samples:type_name -> xsight.PacketSample
-	20, // 10: xsight.CriticalEvent.counters:type_name -> xsight.CriticalEvent.CountersEntry
-	13, // 11: xsight.ControlMessage.config_push:type_name -> xsight.ConfigPush
-	14, // 12: xsight.ControlMessage.config_ack:type_name -> xsight.ConfigAck
-	15, // 13: xsight.ConfigPush.watch_config:type_name -> xsight.WatchConfig
-	18, // 14: xsight.WatchConfig.prefixes:type_name -> xsight.WatchPrefix
-	19, // 15: xsight.WatchConfig.hard_thresholds:type_name -> xsight.HardThresholds
-	16, // 16: xsight.WatchConfig.flow_listeners:type_name -> xsight.FlowListenerConfig
-	17, // 17: xsight.FlowListenerConfig.sources:type_name -> xsight.FlowSourceConfig
-	0,  // 18: xsight.XSightService.Handshake:input_type -> xsight.NodeHandshake
-	2,  // 19: xsight.XSightService.StatsStream:input_type -> xsight.StatsReport
-	9,  // 20: xsight.XSightService.SampleStream:input_type -> xsight.SampleBatch
-	11, // 21: xsight.XSightService.CriticalEventStream:input_type -> xsight.CriticalEvent
-	12, // 22: xsight.XSightService.ControlStream:input_type -> xsight.ControlMessage
-	1,  // 23: xsight.XSightService.Handshake:output_type -> xsight.HandshakeResponse
-	21, // 24: xsight.XSightService.StatsStream:output_type -> google.protobuf.Empty
-	21, // 25: xsight.XSightService.SampleStream:output_type -> google.protobuf.Empty
-	21, // 26: xsight.XSightService.CriticalEventStream:output_type -> google.protobuf.Empty
-	12, // 27: xsight.XSightService.ControlStream:output_type -> xsight.ControlMessage
-	23, // [23:28] is the sub-list for method output_type
-	18, // [18:23] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	19, // 9: xsight.StatsReport.posture:type_name -> xsight.NodePosture
+	10, // 10: xsight.SampleBatch.samples:type_name -> xsight.PacketSample
+	24, // 11: xsight.CriticalEvent.counters:type_name -> xsight.CriticalEvent.CountersEntry
+	3,  // 12: xsight.CriticalEvent.top_flows:type_name -> xsight.FlowSample
+	13, // 13: xsight.ControlMessage.config_push:type_name -> xsight.ConfigPush
+	14, // 14: xsight.ControlMessage.config_ack:type_name -> xsight.ConfigAck
+	15, // 15: xsight.ConfigPush.watch_config:type_name -> xsight.WatchConfig
+	22, // 16: xsight.WatchConfig.prefixes:type_name -> xsight.WatchPrefix
+	23, // 17: xsight.WatchConfig.hard_thresholds:type_name -> xsight.HardThresholds
+	20, // 18: xsight.WatchConfig.flow_listeners:type_name -> xsight.FlowListenerConfig
+	16, // 19: xsight.WatchConfig.inline_rules:type_name -> xsight.InlineRuleSet
+	18, // 20: xsight.WatchConfig.posture:type_name -> xsight.NodePostureConfig
+	17, // 21: xsight.InlineRuleSet.rules:type_name -> xsight.InlineRule
+	21, // 22: xsight.FlowListenerConfig.sources:type_name -> xsight.FlowSourceConfig
+	0,  // 23: xsight.XSightService.Handshake:input_type -> xsight.NodeHandshake
+	2,  // 24: xsight.XSightService.StatsStream:input_type -> xsight.StatsReport
+	9,  // 25: xsight.XSightService.SampleStream:input_type -> xsight.SampleBatch
+	11, // 26: xsight.XSightService.CriticalEventStream:input_type -> xsight.CriticalEvent
+	12, // 27: xsight.XSightService.ControlStream:input_type -> xsight.ControlMessage
+	1,  // 28: xsight.XSightService.Handshake:output_type -> xsight.HandshakeResponse
+	25, // 29: xsight.XSightService.StatsStream:output_type -> google.protobuf.Empty
+	25, // 30: xsight.XSightService.SampleStream:output_type -> google.protobuf.Empty
+	25, // 31: xsight.XSightService.CriticalEventStream:output_type -> google.protobuf.Empty
+	12, // 32: xsight.XSightService.ControlStream:output_type -> xsight.ControlMessage
+	28, // [28:33] is the sub-list for method output_type
+	23, // [23:28] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_xsight_proto_init() }
@@ -2114,7 +2802,7 @@ func file_xsight_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_xsight_proto_rawDesc), len(file_xsight_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

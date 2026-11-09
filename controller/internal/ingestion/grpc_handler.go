@@ -30,6 +30,11 @@ type StatsCallback func(nodeID string, report *pb.StatsReport)
 // CriticalEventCallback is invoked for each CriticalEvent.
 type CriticalEventCallback func(nodeID string, event *pb.CriticalEvent)
 
+// ControlStreamOpenCallback is invoked after a Node's ControlStream is
+// registered. The inline mitigator uses it to reconcile active BPF filter
+// state onto reconnecting Nodes (session recovery after a Controller restart).
+type ControlStreamOpenCallback func(nodeID string)
+
 // GRPCHandler implements pb.XSightServiceServer.
 type GRPCHandler struct {
 	pb.UnimplementedXSightServiceServer
@@ -39,6 +44,7 @@ type GRPCHandler struct {
 	samplePool *SampleWorkerPool
 	onStats    StatsCallback
 	onCritical CriticalEventCallback
+	onCSOpen   ControlStreamOpenCallback
 
 	// Peer → nodeID mapping (set during Handshake, used by ControlStream)
 	peerNodes   map[string]string // peer address → nodeID
@@ -50,14 +56,16 @@ type GRPCHandler struct {
 	StatsDropped    atomic.Uint64 // reports dropped due to processing queue full
 	SamplesReceived atomic.Uint64
 	EventsReceived  atomic.Uint64
+	EventsDropped   atomic.Uint64 // critical events dropped due to processing queue full
 }
 
 type GRPCHandlerConfig struct {
-	Store      store.Store
-	NodeState  *NodeState
-	SamplePool *SampleWorkerPool
-	OnStats    StatsCallback
-	OnCritical CriticalEventCallback
+	Store         store.Store
+	NodeState     *NodeState
+	SamplePool    *SampleWorkerPool
+	OnStats       StatsCallback
+	OnCritical    CriticalEventCallback
+	OnControlOpen ControlStreamOpenCallback
 }
 
 func NewGRPCHandler(cfg GRPCHandlerConfig) *GRPCHandler {
@@ -67,6 +75,7 @@ func NewGRPCHandler(cfg GRPCHandlerConfig) *GRPCHandler {
 		samplePool: cfg.SamplePool,
 		onStats:    cfg.OnStats,
 		onCritical: cfg.OnCritical,
+		onCSOpen:   cfg.OnControlOpen,
 		peerNodes:  make(map[string]string),
 		handshaked: make(map[string]struct{}),
 	}
@@ -358,6 +367,9 @@ func (h *GRPCHandler) StatsStream(stream grpc.ClientStreamingServer[pb.StatsRepo
 	hbQueue := make(chan *pb.StatsReport, 1)
 	done := make(chan error, 1)
 	handle := func(msg *pb.StatsReport) {
+		if post := msg.GetPosture(); post != nil {
+			h.nodeState.UpdatePosture(msg.NodeId, post)
+		}
 		if h.onStats != nil {
 			h.onStats(msg.NodeId, msg)
 		}
@@ -484,26 +496,64 @@ func (h *GRPCHandler) SampleStream(stream grpc.ClientStreamingServer[pb.SampleBa
 // --- 1.5 CriticalEventStream ---
 
 func (h *GRPCHandler) CriticalEventStream(stream grpc.ClientStreamingServer[pb.CriticalEvent, emptypb.Empty]) error {
+	// Decouple Recv from processing, mirroring StatsStream: a stalled
+	// onCritical (e.g. tracker lock contention during a flood) must not block
+	// stream receipt. Overflow drops the oldest event — the newest evidence
+	// wins — and is counted in EventsDropped.
+	const queueSize = 64
+	queue := make(chan *pb.CriticalEvent, queueSize)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for msg := range queue {
+			if h.onCritical != nil {
+				h.onCritical(msg.NodeId, msg)
+			}
+		}
+	}()
+
+	var recvErr error
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
-			return stream.SendAndClose(&emptypb.Empty{})
+			break
 		}
 		if err != nil {
-			return err
+			recvErr = err
+			break
 		}
 
 		if err := h.requireHandshake(stream.Context(), msg.NodeId, "critical"); err != nil {
-			return err
+			recvErr = err
+			break
 		}
 		h.EventsReceived.Add(1)
 		log.Printf("grpc: critical event node=%s type=%s dst=%v",
 			msg.NodeId, msg.EventType, net.IP(msg.DstIp))
 
-		if h.onCritical != nil {
-			h.onCritical(msg.NodeId, msg)
+		select {
+		case queue <- msg:
+		default:
+			// Queue full — drop oldest to keep Recv flowing.
+			select {
+			case <-queue:
+			default:
+			}
+			select {
+			case queue <- msg:
+			default:
+			}
+			h.EventsDropped.Add(1)
+			log.Printf("grpc: critical event queue full for node=%s, dropped event (total_dropped=%d)",
+				msg.NodeId, h.EventsDropped.Load())
 		}
 	}
+	close(queue)
+	<-done
+	if recvErr != nil {
+		return recvErr
+	}
+	return stream.SendAndClose(&emptypb.Empty{})
 }
 
 // --- 1.6 ControlStream ---
@@ -523,6 +573,10 @@ func (h *GRPCHandler) ControlStream(stream grpc.BidiStreamingServer[pb.ControlMe
 	if nodeID != "" {
 		h.nodeState.SetControlStream(nodeID, stream)
 		log.Printf("grpc: control stream opened for node=%s (peer=%s cert_verified=%t)", nodeID, addr, certVerified)
+		if h.onCSOpen != nil {
+			// Session recovery: re-push authoritative inline filter state.
+			go h.onCSOpen(nodeID)
+		}
 	} else {
 		log.Printf("grpc: control stream opened from unknown peer=%s (no prior handshake?)", addr)
 	}
@@ -577,13 +631,43 @@ func (h *GRPCHandler) ControlStream(stream grpc.BidiStreamingServer[pb.ControlMe
 	}
 }
 
+// SendInlineRulePush delivers an inline filter snapshot to a Node without
+// disturbing its watch prefixes: the WatchConfig carries only inline_rules, so
+// the Node applies the rule table and leaves prefix/threshold state untouched.
+func (h *GRPCHandler) SendInlineRulePush(nodeID string, rules *pb.InlineRuleSet) error {
+	return h.nodeState.SendControlMessage(nodeID, &pb.ControlMessage{
+		Payload: &pb.ControlMessage_ConfigPush{
+			ConfigPush: &pb.ConfigPush{
+				WatchConfig: &pb.WatchConfig{InlineRules: rules},
+			},
+		},
+	})
+}
+
+// PushInlineRules satisfies action.InlinePusher: it delivers an inline filter
+// snapshot to one Node over its ControlStream.
+func (h *GRPCHandler) PushInlineRules(nodeID string, rules *pb.InlineRuleSet) error {
+	return h.SendInlineRulePush(nodeID, rules)
+}
+
+// ConnectedInlineNodes returns the node ids with an open ControlStream.
+// It satisfies action.InlinePusher's topology query.
+func (h *GRPCHandler) ConnectedInlineNodes() []string {
+	return h.nodeState.ConnectedNodes()
+}
+
+// AFXDPActive reports whether the node's last data-plane posture shows an
+// AF_XDP socket bound. It satisfies action.InlinePusher and gates challenge
+// rules at push time: no posture yet, or no XSK bound, means the node keeps
+// its rate cap instead of a challenge steer it could not answer.
+func (h *GRPCHandler) AFXDPActive(nodeID string) bool {
+	p, ok := h.nodeState.GetPosture(nodeID)
+	return ok && p.AFXDPActive
+}
+
 // SendConfigPush sends a ConfigPush to a specific node via its ControlStream.
 func (h *GRPCHandler) SendConfigPush(nodeID string, config *pb.WatchConfig, version uint64) error {
-	stream := h.nodeState.GetControlStream(nodeID)
-	if stream == nil {
-		return fmt.Errorf("node %s not connected", nodeID)
-	}
-	return stream.Send(&pb.ControlMessage{
+	return h.nodeState.SendControlMessage(nodeID, &pb.ControlMessage{
 		Payload: &pb.ControlMessage_ConfigPush{
 			ConfigPush: &pb.ConfigPush{
 				WatchConfig:            config,

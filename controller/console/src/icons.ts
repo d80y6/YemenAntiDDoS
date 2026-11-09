@@ -3,6 +3,7 @@ export const icons: Record<string, string> = {
   "traffic": "<path d=\"M3 17l5-6 4 3 5-7 4 4\"/><path d=\"M3 21h18\"/>",
   "attacks": "<path d=\"M12 3l9 16H3z\"/><path d=\"M12 10v4M12 17h.01\"/>",
   "mitigations": "<path d=\"M12 3l8 3v6c0 4.4-3.4 8.2-8 9-4.6-.8-8-4.6-8-9V6z\"/><path d=\"M9 12h6\"/>",
+  "inline": "<path d=\"M4 5h16v4H4zM4 15h16v4H4z\"/><path d=\"M8 9v6M16 9v6\"/>",
   "nodes": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"6\" rx=\"1\"/>\
 <rect x=\"3\" y=\"14\" width=\"18\" height=\"6\" rx=\"1\"/>\
 <path d=\"M7 7h.01M7 17h.01\"/>",

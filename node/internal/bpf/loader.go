@@ -102,6 +102,10 @@ type Manager struct {
 	PinPath          string // per-interface pin directory (empty = no pin)
 	Recovered        bool   // true if loaded from existing pins
 	batchUnsupported bool   // sticky: set true after first batch op failure, skip retries
+
+	inlineProgram bool   // attach XdpInline instead of XsightMain
+	effectiveMode string // "driver" | "generic" | "offload" after last attach
+	preferredMode string // requested attach mode ("driver" default)
 }
 
 // Load loads the compiled BPF objects. If ifaceName is non-empty, enables pin
@@ -247,10 +251,22 @@ func applyMaxEntries(spec *ebpf.CollectionSpec, maxEntries uint32) {
 	}
 }
 
-// AttachXDP attaches the XDP program to the given interface.
+// AttachXDP attaches the configured XDP program (mirror or inline) to the
+// given interface using the manager's preferred execution mode.
 // If pins are enabled, the link is pinned for persistence across restarts.
 // On restart, attempts to recover a pinned link first.
 func (m *Manager) AttachXDP(ifaceName string) error {
+	mode := m.preferredMode
+	if mode == "" {
+		mode = "driver"
+	}
+	_, err := m.AttachXDPMode(ifaceName, mode)
+	return err
+}
+
+// attachXDPDriverMode is the original driver-first attach, retained for the
+// explicit-mode path.
+func (m *Manager) attachXDPDriverMode(ifaceName string) error {
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
 		return fmt.Errorf("interface %s: %w", ifaceName, err)

@@ -137,14 +137,16 @@ type pendingEndWrite struct {
 
 // Tracker manages the lifecycle of all tracked attacks.
 type Tracker struct {
-	mu         sync.RWMutex
-	attacks    map[attackKey]*trackedAttack
-	cfg        Config
-	store      store.Store
-	rings      *ring.RingStore
-	dedup      *dedup.Dedup
-	onAction   ActionCallback
-	onRebreach func(attackDBID int) // called when attack transitions Expiring→Active
+	mu          sync.RWMutex
+	attacks     map[attackKey]*trackedAttack
+	cfg         Config
+	store       store.Store
+	rings       *ring.RingStore
+	dedup       *dedup.Dedup
+	onAction    ActionCallback
+	onRebreach  func(attackDBID int)  // called when attack transitions Expiring→Active
+	onEndedHook func(attackDBID int)  // called when an attack ends (inline rule withdrawal)
+	onRecovered func(a *store.Attack) // called for each active attack restored by RecoverFromDB
 
 	// Periodic update tracking
 	lastPeriodicUpdate time.Time
@@ -174,8 +176,21 @@ func New(cfg Config, s store.Store, rings *ring.RingStore, d *dedup.Dedup, onAct
 
 // SetRebreachCallback sets a callback invoked when an attack transitions Expiring→Active.
 // Used by the action engine to cancel pending delayed unblocks/withdrawals.
+// SetInlineMitigatorHook registers a callback fired when an attack ends, so
+// the inline mitigation plane can withdraw its kernel filter rules.
+func (t *Tracker) SetInlineMitigatorHook(fn func(attackDBID int)) {
+	t.onEndedHook = fn
+}
+
 func (t *Tracker) SetRebreachCallback(fn func(attackDBID int)) {
 	t.onRebreach = fn
+}
+
+// SetRecoveredCallback registers a callback fired for every active attack
+// restored by RecoverFromDB. It runs after the tracker lock is released so the
+// inline mitigation plane can rebuild its rule snapshot without lock inversion.
+func (t *Tracker) SetRecoveredCallback(fn func(a *store.Attack)) {
+	t.onRecovered = fn
 }
 
 // canonicalHostKey gives host-length prefixes the same identity as individual IPs.
@@ -571,6 +586,8 @@ func (t *Tracker) endAttack(a *trackedAttack, now time.Time, clearDedup bool) {
 			t.notifyAction(AttackEvent{Type: "expired", Attack: fullAttack, DBID: a.DBID})
 		}
 	}
+
+	t.notifyEnded(a)
 }
 
 // ForceExpire manually expires an attack using the configured in-memory hold.
@@ -784,9 +801,9 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 	}
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	kept := make(map[attackKey]*trackedAttack)
+	keptRows := make(map[attackKey]store.Attack)
 	var duplicates []*trackedAttack
 	for _, a := range attacks {
 		key := attackKey{
@@ -822,11 +839,13 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 			if ta.FirstSeen.After(current.FirstSeen) || (ta.FirstSeen.Equal(current.FirstSeen) && ta.DBID > current.DBID) {
 				duplicates = append(duplicates, current)
 				kept[key] = ta
+				keptRows[key] = a
 			} else {
 				duplicates = append(duplicates, ta)
 			}
 		} else {
 			kept[key] = ta
+			keptRows[key] = a
 		}
 	}
 
@@ -840,11 +859,24 @@ func (t *Tracker) RecoverFromDB(ctx context.Context) error {
 		t.endAttack(dup, now, false)
 	}
 
+	recovered := make([]store.Attack, 0, len(keptRows))
+	for _, a := range keptRows {
+		recovered = append(recovered, a)
+	}
+	t.mu.Unlock()
+
 	if len(kept) > 0 {
 		log.Printf("tracker: recovered %d active attacks from DB", len(kept))
 	}
 	if len(duplicates) > 0 {
 		log.Printf("tracker: recovery ended %d duplicate-key active attacks", len(duplicates))
+	}
+
+	// Rebuild dependent state (inline rules) outside the tracker lock.
+	if t.onRecovered != nil {
+		for i := range recovered {
+			t.onRecovered(&recovered[i])
+		}
 	}
 	return nil
 }
@@ -1080,10 +1112,25 @@ func (t *Tracker) evictAttack(a *trackedAttack, now time.Time) {
 		if t.onAction != nil {
 			t.notifyAction(AttackEvent{Type: "evicted", Attack: attack, DBID: a.DBID})
 		}
+
+		// Eviction also ends the attack from the data plane's perspective:
+		// withdraw any inline rules or a capped-out flood keeps being dropped.
+		t.notifyEnded(a)
 	}
 
 	// Remove from tracker
 	delete(t.attacks, a.Key)
+}
+
+// notifyEnded fires the inline-withdrawal hook off the tracker lock: the
+// withdrawal may hit the network, and a slow push must not stall detection.
+func (t *Tracker) notifyEnded(a *trackedAttack) {
+	if t.onEndedHook == nil || a.DBID <= 0 {
+		return
+	}
+	id := a.DBID
+	hook := t.onEndedHook
+	go hook(id)
 }
 
 // markRing protects a confirming attack's source using the existing ring protection bit.

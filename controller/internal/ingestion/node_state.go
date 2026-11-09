@@ -2,11 +2,37 @@
 package ingestion
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
 	pb "github.com/d80y6/YemenDDoS/controller/internal/pb"
 )
+
+// NodePosture is the console-facing snapshot of a Node's data-plane posture:
+// which XDP mode is active, whether inline filtering is enabled, how many
+// filter rules are installed, and the SYN-cookie / emergency-drop counters
+// that prove the sub-second autonomous path is working.
+type NodePosture struct {
+	XDPMode          string    `json:"xdp_mode"`
+	InlineEnabled    bool      `json:"inline_enabled"`
+	FilterRules      uint64    `json:"filter_rules"`
+	ValidatedClients uint64    `json:"validated_clients"`
+	SYNReplies       uint64    `json:"syn_cookies_replied"`
+	SYNValidated     uint64    `json:"syn_cookies_validated"`
+	SYNDropped       uint64    `json:"syn_cookies_dropped"`
+	EmergencyDrops   uint64    `json:"emergency_drops"`
+	BurstAlerts      uint64    `json:"burst_alerts"`
+	RedirectOk       uint64    `json:"redirect_ok"`
+	RedirectErr      uint64    `json:"redirect_err"`
+	CPUUtil          []float64 `json:"cpu_util,omitempty"`
+	AFXDPActive      bool      `json:"af_xdp_active"`
+	AFXDPUmemDrops   uint64    `json:"af_xdp_umem_drops"`
+	AFXDPRX          uint64    `json:"af_xdp_rx"`
+	CPUPins          []int64   `json:"cpu_pins,omitempty"`
+	CleanpipeEgress  string    `json:"cleanpipe_egress,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
 
 // FlowMetrics holds the last-received flow node health metrics.
 type FlowMetrics struct {
@@ -48,6 +74,11 @@ type NodeState struct {
 	sourceStatuses   map[string][]SourceStatus                       // nodeID → per-source statuses
 	listenerStatuses map[string][]ListenerStatus                     // nodeID → per-listener statuses
 	peerTLS          map[string]PeerTLS                              // nodeID → last verified client certificate
+	posture          map[string]NodePosture                          // nodeID → last data-plane posture
+	// sendMu serializes Send calls per ControlStream: gRPC allows only one
+	// concurrent SendMsg per stream. Entries are intentionally never deleted
+	// so a send in flight can never race with a fresh mutex allocation.
+	sendMu map[string]*sync.Mutex
 }
 
 // PeerTLS describes the client certificate a Node presented during the gRPC
@@ -79,7 +110,57 @@ func NewNodeState() *NodeState {
 		sourceStatuses:   make(map[string][]SourceStatus),
 		listenerStatuses: make(map[string][]ListenerStatus),
 		peerTLS:          make(map[string]PeerTLS),
+		posture:          make(map[string]NodePosture),
+		sendMu:           make(map[string]*sync.Mutex),
 	}
+}
+
+// UpdatePosture records the last data-plane posture reported by a Node.
+func (ns *NodeState) UpdatePosture(nodeID string, p *pb.NodePosture) {
+	if nodeID == "" || p == nil {
+		return
+	}
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	ns.posture[nodeID] = NodePosture{
+		XDPMode:          p.GetXdpMode(),
+		InlineEnabled:    p.GetInlineEnabled(),
+		FilterRules:      p.GetFilterRules(),
+		ValidatedClients: p.GetValidatedClients(),
+		SYNReplies:       p.GetSynCookiesReply(),
+		SYNValidated:     p.GetSynCookiesValidated(),
+		SYNDropped:       p.GetSynCookiesDropped(),
+		EmergencyDrops:   p.GetEmergencyDrops(),
+		BurstAlerts:      p.GetBurstAlerts(),
+		RedirectOk:       p.GetRedirectOk(),
+		RedirectErr:      p.GetRedirectErr(),
+		AFXDPActive:      p.GetAfXdpActive(),
+		AFXDPUmemDrops:   p.GetAfXdpUmemDrops(),
+		AFXDPRX:          p.GetAfXdpRx(),
+		CPUPins:          append([]int64(nil), p.GetCpuPins()...),
+		CPUUtil:          append([]float64(nil), p.GetCpuUtil()...),
+		CleanpipeEgress:  p.GetCleanpipeEgress(),
+		UpdatedAt:        time.Now(),
+	}
+}
+
+// GetPosture returns the last posture snapshot for a Node.
+func (ns *NodeState) GetPosture(nodeID string) (NodePosture, bool) {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+	p, ok := ns.posture[nodeID]
+	return p, ok
+}
+
+// AllPosture returns a copy of every Node posture snapshot.
+func (ns *NodeState) AllPosture() map[string]NodePosture {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+	out := make(map[string]NodePosture, len(ns.posture))
+	for k, v := range ns.posture {
+		out[k] = v
+	}
+	return out
 }
 
 // NotePeerTLS records the client certificate seen at handshake time so the
@@ -201,6 +282,7 @@ func (ns *NodeState) ClearControlStream(nodeID string, stream pb.XSightService_C
 	delete(ns.connectedAt, nodeID)
 	delete(ns.sourceStatuses, nodeID)
 	delete(ns.listenerStatuses, nodeID)
+	delete(ns.posture, nodeID)
 	ns.mu.Unlock()
 	return true
 }
@@ -210,6 +292,29 @@ func (ns *NodeState) GetControlStream(nodeID string) pb.XSightService_ControlStr
 	ns.mu.RLock()
 	defer ns.mu.RUnlock()
 	return ns.controlStream[nodeID]
+}
+
+// SendControlMessage sends msg on the node's ControlStream, serializing
+// concurrent senders (gRPC permits one concurrent SendMsg per stream).
+func (ns *NodeState) SendControlMessage(nodeID string, msg *pb.ControlMessage) error {
+	ns.mu.Lock()
+	mu := ns.sendMu[nodeID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		ns.sendMu[nodeID] = mu
+	}
+	ns.mu.Unlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	ns.mu.RLock()
+	stream := ns.controlStream[nodeID]
+	ns.mu.RUnlock()
+	if stream == nil {
+		return fmt.Errorf("node %s not connected", nodeID)
+	}
+	return stream.Send(msg)
 }
 
 // ConnectedNodes returns a list of node IDs with active ControlStreams.

@@ -1,5 +1,6 @@
 # xSight Node configuration
-# Two modes: xdp (default, BPF/XDP mirror) and flow (sFlow/NetFlow/IPFIX receiver)
+# Three modes: xdp (default, BPF/XDP mirror), xdp_inline (inline scrubbing),
+# and flow (sFlow/NetFlow/IPFIX receiver)
 # Unknown or misspelled keys are silently ignored, so check spelling carefully.
 #
 # Enterprise feature references:
@@ -11,7 +12,7 @@
 # XDP Mode (default) — BPF/XDP packet capture from mirror port
 # ============================================================
 
-# mode: xdp                       # 'xdp' (default) | 'flow'
+# mode: xdp                       # 'xdp' (default) | 'xdp_inline' | 'flow'
 node_id: "edg-01"             # must be registered on the Controller first (Web UI Nodes page)
 
 interfaces:
@@ -59,6 +60,40 @@ l7:
   max_tracked_flows: 8192          # slow-open connections kept for Slowloris (default 65536)
   max_open_fragments: 256          # reassembly slots (default 20)
   sample_bytes: 512                # per-interface capture window, 128-512 (default 256)
+
+# ============================================================
+# v4.0 Inline Scrubbing Engine (optional)
+# ============================================================
+# Set mode: xdp_inline (or inline.enabled: true with mode: xdp) to turn the node
+# into an inline scrubber: packets traverse the node on the wire and the XDP
+# program decides PASS / DROP / TX / REDIRECT instead of only mirroring.
+# The Controller then pushes active_filter_rules via the gRPC ControlStream.
+#
+# WARNING: attach the node in-line (bridge or routed path), not on a mirror
+# port. Validate with a lab link first: a wrong rule set drops production
+# traffic. The default action is XDP_PASS, so an unreachable Controller leaves
+# the node forwarding normally.
+inline:
+  enabled: false                 # master switch (mode: xdp_inline implies true)
+  burst_pps: 0                   # per-destination burst threshold -> 2s emergency drop (0 = default 200000)
+  syn_cookie: true               # stateless SYN-cookie validation for TCP floods
+  dns_protect: true              # UDP/DNS reflection defense (rate limits + outstanding-query checks)
+  sample_rate: 0                 # 1-in-N L7 sampling of protected traffic (0 = disabled)
+  cleanpipe_egress: ""           # egress ifname for clean-pipe redirect ("" = same-interface XDP_TX)
+  cleanpipe_encap: ""            # "" | "gre"; geneve is not supported. GRE uses this iface's IPv4 as outer saddr
+
+# Hardware acceleration / OS tuning (optional).
+perf:
+  cpu_pins: []                   # e.g. [2, 3]; pins the XDP/AF_XDP hot goroutines to these cores
+  xdp_mode: "driver"             # driver (default) | generic | offload (SmartNIC; ringbuf/alerts fall back to driver)
+
+# AF_XDP zero-copy L7 inspection (optional; requires a driver with XSK zero-copy support).
+af_xdp:
+  enabled: false
+  queue: 0                       # NIC RX queue steered into the XSK map
+  frames: 4096                   # UMEM frame count (power of two)
+  frame_size: 4096
+  zero_copy: true                # request XDP_ZEROCOPY; falls back to copy mode when unsupported
 
 auth:
   # Must equal the API key entered when this node_id was registered on the Controller

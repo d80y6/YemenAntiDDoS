@@ -38,6 +38,8 @@ type Dependencies struct {
 	FlowLogsDays  int // flow_logs retention days, exposed to API for expired hint
 	// L7 exposes the in-memory layer-7 aggregation fed by CriticalEventStream.
 	L7 *l7store.Store
+	// Inline is the v4.0 inline scrubbing action plane (nil when disabled).
+	Inline *action.InlineMitigator
 	// TLSInfo reports the gRPC server certificate (info, min TLS version, enabled).
 	TLSInfo func() (tlsconf.CertInfo, string, bool)
 }
@@ -176,6 +178,12 @@ func NewRouter(deps Dependencies) *gin.Engine {
 		// Layer 7 (HTTP flood / Slowloris / TLS ClientHello) in-memory view.
 		api.GET("/l7/summary", getL7Summary(deps))
 		api.GET("/l7/events", listL7Events(deps))
+
+		// Inline scrubbing (XDP filter rules, SYN cookies, AF_XDP posture).
+		api.GET("/inline/mitigations", getInlineMitigations(deps))
+		api.POST("/inline/reconcile", requireAdminForWrites(), reconcileInline(deps))
+		api.GET("/nodes/posture", listNodePosture(deps))
+		api.GET("/nodes/:id/posture", getNodePosture(deps))
 
 		// Mutual TLS posture for the node management drawer.
 		api.GET("/nodes/:id/tls", getNodeTLS(deps))

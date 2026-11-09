@@ -3,6 +3,8 @@ package l7store
 import (
 	"testing"
 	"time"
+
+	"github.com/d80y6/YemenDDoS/shared/l7"
 )
 
 func TestObserveAndSnapshot(t *testing.T) {
@@ -10,22 +12,22 @@ func TestObserveAndSnapshot(t *testing.T) {
 	now := time.Now()
 
 	s.Observe("node-1", now.Add(-30*time.Second), "l7_http_flood", "198.51.100.7", map[string]uint64{
-		"http_requests":    4200,
-		"http_method:POST": 1,
-		"http_path:/login": 1,
-		"src:203.0.113.9":  1,
-		"window_seconds":   1,
-		"alert_threshold":  2000,
+		l7.KeyHTTPRequests:   4200,
+		"http_method:POST":   1,
+		"http_path:/login":   1,
+		"src:203.0.113.9":    1,
+		l7.KeyWindowSeconds:  1,
+		l7.KeyAlertThreshold: 2000,
 	})
 	s.Observe("node-1", now.Add(-20*time.Second), "l7_tls_anomaly", "198.51.100.7", map[string]uint64{
-		"tls_handshakes":   900,
-		"tls_missing_sni":  900,
+		l7.KeyHandshakes:   900,
+		l7.KeyMissingSNI:   900,
 		"src:203.0.113.10": 1,
 	})
 	s.Observe("node-2", now.Add(-10*time.Second), "l7_slowloris", "198.51.100.8", map[string]uint64{
-		"slowloris_connections": 61,
-		"unique_sources":        61,
-		"src:203.0.113.11":      1,
+		l7.KeySlowlorisConns: 61,
+		l7.KeyUniqueSources:  61,
+		"src:203.0.113.11":   1,
 	})
 
 	snap := s.Snapshot(15*time.Minute, now)
@@ -84,5 +86,56 @@ func TestRingIsBounded(t *testing.T) {
 	}
 	if dropped == 0 {
 		t.Fatal("expected dropped counter to advance")
+	}
+}
+
+func TestCounterKeysAlignWithCollectorWire(t *testing.T) {
+	s := New(10)
+	now := time.Now()
+
+	// Flat counters spelled exactly as the Node collector emits them
+	// (shared/l7 constants): a renamed key must not zero a Console field.
+	s.Observe("node-1", now.Add(-5*time.Second), "l7_tls_anomaly", "198.51.100.9", map[string]uint64{
+		l7.KeyHandshakes:       1200,
+		l7.KeyMissingSNI:       1100,
+		l7.KeySlowlorisConns:   77,
+		l7.KeySlowlorisSources: 12,
+	})
+
+	snap := s.Snapshot(15*time.Minute, now)
+	if len(snap.Recent) != 1 {
+		t.Fatalf("recent = %d, want 1", len(snap.Recent))
+	}
+	d := snap.Recent[0].Detail
+	if d.MissingSNI == 0 {
+		t.Errorf("MissingSNI = 0, want %d (key %q)", 1100, l7.KeyMissingSNI)
+	}
+	if d.Connections == 0 {
+		t.Errorf("Connections = 0, want %d (key %q)", 77, l7.KeySlowlorisConns)
+	}
+	if d.UniqueSources == 0 {
+		t.Errorf("UniqueSources = 0, want %d (key %q)", 12, l7.KeySlowlorisSources)
+	}
+}
+
+func TestNonL7EventsAreNotStored(t *testing.T) {
+	s := New(10)
+	now := time.Now()
+
+	// L3/L4 critical events share the stream with L7 events but must not be
+	// stored as L7 records (polluting totals, targets and the recent list).
+	s.Observe("node-1", now, "burst_emergency", "198.51.100.7", map[string]uint64{"current_pps": 1488000})
+	s.Observe("node-1", now, "hard_threshold_exceeded", "198.51.100.7", nil)
+	s.Observe("node-1", now, "syn_flood", "198.51.100.7", nil)
+
+	snap := s.Snapshot(15*time.Minute, now)
+	if len(snap.Recent) != 0 {
+		t.Errorf("L3 events stored as L7 records: %+v", snap.Recent)
+	}
+	if len(snap.Targets) != 0 {
+		t.Errorf("L3 events created L7 targets: %+v", snap.Targets)
+	}
+	if len(snap.Totals) != 0 {
+		t.Errorf("L3 events created L7 totals: %+v", snap.Totals)
 	}
 }

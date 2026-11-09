@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -171,5 +172,36 @@ ring:
 	_, err := Load(writeConfig(t, yaml))
 	if err != nil {
 		t.Fatalf("max_global_keys=500000 with small points should pass, got: %v", err)
+	}
+}
+
+func TestLoadInlineEnabledByDefault(t *testing.T) {
+	cfg, err := Load(writeConfig(t, baseYAML))
+	if err != nil {
+		t.Fatalf("expected valid config, got error: %v", err)
+	}
+	if !cfg.Action.InlineEnabled {
+		t.Error("Action.InlineEnabled = false, want true by default")
+	}
+}
+
+func TestInlineNarrowDelayClamped(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{
+		{0, 0},    // 0 keeps the built-in default
+		{50, 500}, // below the documented floor
+		{499, 500},
+		{500, 500},
+		{750, 750},
+		{1000, 1000},
+		{5000, 1000}, // above the documented ceiling
+	} {
+		yaml := fmt.Sprintf("%s\naction_engine:\n  inline_narrow_delay_ms: %d\n", baseYAML, tc.in)
+		cfg, err := Load(writeConfig(t, yaml))
+		if err != nil {
+			t.Fatalf("load delay=%d: %v", tc.in, err)
+		}
+		if cfg.Action.InlineNarrowDelayMS != tc.want {
+			t.Errorf("delay=%d -> %d, want %d", tc.in, cfg.Action.InlineNarrowDelayMS, tc.want)
+		}
 	}
 }

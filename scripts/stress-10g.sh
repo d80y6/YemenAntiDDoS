@@ -49,11 +49,28 @@ Detection expectations (Controller defaults):
   - with action_engine.fast_path_multiplier=5 an attack >=5x threshold
     must reach state=active within ONE tick (~1s)
 
+Inline scrubbing (mode: xdp_inline) acceptance:
+  - per-destination burst counters tick every 100ms
+  - burst_emergency alert on the ringbuf within <500ms of the burst
+  - Controller confirms the attack (tracker fast path) in <200ms after the alert
+  - broad (rate_limit) rule visible in active_filter_rules in <500ms
+  - narrow (drop on dominant port + residual cap) after inline_narrow_delay_ms (default 750ms)
+  - SYN flood: syn_cookie replies rise, validated_clients populates, benign
+    handshakes still complete; cookie-accepting clients bypass emergency drops
+  - clean-pipe: redirect/GRE (or XDP_TX on cleanpipe_egress) counters rise and
+    the scrubbed stream keeps byte/packet integrity (no reordering at the sink)
+
 Pass criteria:
   - XDP: xdp_redirect/drop counters rise, no xdp_exception, node CPU < 80%
   - node -> controller sample stream stays within 10% of injected PPS
   - attack state reaches active; xDrop rule appears (mode=auto)
   - time from first breaching second to xDrop rule < 2s (fast path)
+  - AF_XDP (when enabled): af_xdp_active=1, no UMEM drops at the target PPS
+
+SYN-flood variant:
+  - TRex: set L3 src = random over ${SRC} and L4 = TCP SYN with a random
+    source port (flags=0x02); or pktgen with a spoofed 203.0.113.0/24 pool.
+  - Expect the SYN-cookie path (no half-open state) instead of per-source drops.
 
 EOF
 

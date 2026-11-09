@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+# YemenAntiDDoS Node — multi-stage image (XDP/flow agent)
+#   stage 1: clang + bpf2go builds the BPF object from node/bpf/xsight.c
+#            (node/bpf/vmlinux.h is tracked in the repository)
+#   stage 2: Go build embeds xsight_x86_bpfel.o via go:embed
+#   stage 3: minimal runtime — runs as root because XDP attach needs
+#            CAP_NET_ADMIN + CAP_BPF; use network_mode: host (see docker-compose.yml)
+#
+# Build:  docker build -f deploy/docker/Dockerfile.node -t yemenantiddos/node .
+
+FROM golang:1.24-bookworm AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clang llvm libbpf-dev bpftool \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY shared/ shared/
+COPY node/ node/
+WORKDIR /src/node
+RUN go generate ./internal/bpf/ \
+ && test -f internal/bpf/xsight_x86_bpfel.o \
+ && CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /out/xsight-node .
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates iproute2 ethtool \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /etc/xsight/pki
+COPY --from=build /out/xsight-node /usr/local/bin/xsight-node
+
+# Flow-mode listeners (sFlow/NetFlow/IPFIX, configured in the Console) are
+# bound on the host network namespace — publish them with network_mode: host.
+VOLUME ["/etc/xsight"]
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/xsight-node"]
+CMD ["-config", "/etc/xsight/config.yaml"]

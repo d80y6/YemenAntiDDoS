@@ -15,16 +15,17 @@ all: build
 build:
 	$(GO) build -o $(BIN) .
 
-## Proto — generate Go code from shared protobuf definition
+## Proto — regenerate the message types from the shared protobuf definition.
+## Only xsight.pb.go is regenerated: xsight_grpc.pb.go is PINNED to the
+## protoc-gen-go-grpc v1.6.1 output (the locally installed plugin is older
+## and would downgrade the committed file). Do not add a --go-grpc_out here
+## without upgrading the plugin to v1.6.1+ first.
 proto:
 	@mkdir -p $(PB_DIR)
 	protoc -I $(PROTO_DIR) \
 		--go_out=$(PB_DIR) --go_opt=paths=source_relative \
-		--go-grpc_out=$(PB_DIR) --go-grpc_opt=paths=source_relative \
+		--go_opt=Mxsight.proto=github.com/d80y6/YemenDDoS/controller/internal/pb \
 		$(PROTO_DIR)/xsight.proto
-	@# Fix package path: replace node package with controller package
-	@sed -i 's|github.com/d80y6/YemenDDoS/node/internal/pb|github.com/d80y6/YemenDDoS/controller/internal/pb|g' \
-		$(PB_DIR)/xsight.pb.go $(PB_DIR)/xsight_grpc.pb.go
 
 ## Migrate — run DB migrations (embedded in binary, just starts and exits)
 migrate:
@@ -33,7 +34,7 @@ migrate:
 ## Clean
 clean:
 	rm -f $(BIN)
-	rm -f $(PB_DIR)/*.pb.go
+	rm -f $(PB_DIR)/xsight.pb.go  # pinned xsight_grpc.pb.go is kept
 
 ## Help
 help:

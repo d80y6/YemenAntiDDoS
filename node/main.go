@@ -70,8 +70,9 @@ func main() {
 		}
 		_ = mgr.AttachXDP(primaryIface.Name) // recover link to unpin it
 		mgr.Unload()
+		mgr.Close()
 		log.Println("unload complete")
-		os.Exit(0)
+		return
 	}
 
 	log.Printf("xsight-node starting: node_id=%s interfaces=%d", cfg.NodeID, len(cfg.Interfaces))
@@ -88,10 +89,40 @@ func main() {
 		log.Fatalf("Failed to apply BPF config: %v", err)
 	}
 
+	// v4.0: inline mode attaches the scrubbing program with the configured
+	// execution mode (offload → driver → generic fallback) and turns on the
+	// kernel engines (filters, SYN cookies, DNS defense, burst detection).
+	inlineActive := cfg.IsInlineMode()
+	cleanPipeEgress := ""
+	if inlineActive {
+		var err error
+		cleanPipeEgress, err = setupInlineEngine(cfg, mgr, primaryIface.Name)
+		if err != nil {
+			log.Fatalf("Failed to set up inline engine: %v", err)
+		}
+	}
+
 	for _, iface := range cfg.Interfaces {
-		log.Printf("attaching XDP to %s (mode=%s)", iface.Name, iface.Mode)
+		log.Printf("attaching XDP to %s (mode=%s, inline=%v)", iface.Name, iface.Mode, inlineActive)
 		if err := mgr.AttachXDP(iface.Name); err != nil {
 			log.Fatalf("Failed to attach XDP to %s: %v", iface.Name, err)
+		}
+	}
+	xdpMode := mgr.EffectiveXDPMode()
+
+	// If an offload attach fell back to driver/generic, the ringbuf alert path
+	// is now available again; setup left it off for the offload attempt.
+	if inlineActive && xdpMode != "offload" {
+		if err := mgr.SetAlertsEnabled(true); err != nil {
+			log.Printf("warning: enable burst alerts after attach: %v", err)
+		}
+	}
+
+	// CPU core pinning (perf.cpu_pins). Best-effort: a restricted container
+	// may refuse affinity changes, which must not stop the node.
+	if len(cfg.Perf.CPUPins) > 0 {
+		if err := applyCPUPins(cfg.Perf.CPUPins); err != nil {
+			log.Printf("perf: cpu pinning skipped: %v", err)
 		}
 	}
 
@@ -146,8 +177,21 @@ func main() {
 	// Collector ref for HotSwap notification (set after collector is created)
 	var collRef *collector.Collector
 
+	// Inline rule pushes carry a monotonic version; one applier keeps the
+	// guard state across handshake and ConfigPush callbacks.
+	rulesApplier := &inlineRulesApplier{sink: mgr}
+
 	// P6: applyConfig callback — called by reporter on handshake + ConfigPush
 	applyConfig := func(wc *pb.WatchConfig, deliveryVersion uint64) error {
+		// v4.0: inline filter tables ride the same ConfigPush. nil = unchanged.
+		if wc.GetInlineRules() != nil {
+			if err := rulesApplier.apply(wc.GetInlineRules()); err != nil {
+				return fmt.Errorf("apply inline rules: %w", err)
+			}
+		}
+		if wc.GetPosture() != nil {
+			applyPostureConfig(mgr, wc.GetPosture(), nil)
+		}
 		var entries []bpf.PrefixEntry
 		var snapPrefixes []config.SnapshotPrefix
 		for _, wp := range wc.GetPrefixes() {
@@ -215,13 +259,18 @@ func main() {
 		grpcTLS = tlsCfg
 		log.Println("tls: node gRPC client enabled (mTLS)")
 	}
+	reportMode := cfg.Mode
+	if reportMode == "" {
+		reportMode = "xdp"
+	}
 	rpt := reporter.New(reporter.Config{
 		ControllerAddr: cfg.Controller.Address,
 		NodeID:         cfg.NodeID,
 		APIKey:         cfg.Auth.NodeAPIKey,
 		InterfaceName:  primaryIface.Name,
-		AgentVersion:   "0.7.0",
+		AgentVersion:   "0.8.0",
 		UpstreamRate:   primaryIface.UpstreamSampleRate,
+		Mode:           reportMode,
 		TLS:            grpcTLS,
 	}, coll.Reports, applyConfig)
 	rpt.SetDeliveryVersion(initialDeliveryVersion)
@@ -283,6 +332,50 @@ func main() {
 			window, cfg.L7.HTTPRPS, cfg.L7.TLSHSPS, cfg.L7.SlowlorisConns)
 	}
 
+	// v4.0: anti-bot challenge issuer (HTTP 307 + JS PoW tokens). AF_XDP
+	// implies the issuer: FILTER_ACTION_CHALLENGE rules steer frames to the
+	// responder, which must answer them even when L7 metrics are off.
+	challengeIssuer := l7collector.NewChallengeIssuer(l7collector.ChallengeConfig{
+		Enabled: cfg.L7.Enabled || cfg.AFXDP.Enabled,
+	})
+
+	// v4.0: AF_XDP zero-copy L7 inspection (optional; ringbuf sampling is
+	// the fallback path when the NIC/driver cannot bind an XSK).
+	var xskMgr *bpf.XSKManager
+	if inlineActive && cfg.AFXDP.Enabled {
+		var xerr error
+		xskMgr, xerr = startAFXDP(cfg, mgr, l7c, challengeIssuer, primaryIface.Name)
+		if xerr != nil {
+			log.Printf("af_xdp: unavailable (%v) — L7 uses ringbuf sampling", xerr)
+		} else {
+			defer xskMgr.Close()
+		}
+	}
+
+	// v4.0: posture reporting (XDP mode, AF_XDP health, cookie rates).
+	posture := &inlinePosture{
+		mgr:     mgr,
+		nodeID:  cfg.NodeID,
+		mode:    xdpMode,
+		egress:  cleanPipeEgress,
+		pins:    cfg.Perf.CPUPins,
+		xsk:     xskMgr,
+		enabled: inlineActive,
+	}
+	rpt.SetPostureFunc(posture.snapshot)
+
+	// v4.0: kernel burst alerts → CriticalEventStream (sub-second path).
+	if inlineActive || cfg.Inline.Enabled {
+		streamBurstAlerts(collectorCtx, mgr, rpt, cfg.NodeID, primaryIface.Name, &posture.burstAlerts)
+	}
+
+	// Rotate the SYN-cookie secret hourly whenever inline is active: a later
+	// controller push may enable cookies even if startup config had them off.
+	if inlineActive {
+		var cs cookieSecret
+		go rotateCookieSecret(collectorCtx, mgr, &cs)
+	}
+
 	log.Printf("sampler: starting with %d parse workers", pool.Workers())
 	go pool.Start(s)
 
@@ -291,6 +384,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
 
 	// Health check: log global_stats + interface state every 10s (P7)
+	prevCPU, _ := readCPUTimes()
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -308,11 +402,21 @@ func main() {
 			} else if iface.Flags&net.FlagUp == 0 {
 				ifaceStatus = "DOWN"
 			}
-			log.Printf("health: total_pkts=%d total_bytes=%d matched_pkts=%d samples=%d batches=%d decode_err=%d unique_src=%d grpc=%v iface=%s pin=%v workers=%d parsed=%d dispatch_drop=%d",
+			// Per-core utilization has no NodePosture wire field yet; keep it
+			// (and the redirect counters) in the operator log until the
+			// console phase adds them to the proto.
+			var cpuPct []float64
+			if curCPU, err := readCPUTimes(); err == nil {
+				cpuPct = cpuUtilPercent(prevCPU, curCPU)
+				prevCPU = curCPU
+			}
+			ist := mgr.InlineCounters()
+			log.Printf("health: total_pkts=%d total_bytes=%d matched_pkts=%d samples=%d batches=%d decode_err=%d unique_src=%d grpc=%v iface=%s pin=%v workers=%d parsed=%d dispatch_drop=%d redirect_ok=%d redirect_err=%d cpu_util=%v",
 				gs.TotalPkts, gs.TotalBytes, gs.MatchedPkts, s.TotalSamples.Load(),
 				batcher.Metrics.BatchesSent.Load(), batcher.Metrics.DecodeErrors.Load(),
 				uniqueSources, rpt.Connected(), ifaceStatus, mgr.PinPath != "",
-				pool.Workers(), pool.ParsedTotal.Load(), pool.DispatchDropped.Load())
+				pool.Workers(), pool.ParsedTotal.Load(), pool.DispatchDropped.Load(),
+				ist.RedirectOK, ist.RedirectErr, cpuPct)
 		}
 	}()
 
@@ -337,7 +441,9 @@ func main() {
 			log.Printf("%s received — graceful shutdown (pins preserved)", sig)
 			watchdog.Stopping()
 			close(watchdogDone)
-			os.Exit(0)
+			// Return instead of os.Exit so deferred cleanup (XSK rings,
+			// sampler, batcher, collector context, BPF fds) actually runs.
+			return
 		}
 	}
 }

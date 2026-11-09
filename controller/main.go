@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -232,8 +233,28 @@ func main() {
 	actionEngine := action.NewEngine(iStore, cfg.Action.Mode)
 	actionEngine.Start()
 
-	attackTracker := tracker.New(trackerCfg, iStore, rings, alertDedup, actionEngine.Enqueue)
-	attackTracker.SetRebreachCallback(actionEngine.EnqueueRebreach)
+	attackTracker := tracker.New(trackerCfg, iStore, rings, alertDedup, actionEngine.EnqueueNonBlocking)
+	attackTracker.SetRebreachCallback(actionEngine.EnqueueRebreachNonBlocking)
+
+	// v4.0: inline scrubbing action plane. Created before startup recovery so
+	// recovered active attacks rebuild their rule snapshot; the pusher is
+	// bound to the gRPC handler further down (once it exists). Nodes receive
+	// the snapshot through Reconcile when they attach.
+	inlineMitigator := action.NewInlineMitigator(inlineMitigatorConfig(cfg), nil)
+	attackTracker.SetRecoveredCallback(func(a *store.Attack) {
+		inlineMitigator.Recover(a.ID, a.DstIP, a.DecoderFamily, a.AttackType,
+			a.NodeSources, uint64(a.PeakPPS))
+	})
+	attackTracker.SetInlineMitigatorHook(func(attackID int) {
+		inlineMitigator.Withdraw(attackID)
+	})
+	// Narrow-phase evidence: remember the latest CriticalEvent top flows per
+	// attack so the narrow/rebreath attempts consult fresher samples than the
+	// event that first confirmed the attack.
+	criticalFlows := newCriticalFlowRing(4096)
+	inlineMitigator.SetNarrowingSource(func(attackID int) action.NarrowingInput {
+		return action.NarrowingInput{TopFlows: criticalFlows.get(attackID)}
+	})
 
 	// Restore FRR synchronously before reconciliation starts side-effect workers.
 	var pre action.StartupScheduleSnapshot
@@ -248,6 +269,9 @@ func main() {
 	go actionEngine.RunXDropReconcile(ctx, 2*time.Minute)
 	go actionEngine.RunWithdrawingReconcile(ctx, withdrawingReconcileInterval)
 	go actionEngine.RunAnnouncingReconcile(ctx, announcingReconcileInterval)
+	// Refresh inline snapshots at half the kernel RuleTTL (10min default):
+	// Node-side expiry must never lapse an active mitigation between pushes.
+	go inlineMitigator.RunReconcile(ctx, 5*time.Minute)
 
 	// Prometheus metrics: register v1.2.1 custom collectors + counters with
 	// the default registry (the /metrics HTTP route uses promhttp.Handler()
@@ -357,7 +381,49 @@ func main() {
 	onCritical := func(nodeID string, event *pb.CriticalEvent) {
 		log.Printf("critical: node=%s type=%s dst=%v",
 			nodeID, event.EventType, net.IP(event.DstIp))
-		l7Store.Observe(nodeID, unixTime(event.Timestamp), event.EventType, net.IP(event.DstIp).String(), event.Counters)
+		if l7store.IsL7Type(event.EventType) {
+			l7Store.Observe(nodeID, unixTime(event.Timestamp), event.EventType, net.IP(event.DstIp).String(), event.Counters)
+		}
+
+		// v4.0 sub-second autonomous path: escalate to Active immediately and
+		// push the broad inline rule set (<200ms) without waiting for the next
+		// 1s StatsStream tick. Narrow-then-rebreadth refines it 750ms later.
+		target := net.IP(event.GetTargetIp())
+		if len(target) == 0 {
+			target = net.IP(event.GetDstIp())
+		}
+		if len(target) == 0 || !isFastPathEvent(event) {
+			return
+		}
+		decoder := event.GetDecoder()
+		if decoder == "" {
+			decoder = "ip"
+		}
+		sig := tracker.CriticalSignal{
+			NodeID:     nodeID,
+			TargetIP:   target,
+			Decoder:    decoder,
+			EventType:  event.GetEventType(),
+			AttackType: event.GetAttackType(),
+			CurrentPPS: event.GetCurrentPps(),
+			CurrentBPS: event.GetCurrentBps(),
+			At:         unixTime(event.GetTimestampNs()),
+		}
+		dbID, escalated := attackTracker.FastTrackConfirm(sig)
+		if dbID == 0 {
+			return
+		}
+		flows := flowKeysFromProto(event.GetTopFlows())
+		criticalFlows.add(dbID, flows)
+		if inlineMitigator != nil {
+			inlineMitigator.OnCritical(dbID, target.String(), decoder,
+				event.GetEventType(), []string{nodeID},
+				event.GetCurrentPps(), flows)
+		}
+		if escalated {
+			log.Printf("critical: FAST-PATH escalated node=%s target=%s decoder=%s pps=%d db_id=%d",
+				nodeID, target, decoder, event.GetCurrentPps(), dbID)
+		}
 	}
 
 	handler := ingestion.NewGRPCHandler(ingestion.GRPCHandlerConfig{
@@ -366,7 +432,20 @@ func main() {
 		SamplePool: samplePool,
 		OnStats:    onStats,
 		OnCritical: onCritical,
+		OnControlOpen: func(nodeID string) {
+			// Session recovery: a Node that (re)connects receives the
+			// authoritative inline filter snapshot, reconciling any BPF map
+			// state left over from before a Controller restart.
+			if inlineMitigator != nil {
+				if err := inlineMitigator.Reconcile(nodeID); err != nil {
+					log.Printf("inline-mitigation: reconcile node=%s: %v", nodeID, err)
+				}
+			}
+		},
 	})
+
+	// v4.0 inline action plane: push transport now that the handler exists.
+	inlineMitigator.SetPusher(handler)
 
 	var grpcTLS *tls.Config
 	if cfg.TLS.Enabled {
@@ -427,6 +506,7 @@ func main() {
 		JWTSecret:     jwtSecret,
 		FlowLogsDays:  cfg.Retention.FlowLogsDays,
 		L7:            l7Store,
+		Inline:        inlineMitigator,
 		TLSInfo:       tlsInfo,
 	})
 	// Serve embedded Vue SPA (Phase 8)
@@ -692,6 +772,90 @@ func dynamicBreaches(nodes, prefixes []string, rings *ring.RingStore, pe *baseli
 		}
 	}
 	return exceeded
+}
+
+// isFastPathEvent reports whether a CriticalEvent should bypass the 1s
+// batching path and escalate an attack immediately.
+func isFastPathEvent(event *pb.CriticalEvent) bool {
+	switch event.GetEventType() {
+	case "burst_emergency", "hard_threshold_exceeded", "syn_flood", "dns_amplification",
+		"l7_flood", "http_flood", "tls_anomaly", "slowloris":
+		return true
+	}
+	// Enriched events (v4.0 nodes) carry a decoder + rate even when the type
+	// is deployment-specific.
+	if event.GetDecoder() != "" && event.GetCurrentPps() > 0 {
+		return true
+	}
+	return false
+}
+
+// criticalFlowRing remembers the latest CriticalEvent top flows per attack.
+// Bounded FIFO eviction by first insert; an updated attack keeps its position.
+type criticalFlowRing struct {
+	mu    sync.Mutex
+	flows map[int][]action.FlowKey
+	order []int
+	cap   int
+}
+
+func newCriticalFlowRing(capacity int) *criticalFlowRing {
+	return &criticalFlowRing{flows: make(map[int][]action.FlowKey), cap: capacity}
+}
+
+func (r *criticalFlowRing) add(attackID int, flows []action.FlowKey) {
+	if len(flows) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.flows[attackID]; !ok {
+		r.order = append(r.order, attackID)
+		for len(r.order) > r.cap {
+			delete(r.flows, r.order[0])
+			r.order = r.order[1:]
+		}
+	}
+	r.flows[attackID] = flows
+}
+
+func (r *criticalFlowRing) get(attackID int) []action.FlowKey {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.flows[attackID]
+}
+
+// flowKeysFromProto converts wire FlowSamples into mitigator flow keys.
+func flowKeysFromProto(flows []*pb.FlowSample) []action.FlowKey {
+	if len(flows) == 0 {
+		return nil
+	}
+	out := make([]action.FlowKey, 0, len(flows))
+	for _, f := range flows {
+		out = append(out, action.FlowKey{
+			SrcIP:    net.IP(f.GetSrcIp()).String(),
+			DstIP:    net.IP(f.GetDstIp()).String(),
+			SrcPort:  f.GetSrcPort(),
+			DstPort:  f.GetDstPort(),
+			Protocol: f.GetProtocol(),
+			Packets:  f.GetPackets(),
+		})
+	}
+	return out
+}
+
+// inlineMitigatorConfig maps controller config onto mitigator parameters,
+// keeping the narrow-then-rebreadth timings inside the <500ms-1s target.
+func inlineMitigatorConfig(cfg *config.Config) action.InlineMitigatorConfig {
+	mic := action.DefaultInlineMitigatorConfig()
+	mic.Enabled = cfg.Action.InlineEnabled
+	if cfg.Action.InlineBroadRatePPS > 0 {
+		mic.BroadRateLimitPPS = cfg.Action.InlineBroadRatePPS
+	}
+	if cfg.Action.InlineNarrowDelayMS > 0 {
+		mic.NarrowDelay = time.Duration(cfg.Action.InlineNarrowDelayMS) * time.Millisecond
+	}
+	return mic
 }
 
 // unixTime converts a Node-reported unix timestamp (seconds, or nanoseconds

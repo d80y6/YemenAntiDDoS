@@ -98,6 +98,13 @@ export function mockReply(raw: string, mode = 'normal', now = Date.now(),
     online_nodes: empty ? 0 : 2, total_prefixes: empty ? 0 : 3, total_thresholds: 8, tracker_count: empty ? 0 : count,
     attacks_created: 12, attacks_suppressed: 1, attacks_evicted: 0, action_mode: 'auto' })
   if (path === '/api/nodes') return send(empty ? null : nodes)
+  if (path === '/api/nodes/posture') return send(empty ? {} : {
+    'edge-a': { xdp_mode: 'inline', inline_enabled: true, filter_rules: 3, validated_clients: 2,
+      syn_cookies_replied: 10, syn_cookies_validated: 8, syn_cookies_dropped: 1,
+      emergency_drops: 4, burst_alerts: 7, af_xdp_active: true, af_xdp_rx: 1234,
+      af_xdp_umem_drops: 0, cpu_pins: [2, 3], cpu_util: [12.4, 3.6],
+      redirect_ok: 99, redirect_err: 2, cleanpipe_egress: 'eth1', updated_at: iso(-1000) },
+  })
   if (path === '/api/prefixes') return send(empty ? null : ['10.1.0.0/16', '10.2.0.0/16', '10.3.0.0/16'].map(
     (prefix, i) => ({ id: i + 1, prefix, parent_id: null, threshold_template_id: null, name: ['Transit', 'Services',
       'Outbound'][i], ip_group: '', enabled: true, created_at: iso(-86400000) }),

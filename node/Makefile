@@ -2,7 +2,7 @@
 
 # Tools
 CLANG      ?= clang
-LLVM_STRIP ?= llvm-strip
+STRIP      ?= $(shell for b in llvm-strip llvm-strip-20 llvm-strip-19 llvm-strip-18 llvm-strip-17; do command -v $$b && break; done)
 GO         ?= go
 
 # BPF settings
@@ -23,11 +23,11 @@ bpf: $(BPF_OBJ)
 
 $(BPF_OBJ): $(BPF_SRC) $(BPF_HDR)
 	$(CLANG) $(BPF_CFLAGS) -c $(BPF_SRC) -o $@
-	$(LLVM_STRIP) -g $@
+	@if [ -n "$(STRIP)" ]; then $(STRIP) -g $@; else echo "note: no llvm-strip; leaving debug info"; fi
 
 ## Generate — bpf2go (produces type-safe Go bindings)
 generate:
-	$(GO) generate ./internal/bpf/
+	BPF2GO_STRIP="$(STRIP)" $(GO) generate ./internal/bpf/
 
 ## Build — xsight-node binary
 build: generate

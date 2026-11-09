@@ -17,6 +17,41 @@
 #define CFG_SAMPLE_BYTES     1  // per-packet capture length (128-512)
 #define CFG_MODE             2  // 0=mirror, 1=erspan
 #define CFG_UPSTREAM_RATE    3  // upstream_sample_rate (from config.yaml)
+// v4.0 inline scrubbing config (xsight_config grows 8 → 16 entries)
+#define CFG_INLINE_ENABLE    4  // inline filter engine master switch (xdp_inline program)
+#define CFG_SYN_COOKIE_ENABLE 5 // kernel SYN-cookie engine master switch
+// 6-7 reserved: the SYN-cookie secret moved to the atomic cookie_secret map.
+#define CFG_EGRESS_IFINDEX   8  // clean-pipe egress interface for XDP_REDIRECT
+#define CFG_BURST_PPS        9  // per-dst burst threshold (PPS) → 2s emergency drop
+#define CFG_ALERTS_ENABLE    10 // burst alert ringbuf emissions (0 = offload-safe builds)
+#define CFG_DNS_PROTECT      11 // UDP/DNS reflection defense master switch
+#define CFG_INLINE_SAMPLE    12 // inline-mode L7 sampling 1-in-N (0 = disabled)
+#define CFG_EGRESS_SADDR     13 // GRE outer source IPv4 (low 32 bits, network byte order)
+#define CFG_MAX              16 // xsight_config array size
+
+// Inline filter actions (mirrors proto InlineRule.action strings)
+#define FILTER_ACTION_PASS       0
+#define FILTER_ACTION_DROP       1
+#define FILTER_ACTION_TX         2
+#define FILTER_ACTION_REDIRECT   3
+#define FILTER_ACTION_RATE_LIMIT 4  // enforced as drop beyond limit (see filter apply)
+#define FILTER_ACTION_SYN_COOKIE 5
+#define FILTER_ACTION_CHALLENGE  6  // steer into AF_XDP socket map for L7 challenge
+
+// Clean-pipe encapsulation kinds (proto InlineRule.encap)
+#define ENCAP_NONE   0
+#define ENCAP_GRE    1
+#define ENCAP_GENEVE 2
+
+// SYN-cookie validated-client lifetime (ns) and DNS outstanding-query TTL
+#define VALIDATED_CLIENT_TTL_NS (60ULL * 1000000000ULL)
+#define DNS_QUERY_TTL_NS        (2ULL * 1000000000ULL)
+
+// Burst sliding window: 100ms granularity, 2s emergency drop window
+#define BURST_WINDOW_NS     (100ULL * 1000000ULL)
+#define BURST_EMERGENCY_NS  (2ULL * 1000000000ULL)
+// Emergency engages after 2 consecutive breached windows (≈200ms reaction)
+#define BURST_SUSTAINED_TRIGGER 2
 
 // Default values
 #define DEFAULT_SAMPLE_RATE  1
@@ -30,6 +65,9 @@
 // GRE protocol IDs for ERSPAN
 #define GRE_PROTO_ERSPAN_II  0x88BE
 #define GRE_PROTO_ERSPAN_III 0x22EB
+// Transparent Ethernet Bridging: the GRE payload is a complete Ethernet frame
+// (the inline clean-pipe inner packet still starts with its Ethernet header).
+#define GRE_PROTO_TEB        0x6558
 
 // GRE header flags
 #define GRE_FLAG_SEQ         0x1000  // Sequence number present
@@ -103,6 +141,14 @@ struct dst_ip_stats {
 };
 
 // LPM trie key for watch_prefix matching (IPv4 + IPv6 unified)
+// 16-byte address container for BPF *global* (noinline) function arguments.
+// A raw __u8* argument is typed mem(sz=1) by the verifier, so any 16-byte read
+// inside the callee fails with "invalid access to memory, mem_size=1"; a struct
+// gives the callee mem(sz=16) and keeps the address copy legal.
+struct addr16 {
+    __u8 b[16];
+};
+
 struct lpm_key {
     __u32 prefixlen;
     __u8  addr[16];        // IPv4 uses first 4 bytes, IPv6 uses all 16
@@ -149,6 +195,105 @@ struct global_stats {
     __u64 src_matched_bytes;
     __u32 src_decoder_counts[MAX_DECODERS];
     __u64 src_decoder_byte_counts[MAX_DECODERS];
+};
+
+// ---------------------------------------------------------------------------
+// v4.0 Inline scrubbing data structures
+// ---------------------------------------------------------------------------
+
+// Inline filter hash key — exact 5-tuple with wildcard semantics.
+// Wildcards: proto=0 matches any protocol; dst_port/src_port=0 match any port;
+// src_addr all-zero with src_prefix_len=0 matches any source.
+struct filter_rule_key {
+    __u32 dst_prefix_len;   // host bits masked by userspace (32 or 128)
+    __u32 src_prefix_len;
+    __u8  dst_addr[16];     // IPv4 in first 4 bytes (v4-mapped not used here)
+    __u8  src_addr[16];
+    __u8  proto;
+    __u8  _pad[3];
+    __u16 dst_port;         // network byte order
+    __u16 src_port;         // network byte order
+};
+
+// Inline filter rule value.
+struct filter_rule {
+    __u8  action;           // FILTER_ACTION_*
+    __u8  encap;            // ENCAP_* for REDIRECT clean-pipe return
+    __u16 _pad;
+    __u32 egress_ifindex;   // TX/REDIRECT/CHALLENGE egress
+    __u32 rate_limit_pps;   // RATE_LIMIT cap (best-effort burst cap)
+    __u32 priority;         // lower wins when an exact key and a subnet rule overlap
+    __u64 rule_id;          // controller-assigned id (reconciliation)
+    __u64 expires_ns;       // 0 = never; monotonic ktime deadline (ns)
+    // Subnet trie rules carry the L4 scope in the value (the key is address-only).
+    __u8  proto;            // 0 = any protocol
+    __u8  _pad2[3];
+    __u16 dst_port;         // network byte order, 0 = any
+    __u16 src_port;         // network byte order, 0 = any
+    __u32 encap_daddr;      // GRE outer IPv4 dst, network byte order (append-only)
+};
+
+// Per-destination burst sliding window (100ms buckets, 2s emergency drop).
+struct burst_window {
+    __u32 count;              // packets in current 100ms window
+    __u32 sustained;          // consecutive breached windows
+    __u64 window_start_ns;
+    __u64 emergency_until_ns; // 0 = not in emergency
+};
+
+// Urgent alert pushed to userspace ringbuf → CriticalEventStream (<500ms path)
+struct burst_alert {
+    __u64 timestamp_ns;
+    __u8  dst_addr[16];
+    __u32 is_v4;              // 1 = dst_addr[0..3] is IPv4
+    __u32 window_pps;         // measured PPS in the breached window
+    __u32 proto;              // triggering L4 protocol
+    __u32 tcp_flags;          // triggering TCP flags (0 for non-TCP)
+};
+
+// DNS outstanding-query key: client that issued the query + DNS identifiers
+struct dns_query_key {
+    __u8  client_addr[16];    // IPv4 in first 4 bytes
+    __u16 query_id;           // network byte order
+    __u16 qtype;              // network byte order
+    __u32 _pad;
+};
+
+// Per-client/qtype high-amplification response volume window.
+struct dns_volume_key {
+    __u8  client_addr[16];    // IPv4 in first 4 bytes
+    __u16 qtype;              // network byte order
+    __u16 _pad;
+};
+
+// Inline engine counters (inline_stats array indices)
+#define INLINE_STAT_COOKIE_REPLY     0
+#define INLINE_STAT_COOKIE_VALIDATED 1
+#define INLINE_STAT_COOKIE_DROPPED   2
+#define INLINE_STAT_EMERGENCY_DROPS  3
+#define INLINE_STAT_FILTER_DROPS     4
+#define INLINE_STAT_DNS_DROPS        5
+#define INLINE_STAT_REDIRECT_OK      6
+#define INLINE_STAT_REDIRECT_ERR     7
+#define INLINE_STAT_XSK_STEER        8
+#define INLINE_STAT_FILTER_PASS      9
+#define INLINE_STAT_MAX              16
+
+// Cookie engine input block (48 bytes = 6 u64 siphash words)
+struct cookie_input {
+    __u8  sip[16];
+    __u8  dip[16];
+    __u32 sport;
+    __u32 dport;
+    __u64 secret_lo;
+    __u64 secret_hi;
+};
+
+// Atomic siphash key for SYN cookies. Rotation writes both halves in one
+// array-map update so the data plane can never observe a mixed key.
+struct cookie_secret {
+    __u64 lo;
+    __u64 hi;
 };
 
 // ---------------------------------------------------------------------------
@@ -207,6 +352,16 @@ struct {
     __type(value, struct dst_ip_stats);
 } ip_stats_b SEC(".maps");
 
+// Per-CPU scratch used to materialize a fresh per-IP stats entry. The 224-byte
+// struct dst_ip_stats cannot live on the verifier's shared 512-byte call stack,
+// so the zeroed entry is built in per-CPU map memory and inserted atomically.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct dst_ip_stats);
+} ip_stats_scratch SEC(".maps");
+
 // v2.11 Phase 2: Per-source-IP stats (outbound tracking, reuses dst_ip_stats struct)
 // max_entries intentionally smaller — outbound cardinality typically lower than inbound
 struct {
@@ -239,13 +394,123 @@ struct {
     __type(value, __u32);
 } active_slot SEC(".maps");
 
-// Runtime config (Array, 8 entries)
+// Runtime config (Array, 16 entries)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 8);
+    __uint(max_entries, CFG_MAX);
     __type(key, __u32);
     __type(value, __u64);
 } xsight_config SEC(".maps");
+
+// Atomic SYN-cookie siphash key (single array entry; lo+hi updated together).
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct cookie_secret);
+} cookie_secret SEC(".maps");
+
+// ---------------------------------------------------------------------------
+// v4.0 Inline scrubbing maps
+// ---------------------------------------------------------------------------
+
+// Dynamic packet filter table — exact 5-tuple rules with wildcards.
+// Controller pushes via ControlStream; hash of (DIP, SIP, Proto, DPort, SPort).
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct filter_rule_key);
+    __type(value, struct filter_rule);
+} active_filter_rules SEC(".maps");
+
+// Destination-scope subnet filter rules (LPM trie). Broad destination
+// protections; exact hash rules win on equal priority.
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, 65536);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, struct lpm_key);
+    __type(value, struct filter_rule);
+} active_filter_subnets_dst SEC(".maps");
+
+// Source-scope subnet filter rules (LPM trie). Egress ACLs keyed on src_ip;
+// kept separate so a source prefix can never match inbound traffic.
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, 65536);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, struct lpm_key);
+    __type(value, struct filter_rule);
+} active_filter_subnets_src SEC(".maps");
+
+// SYN-cookie validated clients — short-lived LRU. On a successful cookie ACK
+// the client IP is admitted here and bypasses the emergency drop state.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 262144);
+    __type(key, __u8[16]);
+    __type(value, __u64);   // expiry (ktime ns)
+} validated_clients SEC(".maps");
+
+// Per-destination 100ms sliding windows for sub-second burst detection.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u8[16]);
+    __type(value, struct burst_window);
+} burst_windows SEC(".maps");
+
+// Per-source rate-limit windows. Kept separate from burst_windows: the burst
+// map is keyed on the destination and stores emergency state, while the rate
+// limiter is keyed on the source and only counts. Sharing one map makes the
+// same address collide under two incompatible semantics.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u8[16]);
+    __type(value, struct burst_window);
+} rate_limit_windows SEC(".maps");
+
+// Urgent alerts → userspace → CriticalEventStream. NOTE: ringbuf is not
+// supported by SmartNIC offload; deployments in offload mode must keep
+// CFG_ALERTS_ENABLE=0 and accept userspace-only detection there.
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 64 * 1024);
+} alerts SEC(".maps");
+
+// Outbound DNS queries (src_ip, query_id, qtype) for reflection defense.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 131072);
+    __type(key, struct dns_query_key);
+    __type(value, __u64);   // expiry (ktime ns)
+} dns_outstanding SEC(".maps");
+
+// Per-client/qtype window of high-amplification (ANY / large TXT) responses.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 131072);
+    __type(key, struct dns_volume_key);
+    __type(value, struct burst_window);
+} dns_volume SEC(".maps");
+
+// Inline engine counters (userspace reads for posture + console)
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, INLINE_STAT_MAX);
+    __type(key, __u32);
+    __type(value, __u64);
+} inline_stats SEC(".maps");
+
+// AF_XDP steer map — packets flagged for L7 challenge/inspection are
+// redirected into the userspace zero-copy socket bound to a NIC queue.
+struct {
+    __uint(type, BPF_MAP_TYPE_XSKMAP);
+    __uint(max_entries, 64);
+    __type(key, __u32);
+    __type(value, __u32);
+} xsight_xsk SEC(".maps");
 
 // Sampling ring buffer — raw packet headers to userspace (16MB)
 struct {
