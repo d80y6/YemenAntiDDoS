@@ -233,6 +233,39 @@ export function createServer(data: Dataset = createData()): Server {
     if (path === '/api/active-actions/bgp/dismissed-orphans') return send([{ announcement_id: 3,
       prefix: '203.0.113.64/26', route_map: 'SERVICE', connector_id: 1, connector_name: 'Transit routing',
       status: 'dismissed', detected_at: new Date(data.now - day).toISOString() }])
+    // Inline scrubbing: mitigations and per-node data-plane posture. The
+    // mitigations body mirrors Go's default (untagged) marshaling.
+    const posture = (n: Row) => ({ xdp_mode: 'inline', inline_enabled: true,
+      filter_rules: n.id === 'probe-a' ? 3 : 1, validated_clients: n.id === 'probe-a' ? 2 : 0,
+      syn_cookies_replied: n.id === 'probe-a' ? 10 : 3, syn_cookies_validated: n.id === 'probe-a' ? 8 : 3,
+      syn_cookies_dropped: n.id === 'probe-a' ? 1 : 0, emergency_drops: n.id === 'probe-a' ? 4 : 0,
+      burst_alerts: n.id === 'probe-a' ? 7 : 1, redirect_ok: n.id === 'probe-a' ? 99 : 0,
+      redirect_err: n.id === 'probe-a' ? 2 : 0, af_xdp_active: n.id === 'probe-a',
+      af_xdp_rx: n.id === 'probe-a' ? 1234 : 0, af_xdp_umem_drops: 0,
+      cpu_pins: n.id === 'probe-a' ? [2, 3] : [2], cpu_util: n.id === 'probe-a' ? [12.4, 3.6] : [4.1],
+      cleanpipe_egress: n.id === 'probe-a' ? 'eth1' : '', updated_at: n.last_stats_at })
+    if (path === '/api/nodes/posture') return send(Object.fromEntries(
+      data.nodes.filter(n => n.mode === 'xdp').map(n => [n.id, posture(n)])))
+    const posturePath = /^\/api\/nodes\/([^/]+)\/posture$/.exec(path)
+    if (posturePath) {
+      const node = data.nodes.find(n => n.id === decodeURIComponent(posturePath[1]!))
+      if (!node || node.mode !== 'xdp') return send({ node_id: posturePath[1], available: false })
+      return send({ node_id: node.id, available: true, posture: posture(node) })
+    }
+    if (path === '/api/inline/mitigations') {
+      const a = data.attacks.find(x => !x.ended_at) ?? data.attacks[0]!
+      const mitigation = { AttackID: a.id, TargetIP: a.dst_ip, Decoder: a.decoder_family,
+        EventType: a.attack_type, Nodes: a.node_sources, Phase: 'narrow',
+        Rules: [{ ID: 7, DstIP: a.dst_ip, DstPrefixLen: 32, SrcIP: '', SrcPrefixLen: 0,
+          Protocol: a.decoder_family === 'udp' ? 17 : 6, DstPort: 80, SrcPort: 0,
+          Action: 'rate_limit', RateLimitPPS: 20000, Priority: 100,
+          ExpiresUnix: Math.floor(Date.parse(a.started_at) / 1000) + 600,
+          EgressIfindex: 0, Encap: '', Reason: 'broad:attack=' + a.id }],
+        StartedAt: a.started_at, NarrowedAt: a.started_at, PeakPPS: a.peak_pps,
+        Rebreadths: 0, Version: 7 }
+      return send({ enabled: true, active: a.ended_at ? 0 : 1, pushes: 18, push_errors: 0,
+        mitigations: [mitigation] })
+    }
     const nodePath = /^\/api\/nodes\/([^/]+)(\/status)?$/.exec(path)
     if (nodePath) {
       const node = data.nodes.find(n => n.id === decodeURIComponent(nodePath[1]!))
