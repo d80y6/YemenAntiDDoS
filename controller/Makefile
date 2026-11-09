@@ -20,11 +20,10 @@ proto:
 	@mkdir -p $(PB_DIR)
 	protoc -I $(PROTO_DIR) \
 		--go_out=$(PB_DIR) --go_opt=paths=source_relative \
+		--go_opt=Mxsight.proto=github.com/d80y6/YemenDDoS/controller/internal/pb \
 		--go-grpc_out=$(PB_DIR) --go-grpc_opt=paths=source_relative \
+		--go-grpc_opt=Mxsight.proto=github.com/d80y6/YemenDDoS/controller/internal/pb \
 		$(PROTO_DIR)/xsight.proto
-	@# Fix package path: replace node package with controller package
-	@sed -i 's|github.com/d80y6/YemenDDoS/node/internal/pb|github.com/d80y6/YemenDDoS/controller/internal/pb|g' \
-		$(PB_DIR)/xsight.pb.go $(PB_DIR)/xsight_grpc.pb.go
 
 ## Migrate — run DB migrations (embedded in binary, just starts and exits)
 migrate:
